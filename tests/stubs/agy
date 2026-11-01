@@ -2,7 +2,24 @@
 # tests/stubs/agy: --version -> ${STUB_AGY_VERSION:-1.4.12}; models [--output-format json] ->
 # fixtures (empty when STUB_AGY_AUTH=0; a {"status": "ERROR", ...} envelope or a "not signed in"
 # line, rc 0, when STUB_AGY_AUTH=envelope; sleeps 60 s when STUB_AGY_HANG=1); -p /usage|/model|/config
-# -> fixture JSON; every other prompt is billable.
+# -> fixture JSON; the registration --new-project --output-format json -p /model -> a JSON line
+# (rc ${STUB_AGY_REGISTER_RC:-0}). A prompt run (-p <prompt> --output-format stream-json) needs
+# STUB_AGY_RUN, else it is billable; its stream-json is SYNTHETIC (shape unverified, DESIGN
+# section 20 item 6): init {model: --model, or STUB_AGY_SERVED}, a message, result. Scenarios:
+#   ok         writes cx-agy.txt in the cwd; result; exit 0
+#   hang       ok, then ignores TERM and sleeps 300 s (agy #1313: never exits after the result)
+#   wrongtree  ok, and writes cx-wrong.txt into $STUB_AGY_OTHER (another worktree)
+#   wrongcommit ok, and commits cx-wrong.txt in $STUB_AGY_OTHER (that tree's status stays clean)
+#   denied     result with denied_actions [write_file] and an empty response
+#   mismatch   init names STUB_AGY_SERVED (default gemini-3.8-flash-high), then sleeps 300 s
+#   partial    the print-timeout PARTIAL line on stderr, a partial response, rc 0
+#   subagent   a subagent_info event before the result
+#   quota|auth a quota / sign-in error on stderr, rc 1
+#   noinit     no output, sleeps 300 s (the adapter's init timeout)
+#   sleep      ok after ${STUB_AGY_SLEEP:-30} seconds
+# STUB_EVENTS: "start agy-launch" at the registration, "end agy-launch" right after a run's init
+# event (both inside the adapter's launch lock), "start/end agy-run" around an ok or sleep run;
+# STUB_GATE: such a run waits after its init event until that file exists.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump agy
@@ -27,8 +44,58 @@ case "${1-}" in
     stub_billable agy "$@" ;;
   -p)
     case "${2-}" in
-      /usage) cat "$STUB_FIX/agy-usage.json"; exit 0 ;;
+      /usage) cat "${STUB_AGY_USAGE_FILE:-$STUB_FIX/agy-usage.json}"; exit 0 ;;
       /model|/config) printf '{"model": "claude-opus-5-5-high"}\n'; exit 0 ;;
     esac ;;
+  --new-project)
+    if [ "${2-}" = --output-format ] && [ "${3-}" = json ] && [ "${4-}" = -p ] && [ "${5-}" = /model ] && [ $# -eq 5 ]; then
+      stub_event start agy-launch
+      printf '{"model": "claude-opus-5-5-high", "project": "%s"}\n' "$PWD"
+      exit "${STUB_AGY_REGISTER_RC:-0}"
+    fi ;;
+esac
+model="" prompt="" fmt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model) model="$2"; shift 2 ;;
+    -p) prompt="$2"; shift 2 ;;
+    --output-format) fmt="$2"; shift 2 ;;
+    --add-dir|--print-timeout|--mode|--conversation) shift 2 ;;
+    *) shift ;;
+  esac
+done
+run="${STUB_AGY_RUN:-}"
+if [ -z "$run" ] || [ -z "$prompt" ] || [ "$fmt" != stream-json ]; then stub_billable agy "$@"; fi
+served="${STUB_AGY_SERVED:-$model}"
+ev_init() { printf '{"type": "init", "session_id": "00000000-0000-4000-8000-0000000000a1", "model": "%s", "cwd": "%s"}\n' "$1" "$PWD"; }
+ev_msg() { printf '{"type": "message", "role": "assistant", "content": "Working on the task."}\n'; }
+ev_result() {  # RESPONSE [DENIED_JSON]
+  printf '{"type": "result", "status": "success", "response": "%s", "finished_reason": "stop", "denied_actions": %s, "usage": {"input_tokens": 1200, "output_tokens": 300, "thinking_tokens": 40, "cache_read_tokens": 800, "total_tokens": 2340}, "conversation_id": "00000000-0000-4000-8000-0000000000a1"}\n' "$1" "${2:-[]}"
+}
+case "$run" in
+  ok|hang|wrongtree|wrongcommit|sleep)
+    ev_init "$served"
+    stub_event end agy-launch
+    stub_event start agy-run
+    stub_gate
+    [ "$run" = sleep ] && sleep "${STUB_AGY_SLEEP:-30}"
+    ev_msg
+    printf 'from agy\n' > cx-agy.txt
+    [ "$run" = wrongtree ] && [ -n "${STUB_AGY_OTHER:-}" ] && printf 'wrong\n' > "$STUB_AGY_OTHER/cx-wrong.txt"
+    if [ "$run" = wrongcommit ] && [ -n "${STUB_AGY_OTHER:-}" ]; then
+      printf 'wrong\n' > "$STUB_AGY_OTHER/cx-wrong.txt"
+      git -C "$STUB_AGY_OTHER" add cx-wrong.txt && git -C "$STUB_AGY_OTHER" -c user.email=agy@x -c user.name=agy commit -qm wrong
+    fi
+    ev_result 'Created cx-agy.txt:1.\nDIGEST: created cx-agy.txt.'
+    stub_event end agy-run
+    if [ "$run" = hang ]; then trap '' TERM; sleep 300; fi
+    exit 0 ;;
+  denied) ev_init "$served"; ev_result '' '[{"action": "write_file", "display_name": "WriteToFile"}]'; printf 'auto-denied write_file (add a permissions.allow rule)\n' >&2; exit 0 ;;
+  mismatch) ev_init "${STUB_AGY_SERVED:-gemini-3.8-flash-high}"; trap '' TERM; sleep 300; exit 0 ;;
+  partial) ev_init "$served"; ev_msg; printf '[agy] print timeout after 1800s with turn in progress; returning partial output\n' >&2; ev_result 'Half done.'; exit 0 ;;
+  subagent) ev_init "$served"; printf '{"type": "subagent_info", "name": "explorer", "model": "gemini-3.8-flash-high"}\n'; ev_result 'Done.\nDIGEST: done.'; exit 0 ;;
+  quota) printf 'Error: RESOURCE_EXHAUSTED: quota exceeded for this model\n' >&2; exit 1 ;;
+  auth) printf 'Error: unauthenticated: please sign in (run agy)\n' >&2; exit 1 ;;
+  noinit) trap '' TERM; sleep 300; exit 0 ;;
 esac
 stub_billable agy "$@"

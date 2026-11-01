@@ -54,10 +54,10 @@ s=, #
 for x in ${o//,/ }; do #
   case "$s" in *",$x,"*) r=; break ;; esac #
   s="$s$x," #
-  case "$x" in agy) y='agy (agy-delegate)' ;; copilot) y='Copilot (ghcp-delegate)' ;; claude) y='own subagents' ;; *) r=; break ;; esac #
+  case "$x" in agy) y='agy (raw)' ;; copilot) y='Copilot' ;; claude) y='own subagents' ;; *) r=; break ;; esac #
   r="${r:+$r, then }$y" #
 done #
-[ -n "$r" ] || r='agy (agy-delegate), then Copilot (ghcp-delegate), then own subagents' #
+[ -n "$r" ] || r='agy (raw), then Copilot, then own subagents' #
 [ -r "$f" ] || exit 0 #
 t="$(cat -- "$f" 2>/dev/null)" || exit 0 #
 a= #

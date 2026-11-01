@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # hooks/subagent.sh - SubagentStart (workflow-subagent|general-purpose): print the conductor #
 # subagent guard as hookSpecificOutput.additionalContext (docs/DESIGN.md section 10.7): workflow #
-# and Agent-tool subagents never run executors; the main session dispatches them. Bash builtins #
+# and Agent-tool subagents never run executors directly; the main session dispatches them, and #
+# an agent whose task says so uses cx-run --background and cx-job wait (shared pool slots). Bash builtins #
 # plus cat; reads at most 256 KiB of stdin with a 2-second timeout; always exits 0 (fails open). #
 # Silent when CX_WORKER is set, option policy is off, or the payload names another agent_type. #
 # Every line ends in " #" so a CRLF copy works. #

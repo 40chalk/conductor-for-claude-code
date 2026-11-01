@@ -2,7 +2,17 @@
 # tests/stubs/grok: --version -> "grok ${STUB_GROK_VERSION:-1.0.70} (f50904eaee6c)"; models ->
 # fixtures/grok-models-auth.txt when STUB_GROK_AUTH=1, else the verified unauthenticated text,
 # rc ${STUB_GROK_MODELS_RC:-0} (STUB_GROK_MODELS_FAIL=network: one error line, no ids, rc 1);
-# usage -> fixture; everything else (prompts) is billable. STUB_ENV_FILE receives its environment.
+# usage -> fixture; STUB_ENV_FILE receives its environment. A prompt run (--prompt-file or
+# -p/--single) needs STUB_GROK_RUN, else it is billable; its JSON is SYNTHETIC (text, sessionId,
+# modelUsage, usage, stopReason; DESIGN section 20 item 7). Scenarios: ok (writes cx-grok.txt in
+# --cwd unless --json-schema), denied ("permission required: Bash(npm install)" on stderr, rc 0),
+# mismatch (modelUsage names ${STUB_GROK_SERVED:-grok-4.6}), error (an error object, no
+# sessionId, rc 1), auth ("You are not authenticated.", rc 1), quota (rate limit, rc 1), sleep
+# (ok after ${STUB_GROK_SLEEP:-30} s), nodiff (ok without writing a file), tamper (ok, and it also
+# edits .conductor/task.md in --cwd), daemon (ok, leaving a sleeping child in its session and a
+# setsid one outside it; their pids in $STUB_GROK_DAEMON_PID and $STUB_GROK_DAEMON_PID.setsid),
+# ignoreterm (ignores TERM, starts a TERM-ignoring child in another process group of its session,
+# pid in $STUB_GROK_DAEMON_PID, then sleeps 60 s).
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump grok
@@ -24,4 +34,44 @@ case "${1-}" in
     cat "$STUB_FIX/grok-usage.txt"
     exit 0 ;;
 esac
-stub_billable grok "$@"
+run="${STUB_GROK_RUN:-}" model="" cwd="$PWD" sid="" schema="" prompt=""
+for a in "$@"; do case "$a" in --prompt-file|-p|--single) prompt=1 ;; esac; done
+[ -n "$run" ] && [ -n "$prompt" ] || stub_billable grok "$@"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m|--model) model="$2"; shift 2 ;;
+    --cwd) cwd="$2"; shift 2 ;;
+    -s|--session-id) sid="$2"; shift 2 ;;
+    --json-schema) schema="$2"; shift 2 ;;
+    --prompt-file|-p|--single|--effort|--reasoning-effort|--output-format|--sandbox|--permission-mode|--allow|--deny|--max-turns|--add-dir) shift 2 ;;
+    *) shift ;;
+  esac
+done
+served="$model"
+[ "$run" = mismatch ] && served="${STUB_GROK_SERVED:-grok-4.6}"
+case "$run" in
+  error) printf '{"error": {"message": "stream ended unexpectedly"}}\n'; exit 1 ;;
+  auth) printf 'You are not authenticated. Run grok login.\n' >&2; exit 1 ;;
+  quota) printf 'Error: rate limit exceeded (429), try again later\n' >&2; exit 1 ;;
+  sleep) sleep "${STUB_GROK_SLEEP:-30}" ;;
+  daemon)
+    sleep 120 > /dev/null 2>&1 &
+    printf '%s\n' "$!" > "${STUB_GROK_DAEMON_PID:-/dev/null}"
+    setsid sleep 120 > /dev/null 2>&1 &
+    printf '%s\n' "$!" > "${STUB_GROK_DAEMON_PID:-/dev/null}.setsid" ;;
+  ignoreterm)
+    trap '' TERM
+    set -m
+    bash -c 'trap "" TERM; exec sleep 60' < /dev/null > /dev/null 2>&1 &
+    printf '%s\n' "$!" > "${STUB_GROK_DAEMON_PID:-/dev/null}"
+    set +m
+    sleep 60 ;;
+  ok|denied|mismatch|nodiff|tamper) ;;
+  *) stub_billable grok "$@" ;;
+esac
+text='Created cx-grok.txt:1.\nDIGEST: created cx-grok.txt.'
+if [ -n "$schema" ]; then text='[{\"file\": \"README.md\", \"line\": 1, \"why\": \"title\"}]'; elif [ "$run" != nodiff ]; then printf 'from grok\n' > "$cwd/cx-grok.txt"; fi
+[ "$run" = tamper ] && printf 'tampered\n' >> "$cwd/.conductor/task.md"
+[ "$run" = denied ] && printf 'permission required: Bash(npm install)\n' >&2
+printf '{"text": "%s", "sessionId": "%s", "modelUsage": {"%s": {"inputTokens": 900, "outputTokens": 120}}, "usage": {"input_tokens": 900, "output_tokens": 120, "cache_read_tokens": 300}, "stopReason": "end_turn"}\n' "$text" "$sid" "$served"
+exit 0

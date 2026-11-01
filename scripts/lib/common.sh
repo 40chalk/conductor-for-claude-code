@@ -15,7 +15,7 @@ if [ "${CX_COMMON_SH:-}" = "${BASH_SOURCE[0]}" ] && declare -F cx_note >/dev/nul
 fi
 CX_COMMON_SH="${BASH_SOURCE[0]}"
 
-CX_VERSION=0.1.0
+CX_VERSION=0.2.0
 CX_PIN_COPILOT=1.0.105
 CX_PIN_GROK=1.0.70
 CX_MIN_CLAUDE=2.1.316
@@ -38,9 +38,12 @@ CX_RUNTIME_DIRS=(.claude-plugin bin scripts hooks worker-shims templates)
 # The shipped file list (DESIGN section 13.4); cx-doctor D3 checks the installed copy against it.
 CX_SHIPPED_FILES=(
   .claude-plugin/plugin.json .claude-plugin/marketplace.json
-  bin/cx-doctor bin/cx-init bin/cx-wsl
-  scripts/cx-doctor.sh scripts/cx-init.sh scripts/cx-wsl.sh
-  scripts/lib/common.sh scripts/lib/options.sh scripts/lib/cxlib.py
+  bin/cx-doctor bin/cx-init bin/cx-wsl bin/cx-run bin/cx-job
+  scripts/cx-doctor.sh scripts/cx-init.sh scripts/cx-wsl.sh scripts/cx-run.sh scripts/cx-job.sh
+  scripts/lib/common.sh scripts/lib/options.sh scripts/lib/cxlib.py scripts/lib/locks.sh
+  scripts/lib/adapter.sh scripts/lib/normalize.py scripts/lib/ledger.py
+  scripts/lib/worktree.sh scripts/lib/taskfile.sh
+  scripts/adapters/copilot.sh scripts/adapters/grok.sh scripts/adapters/agy.sh scripts/adapters/claude.sh scripts/adapters/copilot-cloud.sh
   scripts/host/detect.sh scripts/host/pathmap.sh scripts/host/forward-wsl.sh
   scripts/host/wsl-entry.sh scripts/host/install-runtime.sh
   hooks/hooks.json hooks/policy.sh hooks/policy-context.json
@@ -48,26 +51,41 @@ CX_SHIPPED_FILES=(
   hooks/subagent.sh hooks/subagent-context.json hooks/subagent-context-compact.json
   worker-shims/claude worker-shims/copilot worker-shims/grok worker-shims/agy
   worker-shims/codex worker-shims/gemini worker-shims/cursor-agent worker-shims/agent
+  worker-shims/ghcp-delegate worker-shims/ghcp-job worker-shims/ghcp-handoff
+  worker-shims/ghcp-ci-debug worker-shims/ghcp-cloud worker-shims/ghcp-models
+  worker-shims/ghcp-doctor worker-shims/agy-delegate worker-shims/agy-handoff worker-shims/agy-job
+  worker-shims/agy-media worker-shims/agy-doctor worker-shims/cx-run worker-shims/cx-job
+  worker-shims/cx-fanout worker-shims/cx-gate worker-shims/cx-doctor worker-shims/cx-init
+  worker-shims/cx-wsl
+  templates/cx-worker.json templates/task.md templates/grok-sandbox.toml
   templates/repo-bundle/AGENTS.md templates/repo-bundle/routes.json
   templates/repo-bundle/copilot-instructions.md templates/projects-instructions.md
   skills/conductor/SKILL.md
   commands/doctor.md commands/init.md commands/route.md
 )
-# The executable subset (bin/*, scripts/*.sh, scripts/host/*.sh, hooks/*.sh, worker-shims/*).
+# The executable subset (bin/*, scripts/*.sh, scripts/host/*.sh, scripts/adapters/*.sh, hooks/*.sh,
+# worker-shims/*).
 CX_SHIPPED_EXEC=(
-  bin/cx-doctor bin/cx-init bin/cx-wsl
-  scripts/cx-doctor.sh scripts/cx-init.sh scripts/cx-wsl.sh
+  bin/cx-doctor bin/cx-init bin/cx-wsl bin/cx-run bin/cx-job
+  scripts/cx-doctor.sh scripts/cx-init.sh scripts/cx-wsl.sh scripts/cx-run.sh scripts/cx-job.sh
   scripts/host/detect.sh scripts/host/pathmap.sh scripts/host/forward-wsl.sh
   scripts/host/wsl-entry.sh scripts/host/install-runtime.sh
+  scripts/adapters/copilot.sh scripts/adapters/grok.sh scripts/adapters/agy.sh scripts/adapters/claude.sh scripts/adapters/copilot-cloud.sh
   hooks/policy.sh hooks/subagent.sh
   worker-shims/claude worker-shims/copilot worker-shims/grok worker-shims/agy
   worker-shims/codex worker-shims/gemini worker-shims/cursor-agent worker-shims/agent
+  worker-shims/ghcp-delegate worker-shims/ghcp-job worker-shims/ghcp-handoff
+  worker-shims/ghcp-ci-debug worker-shims/ghcp-cloud worker-shims/ghcp-models
+  worker-shims/ghcp-doctor worker-shims/agy-delegate worker-shims/agy-handoff worker-shims/agy-job
+  worker-shims/agy-media worker-shims/agy-doctor worker-shims/cx-run worker-shims/cx-job
+  worker-shims/cx-fanout worker-shims/cx-gate worker-shims/cx-doctor worker-shims/cx-init
+  worker-shims/cx-wsl
 )
 
 # The forwarder's command allowlist (DESIGN section 7.3 step 1).
 CX_FORWARD_CMDS="cx-doctor cx-init cx-wsl cx-run cx-job cx-fanout cx-gate"
 # Program names a hand-built CX_SIGNAL may carry in "cmd" (DESIGN section 4.2).
-CX_SIGNAL_CMDS="cx-doctor cx-init cx-wsl cx-run cx-job cx-fanout cx-gate forward-wsl wsl-entry install-runtime pathmap detect"
+CX_SIGNAL_CMDS="cx-doctor cx-init cx-wsl cx-run cx-job cx-fanout cx-gate forward-wsl wsl-entry install-runtime pathmap detect slot adapter"
 
 # Exit-code table (DESIGN section 4.1): exit -> CX_SIGNAL status. 0, 1 and 126 have no status.
 declare -gA CX_EXIT_STATUS=(
@@ -390,6 +408,69 @@ cx_host_path() {
   fi
   cx_path_to_win "${d[@]+"${d[@]}"}" -- "$1" >/dev/null || return 42
   printf '%s\n' "$CX_PATHMAP_OUT"
+}
+
+# cx_runtime_ensure (executor host only): sets CX_RT to the runtime copy
+# $CX_HOME/runtime/<version> (DESIGN section 7.5), installing it from this plugin copy when it is
+# missing or older than the plugin's files, so adapters, worker shims and job runners never see
+# a plugin update mid-run. Running from the runtime copy already, CX_RT is this copy. When the
+# install fails it prints one note and CX_RT is this plugin copy.
+# cx_runtime_users DIR: how many live cx-run calls (a held $CX_HOME/out/*/.run.lock whose rt=
+# line names DIR) and cx-job runners (no rc yet, meta runtime=DIR, the runner pid alive) use the
+# runtime copy DIR now; prints the count (0 without flock for the run locks).
+cx_runtime_users() {
+  local h="${CX_HOME:-${HOME:-}/.conductor}" dir f r n=0 pid
+  dir="$(cd -- "$1" 2>/dev/null && pwd -P)" || dir="$1"
+  if command -v flock >/dev/null 2>&1; then
+    for f in "$h"/out/*/.run.lock; do
+      [ -f "$f" ] || continue
+      r="$(sed -n 's/^rt=//p' "$f" 2>/dev/null | head -n 1)"
+      [ -n "$r" ] || continue
+      r="$(cd -- "$r" 2>/dev/null && pwd -P)" || continue
+      [ "$r" = "$dir" ] || continue
+      ( flock -n 9 ) 9>>"$f" 2>/dev/null || n=$((n + 1))
+    done
+  fi
+  for f in "$h"/jobs/*/meta; do
+    [ -f "$f" ] && [ ! -e "${f%/meta}/rc" ] || continue
+    r="$(sed -n 's/^runtime=//p' "$f" 2>/dev/null | head -n 1)"
+    r="$(cd -- "$r" 2>/dev/null && pwd -P)" || continue
+    [ "$r" = "$dir" ] || continue
+    pid="$(cat "${f%/meta}/pid" 2>/dev/null)"
+    [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+cx_runtime_ensure() {
+  local h="${CX_HOME:-${HOME:-}/.conductor}" rt d newer="" err n
+  CX_RT="$CX_ROOT"
+  case "$CX_ROOT/" in "$h/runtime/"*) return 0 ;; esac
+  rt="$h/runtime/$CX_VERSION"
+  if [ -f "$rt/RUNTIME_STAMP" ]; then
+    for d in "${CX_RUNTIME_DIRS[@]}"; do
+      [ -e "$CX_ROOT/$d" ] || continue
+      newer="$(find "$CX_ROOT/$d" -newer "$rt/RUNTIME_STAMP" -print -quit 2>/dev/null)"
+      [ -z "$newer" ] || break
+    done
+    if [ -z "$newer" ]; then CX_RT="$rt"; return 0; fi
+    # The plugin changed, but runs still use the copy: this one uses it unchanged too (a swap
+    # would change files under them); the next call after they end installs the update.
+    n="$(cx_runtime_users "$rt")"
+    if [ "${n:-0}" -gt 0 ]; then
+      cx_note "the plugin changed, but $n run(s) still use the runtime copy $rt: this one uses it unchanged too (it is updated once they end)"
+      CX_RT="$rt"
+      return 0
+    fi
+  fi
+  err="$(mktemp "${TMPDIR:-/tmp}/cx-rt.XXXXXXXX")" || return 0
+  if CX_HOME="$h" bash "$CX_HOSTDIR/install-runtime.sh" --from "$CX_ROOT" >/dev/null 2>"$err" && [ -f "$rt/RUNTIME_STAMP" ]; then
+    CX_RT="$rt"
+  else
+    cx_note "could not install the runtime copy $rt ($(grep -v '^CX_' "$err" | head -n 1)); running from the plugin copy"
+  fi
+  rm -f -- "$err"
+  return 0
 }
 
 # _cx_exec_host_raw: option exec_host as step 0 sees it (lowercased, spaces removed): the

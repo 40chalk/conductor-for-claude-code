@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # tests/stubs/claude: --version -> "${STUB_CLAUDE_VERSION:-2.1.316} (Claude Code)";
 # auth status --json -> {"loggedIn": ${STUB_CLAUDE_LOGGED_IN:-true}, ...}; anything else
-# (claude -p above all) is billable. P3 uses the real claude from the original PATH.
+# (claude -p above all) is billable. P3 uses the real claude from the original PATH. A -p run
+# with STUB_CLAUDE_RUN=ok|mismatch prints a SYNTHETIC --output-format json result (result,
+# session_id, usage, modelUsage; DESIGN section 20 item 27) and writes cx-claude.txt in the cwd;
+# mismatch names claude-sonnet-5-5 in modelUsage.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump claude
@@ -12,6 +15,16 @@ if [ $# -eq 1 ] && [ "$1" = --version ]; then
 fi
 if [ $# -eq 3 ] && [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
   printf '{"loggedIn": %s, "authMethod": "oauth_token", "apiProvider": "firstParty"}\n' "${STUB_CLAUDE_LOGGED_IN:-true}"
+  exit 0
+fi
+if [ "${1-}" = -p ] && [ -n "${STUB_CLAUDE_RUN:-}" ]; then
+  model="" sid=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --model) model="$2"; shift 2 ;; --session-id) sid="$2"; shift 2 ;; *) shift ;; esac
+  done
+  [ "$STUB_CLAUDE_RUN" = mismatch ] && model=claude-sonnet-5-5
+  printf 'from claude\n' > cx-claude.txt
+  printf '{"type": "result", "subtype": "success", "is_error": false, "result": "Created cx-claude.txt:1.\\nDIGEST: created cx-claude.txt.", "session_id": "%s", "usage": {"input_tokens": 2000, "output_tokens": 400, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 1000}, "modelUsage": {"%s": {"inputTokens": 2000, "outputTokens": 400}, "claude-haiku-4-5": {"inputTokens": 300, "outputTokens": 20}}, "total_cost_usd": 0.42}\n' "$sid" "$model"
   exit 0
 fi
 stub_billable claude "$@"

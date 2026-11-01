@@ -6,6 +6,9 @@
 # stub_log NAME [EXTRA...] -- ARGS...: one line per call on $STUB_LOG:
 #   NAME<TAB>cwd=<pwd><TAB>EXTRA...<TAB>argv: <printf %q of each argument>
 # stub_billable NAME ARGS...: logs BILLABLE and exits 99.
+# stub_event start|end NAME: when STUB_EVENTS names a file, appends "start|end NAME PID TIME"
+#   (the suite's overlap helper counts how many NAME runs were ever open at once).
+# stub_gate: when STUB_GATE names a file, waits (at most 120 s) until it exists.
 # shellcheck shell=bash
 if [ -n "${HOME:-}" ] && [ -f "$HOME/.stub.env" ]; then
   while IFS= read -r _sl_line || [ -n "$_sl_line" ]; do
@@ -43,4 +46,14 @@ stub_billable() {
   fi
   printf '%s stub: billable invocation refused\n' "$name" >&2
   exit 99
+}
+stub_gate() {
+  [ -n "${STUB_GATE:-}" ] || return 0
+  local i
+  for ((i = 0; i < 1200; i++)); do [ -e "$STUB_GATE" ] && return 0; sleep 0.1; done
+  return 0
+}
+stub_event() {
+  [ -n "${STUB_EVENTS:-}" ] || return 0
+  printf '%s %s %s %s\n' "$1" "$2" "$$" "$(date +%s.%N)" >> "$STUB_EVENTS"
 }

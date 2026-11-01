@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff:*)"
+    ],
+    "deny": [
+      "Bash(claude:*)",
+      "Bash(copilot:*)",
+      "Bash(grok:*)",
+      "Bash(agy:*)",
+      "Bash(codex:*)",
+      "Bash(gemini:*)",
+      "Bash(cursor-agent:*)",
+      "Bash(ghcp-delegate:*)",
+      "Bash(ghcp-job:*)",
+      "Bash(ghcp-handoff:*)",
+      "Bash(ghcp-ci-debug:*)",
+      "Bash(ghcp-cloud:*)",
+      "Bash(ghcp-models:*)",
+      "Bash(ghcp-doctor:*)",
+      "Bash(agy-delegate:*)",
+      "Bash(agy-handoff:*)",
+      "Bash(agy-job:*)",
+      "Bash(agy-media:*)",
+      "Bash(agy-doctor:*)",
+      "Bash(cx-run:*)",
+      "Bash(cx-job:*)",
+      "Bash(cx-fanout:*)",
+      "Bash(cx-gate:*)",
+      "Bash(cx-doctor:*)",
+      "Bash(cx-init:*)",
+      "Bash(cx-wsl:*)"
+    ]
+  }
+}

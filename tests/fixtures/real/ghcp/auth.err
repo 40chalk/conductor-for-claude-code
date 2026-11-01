@@ -1,0 +1,8 @@
+copilot: Error: No authentication information found.
+copilot: 
+copilot: To authenticate, you can use any of the following methods:
+copilot:   - Run 'copilot login' in an interactive terminal
+copilot:   - Set the COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN environment variable
+ghcp-delegate: Copilot CLI is not authenticated: run `copilot login` in an interactive terminal, then retry.
+GHCP_USAGE {"tier": "", "model_requested": "claude-opus-5.5", "auto_tier": null, "fallback": false, "model": null, "models_used": [], "fusion": null, "ai_credits": null, "premium_requests": null, "input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "reasoning_tokens": null, "duration_ms": null, "files_modified": 0, "lines_added": null, "lines_removed": null, "session_id": null, "exit": 11}
+GHCP_SIGNAL {"status": "AUTH_REQUIRED", "reason": "Error: No authentication information found.", "model": "claude-opus-5.5", "retry": "copilot login"}

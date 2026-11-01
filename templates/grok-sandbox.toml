@@ -1,0 +1,9 @@
+# conductor: the grok sandbox profile every conductor grok writer runs under (option
+# grok_sandbox_profile; docs/DESIGN.md section 15.7). Added to ~/.grok/sandbox.toml by
+# cx-init --user-grants when the profile is absent. It extends grok's built-in workspace
+# profile (writes inside the working directory) and denies secrets. The key names are
+# docs-only (DESIGN section 20): check the effective profile with `grok inspect --json` in a
+# conductor worktree.
+[profiles.{{name}}]
+extends = "workspace"
+deny = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*"]

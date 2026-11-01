@@ -10,7 +10,7 @@ write nothing.
 Task: $ARGUMENTS
 
 Use the conductor skill (`conductor:conductor`): its routing table, lanes, Opus pool order,
-effort map and exact Phase 1 commands are the source. If it is not loaded, read
+effort map and exact commands (`cx-run`, `cx-job` and the remaining hand steps) are the source. If it is not loaded, read
 `${CLAUDE_PLUGIN_ROOT}/skills/conductor/SKILL.md`. You may Read, Glob or Grep the current
 repository to size the task (how many files, whether tests exist, whether
 `.cx/routes.json` defines the commands), but do not open more than you need.
@@ -30,14 +30,17 @@ route each part), then answer with these headings:
    the pool order in force (the session-start policy states it; the default is agy, then
    Copilot, then Claude's own subagents) and the effort map: high is the offload default,
    xhigh and max stay with Claude, low does not spend Opus.
-3. **Commands**: the exact Phase 1 commands from the skill's recipe, with their environment
-   prefixes (Step 1 worktree and contract, the Step 2 lane, Step 3 commit and gate), filled
-   in with this task's id and the repo's commands from `.cx/routes.json` when it exists. If
-   this session runs in Git Bash (the Windows desktop app; the session-start policy then says
-   `CONDUCTOR POLICY, WINDOWS`), give the `cx-wsl` form instead: single commands as
-   `cx-wsl TOOL ARGS`, shell steps written to a file and run as `cx-wsl bash -s < FILE`, with
-   WSL paths only; for the Claude lane, the worktree's `\\wsl.localhost\<distro>\…` path for
-   file tools and `cx-wsl bash -c 'cd "<WSL path>" && …'` for commands.
+3. **Commands**: the exact commands from the skill's recipe: the contract file (Step 1), the
+   `cx-run` line for the lane (`--background` plus one `cx-job wait` for a write run; `--mode
+   read` or `--mode review` for read-only lanes; `--exec claude` then `--finish` for the
+   Claude lane) and Step 3's commit and gate, filled in with this task's id and the repo's
+   commands from `.cx/routes.json` when it exists. If this session runs in Git Bash (the
+   Windows desktop app; the session-start policy then says `CONDUCTOR POLICY, WINDOWS`),
+   `cx-run` and `cx-job` are the same (they forward themselves); hand steps are written to a
+   file and run as `cx-wsl bash -s < FILE`, with WSL paths only; for the Claude lane, the
+   dispatch's `host_path` for file tools and `cx-wsl bash -c 'cd "<WSL path>" && …'` for
+   commands. `cx-run --dry-run` or `--explain` shows the plan without running anything, but
+   you only describe it here.
 4. **Fallback**: the next lane if this one is drained, refused or fails its gate, and what
    to reset before failing over.
 5. **Gate**: what Claude checks before accepting the result (tests rerun on a clean

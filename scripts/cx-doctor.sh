@@ -295,7 +295,7 @@ session_lines() {
   local id="$1" sec="$2" ep="${CLAUDE_CODE_ENTRYPOINT:-}" dv="${CLAUDE_CODE_DESKTOP_APP_VERSION:-}" bits
   bits="entrypoint ${ep:-unset}${dv:+, desktop app $dv}"
   case "$CX_SESSION" in
-    bridge) chk info "$id" "$sec" "session bridge ($bits): a Remote Control child, such as a Work locally project thread; this machine's settings, hooks and plugins apply. Phase 1 has no shared pool slots: run agy jobs one at a time across every thread and session on this computer" ;;
+    bridge) chk info "$id" "$sec" "session bridge ($bits): a Remote Control child, such as a Work locally project thread; this machine's settings, hooks and plugins apply. the pool slots are shared by every thread and session on this computer (cap_agy, cap_copilot, cap_grok; agy launches one at a time)" ;;
     byoc) chk info "$id" "$sec" "session byoc ($bits): option exec_host=local treats this runner as this machine" ;;
     *) chk info "$id" "$sec" "session local ($bits)" ;;
   esac
@@ -986,6 +986,32 @@ d8_d12() {
   fi
 }
 
+# D29 (section 15.6, free): every executor run starts its CLI with the worker shims first on
+# PATH; a CLI that re-execs itself (or a helper) by name would hit a shim (exit 126, "blocked:
+# CX_WORKER") inside every cx-run. Only for a CLI whose own --version probe above succeeded.
+d29() {
+  local n b v sd="$CX_ROOT/worker-shims" rc ok=""
+  [ -d "$sd" ] || return 0
+  for n in copilot grok agy; do
+    b="B_$n"; b="${!b}"; v="V_$n"; v="${!v}"
+    [ -n "$b" ] && [ -n "$v" ] || continue
+    case "$n" in
+      copilot) probe "$n-shimmed" 15 env PATH="$sd:$PATH" CX_WORKER=1 COPILOT_AUTO_UPDATE=false NO_COLOR=1 "$b" --version ;;
+      grok) probe "$n-shimmed" 15 "${GROK_ENV[@]}" PATH="$sd:$PATH" CX_WORKER=1 "$b" --version ;;
+      agy) probe "$n-shimmed" 10 "${AGY_ENV[@]}" PATH="$sd:$PATH" CX_WORKER=1 "$b" --version ;;
+    esac
+    rc=$?
+    if [ "$rc" = 126 ] || grep -qs 'blocked: CX_WORKER' "$T/$n-shimmed.out" "$T/$n-shimmed.err"; then
+      chk warn D29 "$S_CLI" "$n --version fails with the worker shims first on PATH (exit $rc, blocked: CX_WORKER): it starts a tool by name, so every cx-run of its lane would fail inside the worker" "report it (DESIGN section 20 item 20); meanwhile use the next pool in opus_lane_order"
+    elif [ "$rc" = 0 ]; then
+      ok="${ok:+$ok, }$n"
+    else
+      chk warn D29 "$S_CLI" "$n --version exited $rc with the worker shims first on PATH (it succeeded without them)"
+    fi
+  done
+  [ -z "$ok" ] || chk ok D29 "$S_CLI" "$ok start with the worker shims first on PATH (the cx-run worker environment)"
+}
+
 # ---------------------------------------------------------------- logins (D15-D19)
 # shellcheck disable=SC2034  # the L_* results are read indirectly by write_record
 L_claude="" L_copilot="" L_grok="" L_agy="" L_gh=""
@@ -1524,6 +1550,7 @@ if [ "$PY" = 1 ]; then
 fi
 
 d8_d12 full
+d29
 
 # D31 Work locally readiness, D32 workflows and ultracode (info only; D32 describes the host
 # where Claude Code runs, so a forwarded call leaves it to W11).
@@ -1532,7 +1559,8 @@ if [ "$PY" = 1 ]; then
   [ "${CX_CALLER_CWD_UNMAPPED:-}" = 1 ] && top=""
   np="$(nproc 2>/dev/null </dev/null)" || np=""
   cx_py doctor-session --config-dir "$CFG" --repo "$top" --root "${CX_DETECT_ROOT:-}" --host "$CX_HOST" \
-    --claude-version "$V_claude" --nproc "$np" --forwarded "$FORWARDED" >> "$CHECKS" 2>/dev/null
+    --claude-version "$V_claude" --nproc "$np" --forwarded "$FORWARDED" \
+    --caps "cap_agy=$(cx_opt cap_agy) cap_copilot=$(cx_opt cap_copilot) cap_grok=$(cx_opt cap_grok)" >> "$CHECKS" 2>/dev/null
 fi
 
 # D13, D20-D26 (siblings; computed above)

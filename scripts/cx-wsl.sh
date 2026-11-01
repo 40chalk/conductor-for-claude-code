@@ -32,12 +32,27 @@
 # Arguments pass byte for byte: paths in them must be WSL paths (/home/...). For bash -s with a
 # step on stdin (not a terminal), a CR before each LF is stripped, with a cx-wsl: note.
 #
+# Pool slots (DESIGN section 15.3): an executor call first takes a slot of its pool, shared by
+# every session, Work locally thread and forwarded call on this computer, and holds it until
+# the tool and every child that inherited it have exited (a ghcp-job or agy-job started this
+# way keeps it for the whole job): copilot (cap_copilot) for ghcp-delegate, ghcp-handoff,
+# ghcp-ci-debug and ghcp-job start; agy (cap_agy, plus the agy launch lock for the whole call)
+# for agy-delegate, agy-job start and agy runs; grok (cap_grok) for grok runs. Free forms take
+# none: --help, --version, ghcp-delegate/agy-delegate --print-command, the other ghcp-job and
+# agy-job subcommands, ghcp-models, ghcp-cloud (the agent runs on GitHub), agy models and the
+# zero-quota agy -p /usage|/model|/config probes, grok -v|models|usage|inspect|login|logout. gh,
+# git and bash take none (a shell step takes its own). A busy pool prints one note and waits up
+# to CX_SLOT_WAIT_SECS seconds (default 600; 0 = no wait). An agy call while agy dispatch is
+# paused ($CX_HOME/state/agy-paused, after a wrong_tree result) exits 28 once it has its slot.
+#
 # Exit codes: the tool's own status (0-255), its stdout and stderr unchanged, no CX_* line
 # added. cx-wsl's own failures: 1 usage error (no TOOL, a tool outside the list); 2 FAILED (the
-# bash -s step could not be buffered); 13 CLI_MISSING (no host record, or the tool is not
-# recorded or not executable: run cx-doctor first, see the note); and from Git Bash forwarding
-# 40 FORWARD_FAILED, 41 RUNTIME_MISSING, 42 PATH_UNMAPPABLE (the cwd has no WSL path) and 43
-# HOST_UNSUPPORTED (also in a cloud session, before anything runs).
+# bash -s step could not be buffered, or the lock directory is unusable); 13 CLI_MISSING (no
+# host record, or the tool is not recorded or not executable: run cx-doctor first, see the
+# note); 28 NO_CAPACITY (no slot of the tool's pool within CX_SLOT_WAIT_SECS, or its cap is 0:
+# use the next pool; agy paused); and from Git Bash forwarding 40 FORWARD_FAILED, 41 RUNTIME_MISSING, 42
+# PATH_UNMAPPABLE (the cwd has no WSL path) and 43 HOST_UNSUPPORTED (also in a cloud session,
+# before anything runs).
 
 set -uo pipefail
 unset CDPATH
@@ -78,6 +93,51 @@ COPILOT_BIN="${RES[2]-}"
 if [ -z "$ABS" ] || [ -z "$NEWPATH" ] || [ ! -x "$ABS" ]; then
   cx_note "$TOOL is not recorded in $REC, or not executable there: install it in WSL, then run cx-doctor from this session, /conductor:doctor in a Claude Code session in WSL, or ~/.conductor/runtime/current/bin/cx-doctor in a WSL terminal (create that copy once with /conductor:doctor --install-runtime)"
   cx_signal CLI_MISSING 13 "$TOOL not found in the host record"
+fi
+
+# The pool a call of TOOL with these arguments takes a slot of (header; DESIGN section 15.3), or
+# nothing for a free form.
+slot_pool() {
+  local t="$1" a prev=""
+  shift
+  case "${1-}" in -h|--help|--version) return 0 ;; esac
+  case "$t" in
+    ghcp-delegate|agy-delegate)
+      for a in "$@"; do [ "$a" = --print-command ] && return 0; done
+      [ "$t" = ghcp-delegate ] && echo copilot || echo agy ;;
+    ghcp-handoff|ghcp-ci-debug) echo copilot ;;
+    ghcp-job) [ "${1-}" = start ] && echo copilot ;;
+    agy-job) [ "${1-}" = start ] && echo agy ;;
+    agy)
+      case "${1-}" in -v|-V|help|models) return 0 ;; esac
+      for a in "$@"; do
+        [ "$a" = --new-project ] && { echo agy; return 0; }
+      done
+      for a in "$@"; do
+        if [ "$prev" = -p ]; then
+          case "$a" in /usage|/model|/config) ;; *) echo agy; return 0 ;; esac
+        fi
+        prev="$a"
+      done
+      for a in "$@"; do [ "$a" = -p ] && return 0; done
+      echo agy ;;
+    grok)
+      case "${1-}" in -v|help|version|models|usage|inspect|login|logout) return 0 ;; esac
+      echo grok ;;
+  esac
+  return 0
+}
+POOL="$(slot_pool "$TOOL" "$@")"
+if [ -n "$POOL" ]; then
+  # shellcheck source=lib/locks.sh
+  . "$HERE/lib/locks.sh"
+  cx_slot_take "$POOL" || exit $?
+  # agy dispatch stops after a wrong_tree result (cx-run's agy lane wrote the pause): checked
+  # after the slot wait, so a call that queued before the pause never starts agy.
+  if [ "$POOL" = agy ] && [ -e "${CX_HOME:-$HOME/.conductor}/state/agy-paused" ]; then
+    cx_note "agy dispatch is paused (${CX_HOME:-$HOME/.conductor}/state/agy-paused: a wrong_tree result); run cx-job unpause agy once the user has checked the other trees"
+    cx_signal NO_CAPACITY 28 "agy dispatch is paused"
+  fi
 fi
 
 case "$TOOL" in

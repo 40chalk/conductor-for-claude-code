@@ -13,8 +13,12 @@
 # commands) into runtime/.tmp.<pid>, strips a CR before every LF and refuses a file that still
 # holds a CR, sets the exec bits, writes RUNTIME_STAMP (version, installed_at, source, sha256
 # over the sorted relative paths and contents), then, holding flock on runtime/.install.lock,
-# swaps it into runtime/<version> (unless the same sha256 is already installed) and points
-# runtime/current at it. Emits CX_RUNTIME {version, path, changed, stripped_cr}.
+# swaps it into runtime/<version> (unless the same sha256 is already installed: then only the
+# stamp's mtime is refreshed, so cx_runtime_ensure stops reinstalling after an mtime-only change)
+# and points runtime/current at it. Changed content is never swapped in while a cx-run or a
+# cx-job runner still uses runtime/<version> (cx_runtime_users): the update waits for the next
+# install after they end, and the running ones never see files change under them. Emits
+# CX_RUNTIME {version, path, changed, stripped_cr, deferred}.
 #
 # Exit codes: 0 installed or already current; 1 usage error (bad --from, no version);
 # 2 FAILED (copy failed, flock missing or the lock timed out after 60 s); 44 CRLF_CORRUPT.
@@ -124,7 +128,7 @@ main() {
     printf 'sha256=%s\n' "$sha"
   } > "$tmp/RUNTIME_STAMP"
 
-  local changed=false cur=""
+  local changed=false cur="" deferred=0
   exec 9>> "$rt/.install.lock" || { rm -rf "$tmp"; cx_signal FAILED 2 "cannot open $rt/.install.lock"; }
   if ! flock -w 60 9; then
     rm -rf "$tmp"
@@ -135,10 +139,14 @@ main() {
   fi
   if [ -n "$cur" ] && [ "$cur" = "$sha" ]; then
     rm -rf "$tmp"
+    touch -- "$rt/$version/RUNTIME_STAMP" 2>/dev/null
     if [ ! -L "$rt/current" ]; then
       ln -sfn "$version" "$rt/current.tmp.$$" && mv -T "$rt/current.tmp.$$" "$rt/current"
     fi
+  elif [ -n "$cur" ] && deferred="$(cx_runtime_users "$rt/$version")" && [ "${deferred:-0}" -gt 0 ]; then
+    rm -rf "$tmp"
   else
+    deferred=0
     if [ -e "$rt/$version" ]; then
       mv -T "$rt/$version" "$rt/.old.$$" || { rm -rf "$tmp"; cx_signal FAILED 2 "cannot move the old runtime aside"; }
     fi
@@ -156,10 +164,12 @@ main() {
   if [ "$changed" = true ]; then
     printf 'conductor runtime %s installed at %s%s (%s files had CRLF line endings)\n' "$version" "$rt/$version" \
       "$([ "$bootstrap" = 1 ] && printf ' from Git Bash')" "$n_cr"
+  elif [ "$deferred" -gt 0 ]; then
+    printf 'conductor runtime %s at %s: the update waits, %s cx-run or cx-job run(s) still use it\n' "$version" "$rt/$version" "$deferred"
   else
     printf 'conductor runtime %s already current at %s\n' "$version" "$rt/$version"
   fi
-  cx_emit RUNTIME version "$version" path "$rt/$version" changed:bool "$changed" stripped_cr:int "$n_cr"
+  cx_emit RUNTIME version "$version" path "$rt/$version" changed:bool "$changed" stripped_cr:int "$n_cr" deferred:int "$deferred"
   exit 0
 }
 

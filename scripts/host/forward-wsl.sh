@@ -8,8 +8,8 @@
 #
 # CMD is one of cx-doctor cx-init cx-wsl cx-run cx-job cx-fanout cx-gate. Every cx-* script
 # execs this on Git Bash (forwarding step 0). The arguments cross as a NUL-separated file, never
-# re-quoted or path-converted; only CX_WORKER, CX_DEBUG, NO_COLOR and the conductor's
-# CLAUDE_PLUGIN_OPTION_* variables cross (nothing else: no PATH, HOME, tokens); the cwd crosses
+# re-quoted or path-converted; only CX_WORKER, CX_DEBUG, NO_COLOR, CX_SLOT_WAIT_SECS and the
+# conductor's CLAUDE_PLUGIN_OPTION_* variables cross (nothing else: no PATH, HOME, tokens); the cwd crosses
 # as its long Windows form (cygpath -w -l) and is mapped on the WSL side. wsl.exe runs
 #   wsl.exe [-d <distro>] --cd ~ --exec /bin/bash --noprofile --norc \
 #     .conductor/runtime/<version>/scripts/host/wsl-entry.sh
@@ -122,7 +122,7 @@ write_transport() {
     printf '%s\0' "${ARGS[@]}" > "$FWD/argv" || return 1
   fi
   : > "$FWD/env" || return 1
-  for n in CX_WORKER CX_DEBUG NO_COLOR "${OPT_VARS[@]}"; do
+  for n in CX_WORKER CX_DEBUG NO_COLOR CX_SLOT_WAIT_SECS "${OPT_VARS[@]}"; do
     if [ -n "${!n+x}" ]; then
       printf '%s=%s\0' "$n" "${!n}" >> "$FWD/env" || return 1
     fi

@@ -285,3 +285,232 @@ departs from the addendum.
 66. **Forwarded report note.** One header line ("Fixes run inside WSL, in a WSL terminal …")
     rather than a prefix on every fix; D13's fix also gets an explicit `in a WSL terminal:` when
     forwarded, and TOKEN_FIX always starts with it.
+
+## Phase 2, build item 1: pool slots (`scripts/lib/locks.sh`)
+
+Folded into DESIGN §7.7, §15.3 and §12.2 already; kept here as the record of what the spec left
+open.
+
+67. **Free forms take no slot.** §15.3 says `cx-wsl` takes the slot "for `ghcp-*`, `agy*` and
+    `grok`". Taken literally, `cx-wsl ghcp-job status` would wait behind running jobs (and the
+    job wait loop would stall), so only executor calls take one: `ghcp-delegate`,
+    `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-job start`, `agy-delegate`, `agy-job start`, agy and
+    grok runs. `ghcp-models` (a free probe) and `ghcp-cloud` (the agent runs on GitHub, no local
+    Copilot process) take none; nor do `--help`/`--version`, `--print-command`, the other job
+    subcommands, `agy models` and its zero-quota `-p /usage|/model|/config` probes, and
+    `grok models|usage|inspect|login|logout`. An agy registration (`--new-project`) is a launch.
+68. **Hand-dispatched agy holds the launch lock for the whole call.** Only `cx-run`'s raw lane
+    sees agy's `init` event; the skill's steps and `cx-wsl agy*` cannot, and their `trees`
+    snapshots (and the deleted `running` mark) assume no other agy launch during the run. So
+    those runs never overlap any other agy launch, while `cap_agy` counts them; `cx-run`'s raw
+    lanes (build item 2) are the ones that run up to `cap_agy` at once.
+69. **Phase 1's whole-run lock is taken shared.** §15.3 said `cx_lock_acquire agy` "also takes
+    that file (`flock -w` on it before the slot)"; exclusive would make `cap_agy` 1, so it is
+    `flock -s`: a step of an older skill copy (which a running session may still hold) excludes
+    every slot holder and vice versa, and slot holders coexist. Same wait budget.
+70. **The skill's slot line** sources `locks.sh` next to `cx-wsl` (`command -v cx-wsl`): the
+    plugin's `bin/` in a WSL session, `$RT/bin` inside `cx-wsl bash` steps. A `vars.sh` function
+    was rejected because Step 2e's readers have no `vars.sh`. It uses `source`, not `.`, so the
+    P43 D25 checker does not mistake it for the `vars.sh` line (no allow rule covers it, like
+    the Phase 1 `flock` line). The wait is `CX_SLOT_WAIT_SECS` (600 s), not Phase 1's 80 minutes:
+    a full pool falls to the next pool, as everywhere in Phase 2.
+71. **`CX_SLOT_WAIT_SECS` crosses the forwarder** (§7.3 step 5 allowlist), so a forwarded call
+    waits like a local one and A25's forwarded overflow can be tested.
+72. **Nesting through `CX_SLOT_FDS`.** A process that inherited a lock descriptor (verified in
+    `/proc/<pid>/fd`) reuses it: `cx-job`'s runner, `cx-run` inside it, or a step holding a slot
+    that calls `cx-wsl`, never wait for a second slot of their own pool.
+73. **`queued` marker.** `cx_lock_acquire` writes `$CX_JOB_DIR/queued` (the pool name) while it
+    waits, for `cx-job status` → `queued` (build item 2).
+74. **Options stay out of the caller's environment.** `cx_lock_cap` loads the options in a
+    subshell, so a skill step that sources the library does not export `CLAUDE_PLUGIN_OPTION_*`
+    to the sibling wrappers it then runs (both siblings read option variables of their own).
+75. **Subagent guard text.** The Phase 2 draft (`subagent-context-p2`) dropped Phase 1's `cx-*`
+    sentence and the Git Bash worktree forms (file tools on the `\\wsl.localhost` path, commands
+    via `cx-wsl bash -c`, never `~`), which P55 and the Windows lane need; the shipped block keeps
+    both and drops "the main session verifies your work" to stay under 800 characters (788).
+76. **Copilot and Grok hand steps in WSL** (§12.2 steps 2b, 2c) take no slot in item 1: they move
+    to `cx-run` in item 2; from Git Bash their direct `cx-wsl` forms take one already.
+
+## Phase 2, build item 2 (part): adapters, normalizer, ledger, worker environment
+
+The interface is written into DESIGN §15.2 ("The built interface"); these are the choices the
+spec left open.
+
+77. **Adapter signals.** §4.1 puts the adapters in the one exit table, and a standalone adapter
+    prints its `CX_SIGNAL` like any command (`cmd: adapter`, added to the constant command
+    list). `cx-run` sets `CX_SIGNAL_OWNER`, and the adapter then exits with the code and its note
+    only, so a run still has exactly one signal.
+78. **`run` exits 0 whenever the executor ran**; the executor's own status is in `rc` and only
+    `parse` classifies it. Preflight refusals (13, 26, 28, 11, 14), a busy pool (28) and a
+    cancellation (130) are the adapter's own exits.
+79. **Keeper subshell.** The executor is started under `setsid timeout` by a subshell whose stderr
+    is `/dev/null` and which waits for it: killing the executor's session would otherwise make the
+    adapter's bash print a "Killed" job notice into its stderr (the caller's protocol stream).
+    The session id is still the executor's (`<lane>.sid`, `$CX_JOB_DIR/sids`).
+80. **Cancellation while queued.** A TERM/INT/HUP before the executor started (waiting for a slot
+    or the launch lock, registering agy) exits 130 at once, writes `rc` 130 and removes
+    `$CX_JOB_DIR/queued` (locks.sh has no trap of its own).
+81. **Only green probes are cached.** A refused preflight (wrong version, logged out, missing
+    model, paused agy) is probed again next time, so a fix the user just made takes effect at
+    once; the agy pause also keys the cache entry.
+82. **Running marks for every write lane.** `run` writes `$OUT/running` (the worktree and its
+    `pwd -P` form) for the run of any write-mode lane, not only agy, and removes it at the end;
+    the claude dispatch keeps it for `cx-run --finish`. The agy snapshots skip every marked tree.
+83. **Snapshot comparison.** Both agy snapshots cover every other worktree (no mark filtering at
+    snapshot time); `normalize.py trees-diff` compares only trees present in both snapshots and
+    drops every tree named in a mark read before OR after the run. A worktree added or removed
+    during the run (another task's step 1, a gate checkout) and a mark that disappears mid-run
+    are therefore no false alarm. Writes into the main checkout during a run still are (as in
+    Phase 1).
+84. **agy raw details.** No `init` event within 120 s (`CX_AGY_INIT_SECS`, a test knob) kills
+    the session and classifies 2 (a headless hang, #318); an `init` without a model, or a
+    result with no `init` at all, is 21 (unverified served model). Registration failure stops
+    the run (2) before launch. `/usage` runs before and after (the §15.2 row) from
+    `$CX_HOME/probe`, under the launch lock; with `agy_claude_floor_pct` > 0 a bucket below it is
+    28. `$CX_HOME/state/agy-paused` holds `{id, at, worktree, changed}`.
+85. **Classification.** §15.1's order, with `missing` (13, a wrapper's own exit) after
+    `sandbox`. Denials: grok and agy fail on any denial (G5: "permission required:" and
+    `denied_actions` mean the task was not done as asked); Copilot uses ghcp's own rule (exit 15
+    for a denied write) plus the general "any denial with no answer and no diff"; claude fails on
+    a denied write. Text classes (quota, auth, sandbox, model) are read from stderr and error
+    fields only, and only when the executor failed or left no answer (ghcp's rule).
+86. **Served-model rules as built.** Copilot: every `models_used[].model` equals the request
+    (an empty list is a note, not a mismatch); Fusion: `GHCP_FALLBACK` is 21 and the served
+    model is `fusion.final_model`. grok: the `modelUsage` keys must be exactly the model. claude
+    (assumption): the requested model must be among the `modelUsage` keys, and any other key that
+    is not a Haiku helper is a mismatch.
+87. **Worker environment additions.** Every `CLAUDE_PLUGIN_OPTION_*` is unset for the child
+    (both siblings read option variables of their own, and a job runner may carry the
+    conductor's); Copilot's `COPILOT_HOME` is set to the recorded value rather than only unset;
+    the Copilot token is read at run time and never written into `copilot.env`. The claude
+    worker's unset list is one array (`CLAUDE_WORKER_SCRUB`) plus every `CLAUDE_CODE_REMOTE*` and
+    `CLAUDE_CODE_SESSION_*` present; P62 allow-lists that array line (it unsets, never reads).
+88. **No pool slot for the claude dispatch and the cloud lane**: no local executor process runs
+    (like `cx-wsl ghcp-cloud`). The cloud lane renders the task with `normalize.py render-cloud`
+    and records task and PR from the URLs in gh's output (shape [docs-only]); `fetch` gives the
+    PR head for the gate.
+89. **Python stays in `scripts/lib/*.py`.** The adapters call `normalize.py` subcommands
+    (`obj`, `json-list`, `verdict`, `meta-env`, `json-extract`, `worker-settings`, `uuid`) instead
+    of heredocs. `normalize.py` loads `cxlib.py` by file path only for the probe, with bytecode
+    writing off: a `__pycache__` in the plugin made `install-runtime.sh` refuse the copy (a
+    `.pyc` holds CR bytes), which broke every forwarded call in the suite.
+90. **The doctor's month-to-date ledger sum** also reads the Phase 2 lines' `cost.ai_credits`.
+91. **Fixtures.** `tests/fixtures/real/ghcp/` holds the real ghcp 0.1.0 wrapper's output over
+    ghcp's real Copilot recordings (a derivation, labelled in the fixtures README), its
+    `--print-command` captures and `--help`; `real/antigravity/agy-delegate-help.txt` and
+    `real/claude/help.txt` are real `--help` captures. agy's help and stream-json remain
+    synthetic (`tests/fixtures/agy-help.synthetic.txt`, the agy stub's events).
+
+## Phase 2, build items 2 and 3: `cx-run`, `cx-job`, `cx-init --user-grants`
+
+Folded into DESIGN §12.2, §15.1 ("As built"), §15.5, §15.7 and §15.8; these are the choices the
+spec left open.
+
+92. **No conductor commit in Phase 2.** §15.1's flow ends in "post-checks", and §16.2's commit
+    is a Phase 3 step (with `cx-gate`). `cx-run` leaves the change uncommitted, reports the
+    diff (a scratch index, so the worktree's index is untouched) and writes `$OUT/vars.sh` with
+    the Phase 1 variables, so the skill's Step 3 (commit and gate) and Step 5 (GitHub) keep
+    working unchanged; P43 still runs Step 3 in scratch repos.
+93. **Running marks after the run.** A write run with a diff re-marks its worktree `running`
+    until Step 3 removes the mark, so the conductor's own commit in that tree is never a false
+    `WRONG_TREE` for a concurrent agy run; agy tasks are left unmarked (their trees must stay in
+    later agy snapshots, Phase 1's rule).
+94. **`--exec auto` waits, then takes claude.** "has a slot" is a non-holding probe
+    (`cx_lock_try` and release); when every eligible executor lane is full it polls them for
+    `CX_SLOT_WAIT_SECS`, then takes the next lane in the order, which is always `claude`
+    (appended to `opus_lane_order`), so auto itself never exits 28. `--no-wait` skips the wait.
+    Effort low and max go to claude at once (§6.3).
+95. **Read and review modes.** Read runs take the question as the prompt on a gate checkout of
+    `--base`; review runs need `--branch` or `--diff` (§17.2's flags, in scope here) and put the
+    diff into the checkout's `.conductor/change.diff` (relative in the prompt, so grok, agy and
+    Copilot all read it without extra `--add-dir` grants). Finding parsing (`review.json`) and
+    the author-based family default stay Phase 4; `--family` defaults to gemini.
+96. **Stopped runs get a result.** `checks.json` `stop: {status, reason}` makes `normalize.py
+    parse` classify a run that never reached its executor (25 setup, the adapter's 28/13/26/11/14,
+    a cancel during setup), so `CX_RESULT` and the ledger show `env_failed`, `no_capacity`, …;
+    refusals before anything is created (the free preflight, usage errors) only print the note
+    and the signal.
+97. **`--finish`.** Only for tasks `cx-run` started (`$OUT/cx-run.json`); a Phase 1 hand run
+    finishes with Step 3. For the claude dispatch it classifies the subagent's work
+    (`finished: true`) and writes the one ledger line (none for `dispatched`). For the cloud lane
+    it is the gate: fetch `pull/N/head`, a gate checkout, setup and the task's commands there
+    (20 / 25), which makes `cx-run` a raiser of 20 (§4.1 updated).
+98. **The runtime copy is refreshed when stale.** `cx_runtime_ensure` reinstalls when a plugin
+    file is newer than `RUNTIME_STAMP`, not only when the stamp is missing, so a folder
+    marketplace edited in place (no version bump) does not keep running old adapters.
+99. **Job runner hygiene.** The runner closes every inherited descriptor above 2 (the
+    simulated forwarder's stderr relay kept the forwarded `cx-job start` waiting for the whole
+    job) and unsets `CX_SLOT_FDS` (a job takes its own slot); its argv lives in `$jd/argv`, not
+    on its command line. A wait interrupted by a trapped signal re-collects the child's real
+    status (a TERM during `cx-run`'s wait once turned a clean 130 into "exit 143").
+100. **Pid-reuse guard for sessions.** `cx-job kill` signals a recorded executor session only
+    while one of its processes carries the job's `CX_JOB_DIR` (the adapters' executors inherit
+    it), as the runner is proven by its start time.
+101. **User grants.** The routes commands come from the repository at `--dir`/cwd (run it per
+    repo; the agy grant list grows); an existing `auto_update` of any value is left alone (with a
+    note when it is not `false`); a dotfile that is a symlink is written through to its target.
+102. **Version 0.2.0.** The bump replaces existing `runtime/0.1.0` copies on first use (forwarded
+    calls need `scripts/cx-run.sh` there); the suite now reads the version from `common.sh`
+    (`$CXV`) instead of pinning 0.1.0 in every check.
+103. **Policy texts.** The inline agy registration left the WSL policy (cx-run registers); P20
+    now asserts `cx-run --background`, `cx-job wait` and `cx-run --mode review` in both texts
+    (2,789 and 2,798 rendered characters of 2,800). The order phrase rendered by `policy.sh`
+    still names the wrappers (`agy (agy-delegate)`), which P21 pins; shortening it to the lane
+    names is a policy.sh change left for later.
+104. **Not built in this step:** the optional item 4 (`agents/cx-runner.md`, `hooks/gate.sh`,
+    `workflows/opus-pools.js`, D33), Phase 3 and 4 pieces (`cx-gate`, the conductor commit,
+    `--mode ci`, `--pr`, `review.json`), and forwarding of `CLAUDE_CODE_SESSION_ID` /
+    `CLAUDE_EFFORT` (the forwarder's allowlist keeps every `CLAUDE_CODE_*` out, P50), so ledger
+    lines of forwarded runs carry `claude_session: null`.
+105. **Running mark from creation.** `cx-run` marks a task worktree `running` as soon as it creates
+    it (§15.1 had the mark only during the adapter's run): a sibling task's `setup` (which may
+    run for minutes) and executor wrote into an unmarked tree between another agy run's two
+    snapshots and gave that run a false `wrong_tree` 22, pausing agy dispatch everywhere. A run
+    that stops before its executor drops the mark; a reused worktree that was already marked
+    keeps it.
+106. **Late cancellation signals.** A `cx-job kill` delivers several TERMs to the adapter
+    (`pkill -s` on the runner's session, then one forward from `cx-run` per TERM it gets from
+    `pkill` and `timeout`). The adapter used to reset its trap before writing `rc`, so a late
+    TERM could end it with 143 and no `rc`, and the job reported `FAILED` ("stopped before its
+    executor ran"). The trap now stays until `rc` and run.json are written; `cx-run` records
+    `cancelled` in `checks.json` and treats an adapter ended by a cancellation's signal as
+    cancelled.
+107. **`claude.sh argv --dry-run` without `--out`** showed `--settings /cx-worker.json`; it now
+    shows the out directory a run of that id would use (`$CX_HOME/out/<id>`).
+108. **Tests (§15.8).** Stubs `agy` and `ghcp-delegate` take `STUB_EVENTS` (start/end lines for
+    the suite's overlap count). The suite's background sections start as soon as their inputs
+    exist (static at once; init and doctor after the options section, which swaps the shared
+    settings file; the Phase 2 sections next to them), shellcheck runs as three processes, and
+    each background section prints its end time, so the whole run stays under about two
+    minutes on four cores with A25's twelve concurrent jobs.
+109. **agy's init event read once.** The raw lane's wait for the init event read
+    `agy.events` twice (sed for the model, then `grep -q '^init'`); when the watcher appended the
+    line between the two reads, the model came out empty and a correct run was killed as a
+    false 21 `MODEL_MISMATCH` (seen once under load in A4). One `grep -m 1` read now gives both.
+
+## Phase 2 final review (2026-11-01, 27 findings): choices where a finding offered alternatives
+
+1. **The hand steps' executor calls run through `cx-wsl`, also in WSL** (§12.2, §15.3). The
+   review offered a slot line (`source …/locks.sh && cx_slot_take`) or `cx-run --mode read`
+   for the commit-message Grok call and `ghcp-ci-debug`. A read run forces grok's JSON schema
+   (wrong for a commit message), and a slot line needs `source` and a function call, which no
+   narrow allow rule covers. `cx-wsl grok …` and `cx-wsl ghcp-ci-debug …` take the slot, add the
+   per-tool prefix and match one narrow rule each (`Bash(cx-wsl grok:*)`, `Bash(cx-wsl
+   ghcp-ci-debug:*)`), the same in a WSL session and inside a Windows `cx-wsl bash -s` step.
+   D25's host-side warning for `Bash(cx-wsl:*)` now says a WSL session needs only those rules.
+2. **D25 lists exactly the skill's forms.** The Windows list drops `cx-wsl gh repo view` and
+   `cx-wsl git push` (the skill runs those only inside `cx-wsl bash -s` steps, which prompt);
+   the host list drops bare `git push` and `gh repo view` (no skill line runs them). P43 checks
+   both ways.
+3. **Runtime copy updates wait instead of going content-addressed** (§7.5). The review suggested
+   `runtime/<version>-<sha12>` directories; the build keeps one `runtime/<version>` and refuses
+   to swap changed content into it while `cx_runtime_users` counts a live `cx-run` (its held
+   `.run.lock` names the copy in an `rt=` line) or a live job runner (its meta names it). The
+   next call after they end installs the update; meanwhile `cx_runtime_ensure` keeps using the
+   consistent old copy and says so. Same layout, no pruning logic, the same guarantee.
+4. **The policy labels** are `agy (raw)`, `Copilot` and `own subagents`: no label names a
+   wrapper to call (§10.2).
+5. **`CX_KILL_GRACE_SECS`** (default 10) is the adapter's KILL grace after a cancellation; the
+   suite sets 2. Not an option and not forwarded (a forwarded run uses the default).
+6. **agy-delegate prompts starting with `-`** go on stdin (its documented `-` form) instead of
+   after `--`, which agy-delegate's help does not document.

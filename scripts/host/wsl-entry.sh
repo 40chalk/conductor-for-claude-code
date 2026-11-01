@@ -119,7 +119,7 @@ KEEP+=("PATH=$NP")
 KEEP+=("COPILOT_AUTO_UPDATE=false" "GROK_DISABLE_AUTOUPDATER=1" "AGY_CLI_DISABLE_AUTO_UPDATE=true")
 
 # The allow-listed variables from the transport, checked again.
-declare -A ALLOW=([CX_WORKER]=1 [CX_DEBUG]=1 [NO_COLOR]=1)
+declare -A ALLOW=([CX_WORKER]=1 [CX_DEBUG]=1 [NO_COLOR]=1 [CX_SLOT_WAIT_SECS]=1)
 for n in "${CX_OPT_NAMES[@]}"; do ALLOW["CLAUDE_PLUGIN_OPTION_${n^^}"]=1; done
 while IFS= read -r -d '' rec; do
   name="${rec%%=*}"

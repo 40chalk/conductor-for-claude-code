@@ -1,0 +1,26 @@
+# SYNTHETIC - NOT a capture. `agy --help` (agy 1.4.12) could not be captured in the build container
+# (the antigravity.google installer is blocked there). This file lists only the flags that DESIGN.md
+# documents for agy [docs-only: section 1.4, section 20 item 4] and that the antigravity plugin 0.30.2
+# passes (scripts/agy-delegate.sh, read 2026-11-01). A1 checks the agy adapter's argv against it.
+# Replace it with the real capture: agy --help > tests/fixtures/real/agy/help.txt (free, no model turn).
+Usage: agy [OPTIONS] [COMMAND]
+
+Commands:
+  models                        List the models available to this account
+
+Options:
+  -p, --print <PROMPT>          Run one prompt headlessly and print the result
+      --model <MODEL>           Model slug or name (see `agy models`)
+      --add-dir <DIR>           Add a workspace directory (repeatable)
+      --print-timeout <DUR>     Print-mode timeout (e.g. 30m)
+      --output-format <FORMAT>  text, json or stream-json
+      --disable-slash-commands  Treat the prompt literally (no slash commands)
+      --new-project             Register the working directory as a new project root
+      --project <DIR>           Use this project root (loads its AGENTS.md)
+      --mode <MODE>             accept-edits, plan or auto
+      --sandbox                 Run terminal commands in the sandbox
+      --dangerously-skip-permissions  Approve every tool permission (never used by the conductor)
+  -c, --continue                Resume the most recent conversation
+      --conversation <ID>       Resume a conversation by id
+  -v, --version                 Print the version
+  -h, --help                    Print help

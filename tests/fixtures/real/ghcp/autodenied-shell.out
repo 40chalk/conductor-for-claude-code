@@ -1,0 +1,2 @@
+`touch probe.txt` — did not run (permission denied).
+`git status` — ran successfully.
