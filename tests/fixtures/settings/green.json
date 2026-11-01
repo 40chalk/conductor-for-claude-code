@@ -1,0 +1,14 @@
+{
+  "enabledPlugins": {
+    "conductor@conductor-for-claude-code": true,
+    "ghcp@ghcp-for-claude-code": true,
+    "antigravity@antigravity-for-claude-code": true
+  },
+  "pluginConfigs": {
+    "ghcp@ghcp-for-claude-code": {"options": {"coding_policy": "off", "delegation_nudge": "off", "usage_log": "~/.ghcp-usage.log"}},
+    "antigravity@antigravity-for-claude-code": {"options": {"coding_policy": "off", "delegation_nudge": "off", "timeout": "30m"}}
+  },
+  "permissions": {
+    "deny": ["Task(antigravity:antigravity-delegate)", "Task(grok-build:grok-delegate)"]
+  }
+}

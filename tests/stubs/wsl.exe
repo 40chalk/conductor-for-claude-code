@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# tests/stubs/wsl.exe (simulated Windows): parses -d/--distribution D, --cd DIR, --exec PROG ARGS...,
+# -l/--list with -v/--verbose or -q/--quiet. Its own messages are UTF-16LE with a BOM and CRLF
+# unless WSL_UTF8=1 (STUB_WSL_IGNORE_UTF8=1 forces UTF-16LE).
+#   STUB_WSL_DISTROS   "*Ubuntu:Running:2,Debian:Stopped:2" (* = default, used without -d; a
+#                      STATE may contain spaces); default "*Ubuntu:Running:2"
+#   STUB_WSL_LIST_V_FILE  raw bytes printed for -l -v (the UTF-16LE fixture)
+#   STUB_WSL_FAIL      nodistro (rc 255) | launch (rc 1 before the child) | crash (runs the child,
+#                      then "instance has terminated" + Error code: Wsl/Service/E_UNEXPECTED, rc 1)
+#   STUB_WSL_HOME, STUB_WSL_MNT, STUB_WSL_PATH, STUB_WSL_DETECT_ROOT, STUB_WSL_EXTRA_ENV
+# The child runs under env -i with HOME USER LOGNAME SHELL TERM LANG WSL_DISTRO_NAME WSL_INTEROP
+# CX_MNT_ROOT CX_DETECT_ROOT PATH, the STUB_WSL_EXTRA_ENV names and each WSLENV name (verbatim;
+# a /flag is an error here). --cd ~ is STUB_WSL_HOME. stdin passes through; exit = the child's.
+# Logs its argv, WSLENV and the env names it passed.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+msg() {  # TEXT: one wsl.exe message on stdout of this function (CRLF; UTF-16LE + BOM unless WSL_UTF8=1)
+  local t="${1//$'\n'/$'\r\n'}"$'\r\n'
+  if [ "${WSL_UTF8:-}" = 1 ] && [ "${STUB_WSL_IGNORE_UTF8:-}" != 1 ]; then
+    printf '%s' "$t"
+  else
+    printf '\xff\xfe'
+    printf '%s' "$t" | iconv -f UTF-8 -t UTF-16LE
+  fi
+}
+argv=("$@")
+D="" CD="" list="" lmode="" exe=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -d|--distribution) [ $# -ge 2 ] || { msg "Invalid command line argument: $1" >&2; exit 1; }; D="$2"; shift 2 ;;
+    --cd) [ $# -ge 2 ] || { msg "Invalid command line argument: --cd" >&2; exit 1; }; CD="$2"; shift 2 ;;
+    -l|--list) list=1; shift ;;
+    -v|--verbose) lmode=v; shift ;;
+    -q|--quiet) lmode=q; shift ;;
+    --exec|-e) exe=1; shift; break ;;
+    *) msg "Invalid command line argument: $1" >&2; exit 1 ;;
+  esac
+done
+distros="${STUB_WSL_DISTROS:-*Ubuntu:Running:2}"
+names=() states=() vers=() def=""
+IFS=, read -r -a _ents <<< "$distros"
+for e in "${_ents[@]}"; do
+  n="${e%%:*}" rest="${e#*:}"
+  st="${rest%:*}" v="${rest##*:}"
+  if [ "${n:0:1}" = "*" ]; then n="${n:1}"; def="$n"; fi
+  names+=("$n"); states+=("$st"); vers+=("$v")
+done
+if [ -n "$list" ]; then
+  stub_log wsl.exe "wslenv=${WSLENV:-}" -- "${argv[@]}"
+  if [ "$lmode" = v ] && [ -n "${STUB_WSL_LIST_V_FILE:-}" ]; then
+    cat "$STUB_WSL_LIST_V_FILE"; exit 0
+  fi
+  out=""
+  [ "$lmode" = v ] && out="  NAME                   STATE           VERSION"
+  for i in "${!names[@]}"; do
+    if [ "$lmode" = v ]; then
+      m=" "; [ "${names[$i]}" = "$def" ] && m="*"
+      out="${out:+$out$'\n'}$(printf '%s %-22s %-15s %s' "$m" "${names[$i]}" "${states[$i]}" "${vers[$i]}")"
+    else
+      out="${out:+$out$'\n'}${names[$i]}"
+    fi
+  done
+  msg "$out"
+  exit 0
+fi
+envnames=()
+if [ "${STUB_WSL_FAIL:-}" = nodistro ]; then
+  stub_log wsl.exe "wslenv=${WSLENV:-}" -- "${argv[@]}"
+  msg "There is no distribution with the supplied name." >&2; exit 255
+fi
+if [ -z "$D" ]; then
+  D="$def"
+  [ -n "$D" ] || { stub_log wsl.exe -- "${argv[@]}"; msg "Windows Subsystem for Linux has no installed distributions." >&2; exit 255; }
+else
+  found=""
+  for n in "${names[@]}"; do [ "${n,,}" = "${D,,}" ] && found="$n"; done
+  [ -n "$found" ] || { stub_log wsl.exe -- "${argv[@]}"; msg "There is no distribution with the supplied name." >&2; exit 255; }
+  D="$found"
+fi
+[ "$exe" = 1 ] && [ $# -gt 0 ] || { stub_log wsl.exe -- "${argv[@]}"; msg "wsl.exe stub: only --exec is supported" >&2; exit 1; }
+envs=(HOME="${STUB_WSL_HOME:?}" USER=me LOGNAME=me SHELL=/bin/bash TERM=dumb LANG=C.UTF-8
+      WSL_DISTRO_NAME="$D" WSL_INTEROP=/run/WSL/1_interop CX_MNT_ROOT="${STUB_WSL_MNT:?}"
+      CX_DETECT_ROOT="${STUB_WSL_DETECT_ROOT-${CX_DETECT_ROOT:-}}" PATH="${STUB_WSL_PATH:?}")
+envnames=(HOME USER LOGNAME SHELL TERM LANG WSL_DISTRO_NAME WSL_INTEROP CX_MNT_ROOT CX_DETECT_ROOT PATH)
+for n in ${STUB_WSL_EXTRA_ENV:-}; do
+  [ -n "${!n+x}" ] && { envs+=("$n=${!n}"); envnames+=("$n"); }
+done
+crossed=""
+if [ -n "${WSLENV:-}" ]; then
+  IFS=: read -r -a _w <<< "$WSLENV"
+  for n in "${_w[@]}"; do
+    case "$n" in */*) msg "wsl.exe stub: WSLENV flags are not supported: $n" >&2; exit 1 ;; esac
+    [ -n "${!n+x}" ] && { envs+=("$n=${!n}"); envnames+=("$n"); crossed="${crossed:+$crossed,}$n"; }
+  done
+fi
+stub_log wsl.exe "distro=$D" "wslenv=${WSLENV:-}" "crossed=$crossed" "env=${envnames[*]}" -- "${argv[@]}"
+if [ "${STUB_WSL_FAIL:-}" = launch ]; then
+  msg "The Windows Subsystem for Linux instance has terminated." >&2; exit 1
+fi
+case "$CD" in
+  "") ;;
+  "~") cd -- "$STUB_WSL_HOME" || exit 1 ;;
+  /*) cd -- "$CD" || { msg "chdir($CD) failed 2" >&2; exit 1; } ;;
+  *)
+    w="${CD//\\//}"
+    if [[ $w =~ ^([A-Za-z]):(/.*)?$ ]]; then
+      cd -- "${STUB_WSL_MNT%/}/${BASH_REMATCH[1],,}${BASH_REMATCH[2]}" || { msg "chdir failed" >&2; exit 1; }
+    else
+      msg "chdir($CD) failed 2" >&2; exit 1
+    fi ;;
+esac
+env -i "${envs[@]}" "$@"
+rc=$?
+if [ "${STUB_WSL_FAIL:-}" = crash ]; then
+  msg "The Windows Subsystem for Linux instance has terminated."$'\n'"Error code: Wsl/Service/E_UNEXPECTED" >&2
+  exit 1
+fi
+exit "$rc"

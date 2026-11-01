@@ -1,0 +1,46 @@
+# tests/stubs/.stublib - sourced by every stub (not executable, not a stub itself).
+# shellcheck disable=SC2034  # STUB_DIR and STUB_FIX are read by the stubs that source this file
+#
+# STUB_HOME_ENV: knobs that must survive `env -i` (a forwarded call drops every STUB_* variable)
+# are read from $HOME/.stub.env, one NAME=value per line; a variable already set wins.
+# stub_log NAME [EXTRA...] -- ARGS...: one line per call on $STUB_LOG:
+#   NAME<TAB>cwd=<pwd><TAB>EXTRA...<TAB>argv: <printf %q of each argument>
+# stub_billable NAME ARGS...: logs BILLABLE and exits 99.
+# shellcheck shell=bash
+if [ -n "${HOME:-}" ] && [ -f "$HOME/.stub.env" ]; then
+  while IFS= read -r _sl_line || [ -n "$_sl_line" ]; do
+    case "$_sl_line" in ""|\#*) continue ;; esac
+    _sl_n="${_sl_line%%=*}"
+    [[ $_sl_n =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [ -n "${!_sl_n+x}" ] || export "$_sl_n=${_sl_line#*=}"
+  done < "$HOME/.stub.env"
+  unset _sl_line _sl_n
+fi
+STUB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+STUB_FIX="$(cd -- "$STUB_DIR/../fixtures" && pwd)"
+stub_log() {
+  [ -n "${STUB_LOG:-}" ] || return 0
+  local name="$1" line a
+  shift
+  line="$name"$'\t'"cwd=$PWD"
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do line="$line"$'\t'"$1"; shift; done
+  [ "${1-}" = -- ] && shift
+  line="$line"$'\t'"argv:"
+  for a in "$@"; do line="$line $(printf '%q' "$a")"; done
+  printf '%s\n' "$line" >> "$STUB_LOG"
+}
+stub_env_dump() {
+  [ -n "${STUB_ENV_FILE:-}" ] || return 0
+  { printf '== %s\n' "$1"; env; } >> "$STUB_ENV_FILE"
+}
+stub_billable() {
+  local name="$1"
+  shift
+  if [ -n "${STUB_LOG:-}" ]; then
+    local line="BILLABLE"$'\t'"$name"$'\t'"argv:" a
+    for a in "$@"; do line="$line $(printf '%q' "$a")"; done
+    printf '%s\n' "$line" >> "$STUB_LOG"
+  fi
+  printf '%s stub: billable invocation refused\n' "$name" >&2
+  exit 99
+}

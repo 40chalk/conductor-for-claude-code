@@ -1,0 +1,168 @@
+{
+  "name": "conductor",
+  "version": "0.1.0",
+  "description": "Claude Code conducts; the subscriptions you already pay for execute. The conductor routes each piece of work to the executor best suited to it: GitHub Copilot CLI through the ghcp plugin, Grok Build through the raw grok CLI, and Antigravity through the raw agy CLI for Opus plus the antigravity plugin's wrappers for Gemini. It sends Opus 5.5 fan-out to the included pools (Antigravity claude-opus-5-5-high, then Copilot claude-opus-5.5 at high effort, then Claude's own subagents) and keeps Claude the judge of quality: Claude owns the spec, the gates and the merge. Free health checks (cx-doctor), a repo bundle writer (cx-init), Windows Git Bash to WSL forwarding (cx-wsl) and one session-start routing policy.",
+  "author": {
+    "name": "40chalk",
+    "url": "https://github.com/40chalk"
+  },
+  "homepage": "https://github.com/40chalk/conductor-for-claude-code",
+  "repository": "https://github.com/40chalk/conductor-for-claude-code",
+  "license": "MIT",
+  "keywords": [
+    "orchestration",
+    "multi-agent",
+    "model-routing",
+    "github-copilot",
+    "grok",
+    "antigravity",
+    "wsl",
+    "delegation"
+  ],
+  "userConfig": {
+    "policy": {
+      "type": "string",
+      "title": "Inject the conductor routing policy",
+      "description": "When on, a SessionStart hook adds the conductor's routing policy (what Claude keeps, which executor gets which task, the Opus 5.5 pool order, the gates) to the session context at startup, after /clear and after compaction, and a SubagentStart hook gives workflow and general-purpose subagents the rule that only the main session runs executors. Set to off/false/0/no/disabled to suppress both. With it on, turn off the ghcp and antigravity policies and nudges (their coding_policy and delegation_nudge options); cx-doctor checks this.",
+      "default": "on"
+    },
+    "exec_host": {
+      "type": "string",
+      "title": "Executor host",
+      "description": "Where executors run. auto (default): from Git Bash (the Windows desktop app) every cx-* command forwards into WSL; every other host runs locally. wsl: always forward into WSL. local: run on this host (refused on Git Bash with exit 43; on a BYOC or self-hosted cloud runner it marks the runner as the executor host, which cloud sessions otherwise never are). docker arrives in v1.1.",
+      "default": "auto"
+    },
+    "wsl_distro": {
+      "type": "string",
+      "title": "WSL distribution",
+      "description": "WSL distribution used when forwarding from Git Bash and when mapping \\\\wsl.localhost\\<distro> paths. auto (default): wsl.exe's default distribution (no -d); inside WSL the name comes from WSL_DISTRO_NAME. Otherwise a distribution name exactly as wsl.exe -l -q lists it.",
+      "default": "auto"
+    },
+    "docker_compose_file": {
+      "type": "string",
+      "title": "Docker compose file (v1.1)",
+      "description": "v1.1, not used yet: absolute WSL path of the coding-agents-docker compose.yaml. Empty (default) = Docker lanes off.",
+      "default": ""
+    },
+    "docker_service": {
+      "type": "string",
+      "title": "Docker compose service (v1.1)",
+      "description": "v1.1, not used yet: the compose service that runs the agents. Default agents.",
+      "default": "agents"
+    },
+    "opus_lane_order": {
+      "type": "string",
+      "title": "Opus 5.5 pool order",
+      "description": "Order in which Opus 5.5 work fills the included pools: a comma list of distinct agy, copilot and claude (claude is appended when missing). Default agy,copilot,claude; the Phase 1 blinded A/B may change it to copilot,agy,claude. The session-start policy names the order in force.",
+      "default": "agy,copilot,claude"
+    },
+    "agy_opus_slug_tpl": {
+      "type": "string",
+      "title": "agy Opus model slug",
+      "description": "agy model slug for the Opus lane; {effort} becomes low, medium or high (agy offers nothing above high). Default claude-opus-5-5-{effort}.",
+      "default": "claude-opus-5-5-{effort}"
+    },
+    "agy_opus_mode": {
+      "type": "string",
+      "title": "agy Opus lane mode",
+      "description": "How the agy Opus lane runs from Phase 2. raw (default): the agy CLI directly, killed 5 s after its result, with a launch lock, tree snapshots and the served model read from its init event. wrapper: through the antigravity plugin's agy-delegate, whose served model cannot be verified.",
+      "default": "raw"
+    },
+    "copilot_opus_id": {
+      "type": "string",
+      "title": "Copilot Opus model id",
+      "description": "Copilot model id for the Opus lane, always sent with an explicit reasoning effort. Default claude-opus-5.5.",
+      "default": "claude-opus-5.5"
+    },
+    "copilot_xhigh_ok": {
+      "type": "string",
+      "title": "Allow xhigh effort on Copilot Opus",
+      "description": "Allow --reasoning-effort xhigh on Copilot Opus. Default false: set true only after the empty-turn check (Copilot CLI issue #5149) passes. max is never sent to Copilot.",
+      "default": "false"
+    },
+    "grok_bulk_model": {
+      "type": "string",
+      "title": "Grok model for mechanical lanes",
+      "description": "Grok model for mechanical lanes, always passed with -m (an id that grok models does not list silently drops --effort). Default grok-4.7.",
+      "default": "grok-4.7"
+    },
+    "grok_bulk_effort": {
+      "type": "string",
+      "title": "Grok effort for mechanical lanes",
+      "description": "Grok reasoning effort for mechanical lanes: low, medium, high (default) or xhigh.",
+      "default": "high"
+    },
+    "grok_sandbox_profile": {
+      "type": "string",
+      "title": "Grok sandbox profile",
+      "description": "User-level grok sandbox profile (defined in ~/.grok/sandbox.toml) that every grok writer runs under. Default cx-workspace, written by cx-init --user-grants in Phase 2; Phase 1 commands use grok's built-in workspace profile.",
+      "default": "cx-workspace"
+    },
+    "review_model_gemini": {
+      "type": "string",
+      "title": "Gemini-family reviewer",
+      "description": "agy-delegate model label for the Gemini-family reviewer, which reviews Opus-written code by default. Default Gemini 4 Argon (High).",
+      "default": "Gemini 4 Argon (High)"
+    },
+    "review_model_gpt": {
+      "type": "string",
+      "title": "GPT-family reviewer",
+      "description": "Copilot model id for the GPT-family reviewer, which joins on high-risk paths and security reviews. Default gpt-6.1-sol.",
+      "default": "gpt-6.1-sol"
+    },
+    "cap_agy": {
+      "type": "string",
+      "title": "Concurrent agy Opus processes",
+      "description": "Maximum concurrent agy Opus processes; launches are also serialized. Integer 0-16, 0 disables the lane. Default 2. A throughput limit, not a spend cap.",
+      "default": "2"
+    },
+    "cap_copilot": {
+      "type": "string",
+      "title": "Concurrent Copilot processes",
+      "description": "Maximum concurrent Copilot executor processes. Integer 0-16, 0 disables the lane. Default 3. A throughput limit, not a spend cap.",
+      "default": "3"
+    },
+    "cap_grok": {
+      "type": "string",
+      "title": "Concurrent grok processes",
+      "description": "Maximum concurrent grok processes; grok's internal subagents count. Integer 0-32, 0 disables the lane. Default 5. A throughput limit, not a spend cap.",
+      "default": "5"
+    },
+    "copilot_reserve_pct": {
+      "type": "string",
+      "title": "Copilot monthly reserve (percent)",
+      "description": "Percent of the 20,000-credit Copilot month that conductor lanes leave unused. 0 (default) = off: no reserve. Integer 0-90. Not a per-call or per-session cap.",
+      "default": "0"
+    },
+    "copilot_mtd_max_age_days": {
+      "type": "string",
+      "title": "Copilot month-to-date figure: stale after (days)",
+      "description": "Age in days after which the month-to-date Copilot credits figure you entered with cx-doctor --pools --set-copilot-mtd is reported stale; a warning only while copilot_reserve_pct is above 0. Integer 1-31. Default 3.",
+      "default": "3"
+    },
+    "agy_claude_floor_pct": {
+      "type": "string",
+      "title": "agy Claude/GPT bucket floor (percent)",
+      "description": "Stop dispatching agy Opus while agy's /usage shows the Claude/GPT bucket below this percent. 0 (default) = off. Integer 0-90.",
+      "default": "0"
+    },
+    "worktree_root": {
+      "type": "string",
+      "title": "Worktree root",
+      "description": "Absolute root for task worktrees (~ expands): one <repo>-<id> worktree per task, on branch cx/<id>. Never inside a repo, never / or your home directory itself. The one-time agy write grant names this directory. Default ~/.cx-wt.",
+      "default": "~/.cx-wt"
+    },
+    "ledger_path": {
+      "type": "string",
+      "title": "Ledger file",
+      "description": "Ledger file with one JSON line per executor run (Phase 2). Default ~/.conductor/ledger.jsonl.",
+      "default": "~/.conductor/ledger.jsonl"
+    },
+    "default_timeout": {
+      "type": "string",
+      "title": "Default executor timeout",
+      "description": "Wall-clock limit per executor run unless --timeout is given: a number with an optional s, m or h suffix, at least 30 s. Default 30m.",
+      "default": "30m"
+    }
+  }
+}

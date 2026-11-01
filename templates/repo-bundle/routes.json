@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "setup": null,
+  "commands": {
+    "test": null,
+    "lint": null,
+    "typecheck": null
+  },
+  "bench": null,
+  "audit": null,
+  "mutation": null,
+  "protected": [],
+  "high_risk": [],
+  "diff_budget": 400,
+  "pools": {
+    "grok": true,
+    "agy": true,
+    "copilot": true
+  },
+  "docker_only": false,
+  "review_family": {},
+  "copilot_review_tier": "balanced"
+}

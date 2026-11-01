@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# tests/stubs/cygpath (simulated Git Bash): -w / -m / -u [-l] PATH, --version. Mapping:
+#   $STUB_WIN_ROOT/<x>/rest  <->  X:\rest
+#   $STUB_UNC_ROOT/rest      <->  \\wsl.localhost\<STUB_UNC_DISTRO:-Ubuntu>\rest
+#   $STUB_SHARE_ROOT/rest    <->  \\server\share\rest
+# Any other POSIX path -> rc 1. With -l, a path component listed in STUB_CYGPATH_SHORT
+# ("JOHNSM~1=John Smith,...") is replaced by its long name; without -l it stays short. Pure bash.
+# Logs its flags (P13, P15 assert -l).
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_log cygpath -- "$@"
+mode=u long=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -w|--windows) mode=w ;;
+    -u|--unix) mode=u ;;
+    -m|--mixed) mode=m ;;
+    -l|--long-name) long=1 ;;
+    -a|--absolute) ;;
+    --version) printf 'cygpath (cygwin) 3.6.0 (stub)\n'; exit 0 ;;
+    --) shift; break ;;
+    -*) printf 'cygpath: unknown option %s\n' "$1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+  shift
+done
+[ $# -eq 1 ] || { printf 'cygpath: expected one path\n' >&2; exit 2; }
+p="$1"
+dist="${STUB_UNC_DISTRO:-Ubuntu}"
+lower() { printf '%s' "${1,,}"; }
+if [ "$mode" = u ]; then
+  w="${p//\\//}"
+  if [[ $w =~ ^([A-Za-z]):(/.*)?$ ]]; then
+    printf '%s/%s%s\n' "$STUB_WIN_ROOT" "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2]}"; exit 0
+  fi
+  lw="$(lower "$w")"
+  if [ "${lw#//wsl.localhost/"$(lower "$dist")"}" != "$lw" ]; then
+    printf '%s%s\n' "$STUB_UNC_ROOT" "${w:$((16 + ${#dist}))}"; exit 0
+  fi
+  if [ "${lw#//server/share}" != "$lw" ]; then
+    printf '%s%s\n' "$STUB_SHARE_ROOT" "${w:14}"; exit 0
+  fi
+  case "$w" in /*) printf '%s\n' "$w"; exit 0 ;; esac
+  printf '%s/%s\n' "$PWD" "$w"; exit 0
+fi
+case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+sep=\\
+[ "$mode" = m ] && sep=/
+longify() {  # PATH-with-/ -> components replaced by their long names (with -l)
+  local s="$1" kv short longn out="" part
+  [ "$long" = 1 ] && [ -n "${STUB_CYGPATH_SHORT:-}" ] || { printf '%s' "$s"; return; }
+  local IFS=/
+  local -a parts
+  read -r -a parts <<< "$s"
+  IFS=,
+  for part in "${parts[@]}"; do
+    for kv in ${STUB_CYGPATH_SHORT}; do
+      short="${kv%%=*}" longn="${kv#*=}"
+      [ "$part" = "$short" ] && part="$longn"
+    done
+    out="$out$part/"
+  done
+  out="${out%/}"
+  case "$s" in */) out="$out/" ;; esac
+  printf '%s' "$out"
+}
+emit() {  # FORM-with-/ -> printed with the separator
+  local s
+  s="$(longify "$1")"
+  printf '%s\n' "${s//\//$sep}"
+  exit 0
+}
+if [ -n "${STUB_WIN_ROOT:-}" ] && [ "${p#"$STUB_WIN_ROOT"/}" != "$p" ]; then
+  r="${p#"$STUB_WIN_ROOT"/}"
+  d="${r%%/*}"
+  rest="${r#"$d"}"
+  [[ $d =~ ^[a-z]$ ]] || exit 1
+  emit "${d^^}:${rest:-/}"
+fi
+if [ -n "${STUB_UNC_ROOT:-}" ] && { [ "$p" = "$STUB_UNC_ROOT" ] || [ "${p#"$STUB_UNC_ROOT"/}" != "$p" ]; }; then
+  r="${p#"$STUB_UNC_ROOT"}"
+  emit "//wsl.localhost/$dist${r:-/}"
+fi
+if [ -n "${STUB_SHARE_ROOT:-}" ] && { [ "$p" = "$STUB_SHARE_ROOT" ] || [ "${p#"$STUB_SHARE_ROOT"/}" != "$p" ]; }; then
+  r="${p#"$STUB_SHARE_ROOT"}"
+  emit "//server/share${r:-/}"
+fi
+printf 'cygpath: cannot convert %s\n' "$p" >&2
+exit 1

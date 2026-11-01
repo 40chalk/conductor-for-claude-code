@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# tests/stubs/gh: --version -> "gh version ${STUB_GH_VERSION:-2.89.0} (2026-03-26)"; pr edit --help
+# mentions @copilot unless STUB_GH_NO_COPILOT=1; auth status rc ${STUB_GH_AUTH:-0}. Anything
+# else exits 98 (the doctor never needs it).
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_env_dump gh
+stub_log gh -- "$@"
+case "$*" in
+  --version) printf 'gh version %s (2026-03-26)\nhttps://github.com/cli/cli/releases/tag/v%s\n' "${STUB_GH_VERSION:-2.89.0}" "${STUB_GH_VERSION:-2.89.0}"; exit 0 ;;
+  "pr edit --help")
+    printf 'Edit a pull request.\n\nFLAGS\n'
+    if [ "${STUB_GH_NO_COPILOT:-}" = 1 ]; then
+      printf '      --add-reviewer login   Add reviewers by their login.\n'
+    else
+      printf '      --add-reviewer login   Add reviewers by their login. Use "@copilot" to request a review from Copilot.\n'
+    fi
+    exit 0 ;;
+  "auth status")
+    if [ "${STUB_GH_AUTH:-0}" = 0 ]; then printf 'github.com\n  Logged in to github.com account user (keyring)\n' >&2
+    else printf 'You are not logged into any GitHub hosts. To log in, run: gh auth login\n' >&2; fi
+    exit "${STUB_GH_AUTH:-0}" ;;
+esac
+printf 'gh stub: unexpected invocation: %s\n' "$*" >&2
+exit 98

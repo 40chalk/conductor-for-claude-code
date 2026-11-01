@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "conductor-for-claude-code",
+  "owner": {
+    "name": "40chalk"
+  },
+  "metadata": {
+    "description": "conductor for Claude Code: Claude conducts and judges quality, while GitHub Copilot CLI (through ghcp), Grok Build and Antigravity execute, with Opus 5.5 fan-out to the included pools."
+  },
+  "plugins": [
+    {
+      "name": "conductor",
+      "source": "./",
+      "description": "Claude conducts: route each task to Copilot (ghcp), Grok Build or Antigravity, send Opus 5.5 fan-out to the included pools, and keep Claude the judge of quality. Free doctor, repo bundle writer and Git Bash to WSL forwarding.",
+      "version": "0.1.0"
+    }
+  ]
+}

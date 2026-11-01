@@ -1,0 +1,18 @@
+{
+  "enabledPlugins": {
+    "conductor@conductor-for-claude-code": true,
+    "other@market": true
+  },
+  "pluginConfigs": {
+    "early@market": {"options": {"wsl_distro": "WrongEarly", "exec_host": "local"}},
+    "conductor@conductor-for-claude-code": {
+      "note": "a } closing brace and a { opening one inside a string, an escaped \" quote and a backslash \\",
+      "options": {
+        "cap_grok": "5",
+        "wsl_distro": "Right-1.x_y",
+        "docker_service": "two words"
+      }
+    },
+    "later@market": {"options": {"exec_host": "local", "wsl_distro": "WrongLater"}}
+  }
+}

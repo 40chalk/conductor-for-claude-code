@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# tests/stubs/copilot: --version -> "GitHub Copilot CLI ${STUB_COPILOT_VERSION:-1.0.105}."; the
+# doctor probe (-p . --model __cx_doctor_probe__ ...) -> the real stderr shape for
+# STUB_COPILOT_AUTH=ok|none|rofs, rc 1 (STUB_COPILOT_TOKEN_ONLY=GH_TOKEN: logged in only when
+# that variable is set). Everything else is billable (exit 99). Logs cwd and token presence.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_env_dump copilot
+stub_log copilot "gh_token=${GH_TOKEN:+set}" "github_token=${GITHUB_TOKEN:+set}" -- "$@"
+if [ $# -eq 1 ] && [ "$1" = --version ]; then
+  printf 'GitHub Copilot CLI %s.\n' "${STUB_COPILOT_VERSION:-1.0.105}"
+  exit 0
+fi
+if [ "${1-}" = -p ] && [ "${2-}" = . ] && [ "${3-}" = --model ] && [ "${4-}" = __cx_doctor_probe__ ]; then
+  auth="${STUB_COPILOT_AUTH:-ok}"
+  if [ -n "${STUB_COPILOT_TOKEN_ONLY:-}" ]; then
+    if [ -n "${!STUB_COPILOT_TOKEN_ONLY:-}" ]; then auth=ok; else auth=none; fi
+  fi
+  case "$auth" in
+    ok) printf 'Error: Model "__cx_doctor_probe__" from --model flag is not available.\n' >&2 ;;
+    none) printf 'Error: No authentication information found.\n' >&2 ;;
+    rofs) printf "Error: EROFS: Read-only file system (os error 30), mkdir '%s/.copilot'\n" "$HOME" >&2 ;;
+  esac
+  exit 1
+fi
+stub_billable copilot "$@"

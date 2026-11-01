@@ -1,0 +1,1 @@
+{"pluginConfigs": {"conductor@conductor-for-claude-code": {"options": {"cap_grok": "4", "cap_copilot": "4", "grok_bulk_effort": "medium"}}}}
