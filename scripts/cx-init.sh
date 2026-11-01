@@ -4,6 +4,7 @@
 #
 # Usage: cx-init [--dir <path>] [--dry-run] [--force] [--json] [--only agents|routes|copilot]...
 #                [--setup <cmd>] [--test <cmd>] [--lint <cmd>] [--typecheck <cmd>]
+#        cx-init --user-grants [--dir <path>] [--dry-run] [--json]
 #        cx-init -h|--help | --version
 #
 # Writes, at the root of the repository that holds --dir (default: the current directory):
@@ -25,13 +26,25 @@
 #   --setup/--test/--lint/--typecheck <cmd>
 #                    override a detected command; an empty value ('') means none
 #
+# --user-grants (DESIGN section 15.7) writes the user-level grants instead, once per machine
+# (idempotent; never per run, parallel runs would race on these files): write_file(<worktree_root>)
+# and one command(<cmd>) per .cx/routes.json command of the repository at --dir (default: the
+# current directory, when it is one) merged into ~/.gemini/antigravity-cli/settings.json
+# permissions.allow; the grok_sandbox_profile profile (option, default cx-workspace; from
+# templates/grok-sandbox.toml: extends workspace, denies .env, keys and id_rsa files) added to
+# ~/.grok/sandbox.toml when absent; [cli] auto_update = false in ~/.grok/config.toml when absent.
+# A file that changes is first copied to <file>.cx-bak; other keys are kept; a file that cannot
+# be merged is a CONFLICT and nothing is written (exit 5). Run it again after adding routes
+# commands.
+#
 # Detection (repo root only): npm/pnpm/yarn/bun, Python (uv, poetry, pytest, ruff, mypy), Go,
 # Rust, then tests/run-tests.sh and Makefile targets. stdout: create/update/same/skipped/CONFLICT
 # lines and "detected: <slot> = <cmd>" lines; stderr: notes, CX_INIT, and CX_SIGNAL EXISTS on
 # exit 5. On Git Bash it forwards into WSL (cx-doctor --help explains the forwarder).
 #
 # Exit codes: 0 ok; 1 usage error (not inside a git work tree, bad argument); 2 FAILED (no
-# python3 or git, unexpected error); 5 EXISTS (a selected file differs; nothing written);
+# python3 or git, unexpected error); 5 EXISTS (a selected file differs, or --user-grants met a
+# file it cannot merge; nothing written);
 # 40 FORWARD_FAILED and 41 RUNTIME_MISSING (Git Bash forwarding); 42 PATH_UNMAPPABLE (--dir or
 # the forwarded cwd has no WSL path); 43 HOST_UNSUPPORTED (a cloud session, Cygwin,
 # exec_host=local on Git Bash).
@@ -52,6 +65,7 @@ cx_load_options
 
 DIR=""
 HAVE_DIR=0
+GRANTS=0
 DRY=0
 FORCE=0
 JSON=0
@@ -64,6 +78,7 @@ while [ $# -gt 0 ]; do
       DIR="$2"; HAVE_DIR=1; shift 2 ;;
     --dir=*) DIR="${1#*=}"; HAVE_DIR=1; shift ;;
     --dry-run) DRY=1; shift ;;
+    --user-grants) GRANTS=1; shift ;;
     --force) FORCE=1; shift ;;
     --json) JSON=1; shift ;;
     --only|--only=*)
@@ -93,6 +108,35 @@ if [ "$HAVE_DIR" = 1 ]; then
   cx_path_in_var DIR "$DIR"
 else
   DIR="$PWD"
+fi
+
+if [ "$GRANTS" = 1 ]; then
+  [ "$FORCE" = 0 ] && [ "${#PASS[@]}" = 0 ] || cx_usage_error "--user-grants takes only --dir, --dry-run and --json"
+  # shellcheck source=lib/worktree.sh
+  . "$HERE/lib/worktree.sh"
+  UG=(--home "$HOME" --grok-home "${GROK_HOME:-$HOME/.grok}" --profile "$(cx_opt grok_sandbox_profile)"
+      --template "$CX_ROOT/templates/grok-sandbox.toml" --grok-pin "$CX_PIN_GROK")
+  TOP=""
+  if [ -d "$DIR" ] && TOP="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$TOP" ]; then
+    UG+=(--repo "$TOP")
+    RT_CMDS=()
+    o="$(python3 -I "$CX_LIB/normalize.py" routes --file "$TOP/.cx/routes.json")" && eval "$o"
+    [ "${RT_FOUND:-0}" = 1 ] || cx_note "no .cx/routes.json in $TOP (cx-init writes one): no command grants"
+    for c in "${RT_CMDS[@]+"${RT_CMDS[@]}"}"; do UG+=(--cmd "$c"); done
+  else
+    TOP=""
+  fi
+  ROOT="$(cx_wt_root "$TOP")" || cx_usage_error "option worktree_root lies inside $TOP and no default is usable"
+  UG+=(--root "$ROOT")
+  [ "$DRY" = 1 ] && UG+=(--dry-run)
+  [ "$JSON" = 1 ] && UG+=(--json)
+  cx_py user-grants "${UG[@]}"
+  rc=$?
+  case "$rc" in
+    0) exit 0 ;;
+    5) cx_signal EXISTS 5 "a grant file cannot be merged; nothing was written (fix it by hand, then run cx-init --user-grants again)" ;;
+    *) cx_signal FAILED 2 "writing the user grants failed (rc $rc)" ;;
+  esac
 fi
 [ -d "$DIR" ] || cx_usage_error "not a directory: $DIR"
 if [ "$(git -C "$DIR" rev-parse --is-inside-work-tree 2>/dev/null)" != true ]; then

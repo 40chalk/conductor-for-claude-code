@@ -1,0 +1,47 @@
+Usage:
+  ghcp-delegate [options] "<task>"        |   printf '%s' "<task>" | ghcp-delegate [options] -
+    -t, --tier <flash|flash-lo|pro>   tier (default: option default_tier, else flash)
+    -m, --model <id|auto|fusion>      exact Copilot model; overrides tier mapping
+        --fusion <level|profile>      use Copilot Fusion: --model fusion --auto-tier <profile>, where level
+                                      standard = hydrafusion, max = hydrafusion-max (high: exit 1, no profile
+                                      of its own); any other value is sent as the profile id
+        --auto-tier <profile>         Auto/Fusion routing profile id, sent as given (only with model auto or fusion)
+        --effort <level>              reasoning effort; dropped (with a stderr note) when model=auto or fusion
+    -d, --dir <path>                  first --dir = working dir (-C); later --dir => --add-dir. Default $PWD
+        --add-dir <path>              extra allowed dir (repeatable)
+    Permissions (default profile: READ-ONLY):
+        --write                       allow file edit/create tools (--allow-tool write)
+        --allow-shell <pattern>       allow one shell command pattern, e.g. 'npm test', 'git:*' (repeatable)
+        --web                         allow all URLs (--allow-all-urls)
+        --allow-url <host|url>        allow one URL/host (repeatable)
+        --github                      keep built-in GitHub MCP server and allow its tools
+        --yolo                        --allow-all-tools (all tools incl. any shell; path checks stay on)
+        --all-paths                   --allow-all-paths (only valid together with --yolo)
+        --sandbox                     run shell tools in Copilot's MXC sandbox (host prerequisites!)
+    Session:
+    -c, --continue                    resume most recent Copilot session
+        --resume <id>                 resume a specific session
+        --name <name>                 name the new session
+    Time / output:
+        --timeout <dur>               wall clock, e.g. 300s, 10m (default option timeout, else 10m)
+        --digest                      append the digest output contract
+        --share <path>                write the session transcript markdown to <path>
+        --print-command               print the resolved copilot argv (shell-quoted, one line) and exit 0
+    -h, --help
+
+Exit codes:
+  0 ok | 1 usage error | 2 COPILOT_FAILED | 3 EMPTY_OUTPUT | 10 QUOTA_EXHAUSTED
+  11 AUTH_REQUIRED | 12 TIMEOUT | 13 COPILOT_MISSING | 14 MODEL_UNAVAILABLE / FUSION_UNAVAILABLE
+  15 PERMISSION_DENIED | 16 SANDBOX_BLOCKED (Claude Code's Bash sandbox blocks Copilot)
+  130 interrupted (INT/TERM/HUP forwarded to Copilot; GHCP_SIGNAL status CANCELLED)
+
+Output: stdout = Copilot's final answer only (also on exit 12/15 when present).
+  stderr = GHCP_SESSION <id>, GHCP_FALLBACK {...}, GHCP_DENIED {...}, GHCP_NOTE {...},
+  GHCP_USAGE {...}, GHCP_SIGNAL {...} (exit >= 2) plus notes. Set GHCP_USAGE_LOG (or option
+  usage_log) to also append the GHCP_USAGE / GHCP_SIGNAL lines, timestamped, to a file.
+
+Copilot Fusion: a run with model fusion or an --auto-tier profile gets COPILOT_CLI_ENABLED_FEATURE_FLAGS
+  (undocumented internal Copilot CLI feature flags that headless Fusion needs) = any value already set
+  plus option fusion_feature_flags (default DYNAMIC_AUTO_TIERS,HYDRAFUSION_PLAN_V2; empty = off).
+  When Copilot refuses Fusion before any model call (no dynamic Auto tiers, a missing flag, a profile
+  id not offered), the wrapper re-runs once on plain auto, which is billed (option fusion_fallback).

@@ -1,0 +1,99 @@
+{
+ "totalPremiumRequestCost": 1,
+ "totalUserRequests": 1,
+ "totalNanoAiu": 204561000,
+ "aiCreditsStatus": "complete",
+ "tokenDetails": {
+  "input": {
+   "tokenCount": 9
+  },
+  "cache_read": {
+   "tokenCount": 25996
+  },
+  "cache_write": {
+   "tokenCount": 13142
+  },
+  "output": {
+   "tokenCount": 284
+  }
+ },
+ "totalApiDurationMs": 5816,
+ "sessionStartTime": "2026-10-31T03:34:38.878Z",
+ "codeChanges": {
+  "linesAdded": 0,
+  "linesRemoved": 0,
+  "filesModifiedCount": 0,
+  "filesModified": []
+ },
+ "modelMetrics": {
+  "gpt-6-luna": {
+   "requests": {
+    "count": 3,
+    "cost": 1
+   },
+   "usage": {
+    "inputTokens": 39147,
+    "outputTokens": 284,
+    "cacheReadTokens": 25996,
+    "cacheWriteTokens": 13142,
+    "reasoningTokens": 188
+   },
+   "cacheExpiresAt": "2026-10-31T04:04:43.388Z",
+   "totalNanoAiu": 204561000,
+   "aiCreditsStatus": "complete",
+   "tokenDetails": {
+    "input": {
+     "tokenCount": 9
+    },
+    "cache_read": {
+     "tokenCount": 25996
+    },
+    "cache_write": {
+     "tokenCount": 13142
+    },
+    "output": {
+     "tokenCount": 284
+    }
+   }
+  }
+ },
+ "agentMetrics": {
+  "main": {
+   "totalApiDurationMs": 5816,
+   "totalNanoAiu": 204561000,
+   "modelMetrics": {
+    "gpt-6-luna": {
+     "requests": {
+      "count": 3,
+      "cost": 1
+     },
+     "usage": {
+      "inputTokens": 39147,
+      "outputTokens": 284,
+      "cacheReadTokens": 25996,
+      "cacheWriteTokens": 13142,
+      "reasoningTokens": 188
+     },
+     "totalNanoAiu": 204561000,
+     "tokenDetails": {
+      "input": {
+       "tokenCount": 9
+      },
+      "cache_read": {
+       "tokenCount": 25996
+      },
+      "cache_write": {
+       "tokenCount": 13142
+      },
+      "output": {
+       "tokenCount": 284
+      }
+     }
+    }
+   }
+  }
+ },
+ "currentModel": "gpt-6-luna",
+ "lastCallInputTokens": 13145,
+ "lastCallOutputTokens": 166
+}

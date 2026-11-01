@@ -1,0 +1,2 @@
+GHCP_SESSION 68fee466-5b1f-4366-9aab-ffd6686f05a4
+GHCP_USAGE {"tier": "", "model_requested": "claude-opus-5.5", "auto_tier": null, "fallback": false, "model": "mai-code-1.1-flash", "models_used": [{"model": "mai-code-1.1-flash", "requests": 1, "ai_credits": 0.2386}], "fusion": null, "ai_credits": 0.2386, "premium_requests": 1, "input_tokens": 13046, "output_tokens": 6, "cache_read_tokens": 1280, "reasoning_tokens": 0, "duration_ms": 1929, "files_modified": 0, "lines_added": 0, "lines_removed": 0, "session_id": "68fee466-5b1f-4366-9aab-ffd6686f05a4", "exit": 0}

@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # tests/stubs/gh: --version -> "gh version ${STUB_GH_VERSION:-2.89.0} (2026-03-26)"; pr edit --help
 # mentions @copilot unless STUB_GH_NO_COPILOT=1; auth status rc ${STUB_GH_AUTH:-0}. Anything
-# else exits 98 (the doctor never needs it).
+# else exits 98 (the doctor never needs it). agent-task --help -> help text, rc 0 (unless
+# STUB_GH_NO_AGENT_TASK=1: "unknown command", rc 1); agent-task create -F - [--repo R] [--base B]
+# is billable (premium requests, Actions minutes) unless STUB_GH_AGENT_TASK=ok|fail: ok saves
+# stdin to $STUB_GH_TASK_FILE (when set) and prints the task and pull request URLs (PR
+# ${STUB_GH_PR:-42}); fail prints an error, rc 1. pr view N -R R --json headRefOid --jq .headRefOid
+# prints $STUB_GH_PR_HEAD (rc 0), or "no pull requests found" (rc 1) when that is unset.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump gh
@@ -21,5 +26,28 @@ case "$*" in
     else printf 'You are not logged into any GitHub hosts. To log in, run: gh auth login\n' >&2; fi
     exit "${STUB_GH_AUTH:-0}" ;;
 esac
+if [ "${1-} ${2-}" = "pr view" ]; then
+  if [ -n "${STUB_GH_PR_HEAD:-}" ]; then printf '%s\n' "$STUB_GH_PR_HEAD"; exit 0; fi
+  printf 'no pull requests found\n' >&2; exit 1
+fi
+if [ "${1-}" = agent-task ]; then
+  if [ "${2-}" = --help ]; then
+    if [ "${STUB_GH_NO_AGENT_TASK:-}" = 1 ]; then printf 'unknown command "agent-task" for "gh"\n' >&2; exit 1; fi
+    printf 'Work with agent tasks (preview)\n\nUSAGE\n  gh agent-task <command> [flags]\n'; exit 0
+  fi
+  if [ "${2-}" = create ]; then
+    case "${STUB_GH_AGENT_TASK:-}" in
+      ok|fail) ;;
+      *) stub_billable gh "$@" ;;
+    esac
+    repo="owner/repo"
+    shift 2
+    while [ $# -gt 0 ]; do case "$1" in --repo|-R) repo="${2#*/}"; case "$2" in */*/*) ;; *) repo="$2" ;; esac; shift 2 ;; *) shift ;; esac; done
+    if [ -n "${STUB_GH_TASK_FILE:-}" ]; then cat > "$STUB_GH_TASK_FILE"; else cat > /dev/null; fi
+    [ "$STUB_GH_AGENT_TASK" = fail ] && { printf 'HTTP 422: Copilot coding agent is not enabled for this repository\n' >&2; exit 1; }
+    printf 'https://github.com/%s/agent-tasks/0aa1b2c3-0000-4000-8000-000000000042\nhttps://github.com/%s/pull/%s\n' "$repo" "$repo" "${STUB_GH_PR:-42}"
+    exit 0
+  fi
+fi
 printf 'gh stub: unexpected invocation: %s\n' "$*" >&2
 exit 98

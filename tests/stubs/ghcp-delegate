@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# tests/stubs/ghcp-delegate: stands in for ghcp's wrapper (reached through a fake ghcp install
+# dir that execs it). --help -> fixtures/real/ghcp/ghcp-delegate-help.txt; --print-command ->
+# one copilot argv line (free). A run needs STUB_GHCP_RUN, else it is billable (exit 99):
+#   ok-pong denied-write autodenied-shell fusion-max-pong fusion-fallback quota auth
+#            replay fixtures/real/ghcp/<name>.{out,err,rc}: the real ghcp 0.1.0 wrapper's output
+#            over ghcp's real Copilot 1.0.105 recordings (quota: ghcp's synthetic stub text)
+#   ok       synthetic success: cx-copilot.txt written in --dir when --write; the served model is
+#            the requested one (Fusion: gpt-6-luna with a fusion object)
+#   mismatch like ok, served ${STUB_GHCP_SERVED:-gpt-6-luna}
+#   5149     an empty answer with 32,000 output tokens, exit 3 (copilot#5149)
+#   sleep    like ok after ${STUB_GHCP_SLEEP:-30} seconds
+# STUB_EVENTS: "start/end ghcp-delegate" around a synthetic run (ok, mismatch, 5149, sleep);
+# STUB_GATE: such a run waits after its start until that file exists.
+# Exits 98 unless GHCP_COPILOT_BIN is an absolute path. Logs cwd and GHCP_COPILOT_BIN.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_env_dump ghcp-delegate
+stub_log ghcp-delegate "copilot_bin=${GHCP_COPILOT_BIN:-}" "run=${STUB_GHCP_RUN:-}" -- "$@"
+case "${1-}" in -h|--help) cat "$STUB_FIX/real/ghcp/ghcp-delegate-help.txt"; exit 0 ;; esac
+case "${GHCP_COPILOT_BIN:-}" in /*) ;; *) printf 'ghcp-delegate stub: GHCP_COPILOT_BIN is not absolute\n' >&2; exit 98 ;; esac
+model="" effort="" fusion="" dir="" write="" print="" prompt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model|-m) model="$2"; shift 2 ;;
+    --effort) effort="$2"; shift 2 ;;
+    --fusion) fusion="$2"; shift 2 ;;
+    --dir|-d) [ -n "$dir" ] || dir="$2"; shift 2 ;;
+    --add-dir|--allow-shell|--timeout|--allow-url|--name|--resume|--share|--tier|-t|--auto-tier) shift 2 ;;
+    --write) write=1; shift ;;
+    --print-command) print=1; shift ;;
+    --digest|--web|--github|--yolo|--all-paths|--sandbox|-c|--continue) shift ;;
+    --) shift; prompt="${1-}"; break ;;
+    *) prompt="$1"; shift ;;
+  esac
+done
+if [ -n "$print" ]; then
+  if [ -n "$fusion" ]; then m=(--model fusion --auto-tier "hydrafusion${fusion/standard/}"); m[3]="${m[3]/hydrafusionmax/hydrafusion-max}"; else m=(--model "$model" --reasoning-effort "$effort"); fi
+  w=(--deny-tool write --deny-tool shell); [ -n "$write" ] && w=(--allow-tool write)
+  printf '%q ' "$GHCP_COPILOT_BIN" -p "$prompt" --output-format json --no-ask-user --no-auto-update --no-color -C "${dir:-$PWD}" "${m[@]}" "${w[@]}" --disable-builtin-mcps; printf '\n'
+  exit 0
+fi
+run="${STUB_GHCP_RUN:-}"
+case "$run" in
+  ok-pong|denied-write|autodenied-shell|fusion-max-pong|fusion-fallback|quota|auth)
+    cat "$STUB_FIX/real/ghcp/$run.out"; cat "$STUB_FIX/real/ghcp/$run.err" >&2
+    exit "$(cat "$STUB_FIX/real/ghcp/$run.rc")" ;;
+  ok|mismatch|5149|sleep) ;;
+  *) stub_billable ghcp-delegate "$@" ;;
+esac
+stub_event start ghcp-delegate
+stub_gate
+[ "$run" = sleep ] && sleep "${STUB_GHCP_SLEEP:-30}"
+stub_event end ghcp-delegate
+served="$model" fobj=null req="$model"
+if [ -n "$fusion" ]; then
+  served=gpt-6-luna req=fusion
+  fobj='{"profile": "hydrafusion-max", "policy": "max", "pattern": "single", "primary_model": "gpt-6-luna", "secondary_model": null, "final_model": "gpt-6-luna", "rule": "stub", "outcome": "completed", "degraded_reason": null}'
+fi
+[ "$run" = mismatch ] && served="${STUB_GHCP_SERVED:-gpt-6-luna}"
+out_tok=180
+if [ "$run" = 5149 ]; then
+  out_tok=32000
+else
+  [ -n "$write" ] && [ -n "$dir" ] && printf 'from copilot\n' > "$dir/cx-copilot.txt"
+  printf 'Created cx-copilot.txt:1.\nRan npm test (stub).\nDIGEST: created cx-copilot.txt.\n'
+fi
+printf 'GHCP_SESSION 11111111-1111-4111-8111-111111111111\n' >&2
+printf 'GHCP_USAGE {"tier": "", "model_requested": "%s", "auto_tier": null, "fallback": false, "model": "%s", "models_used": [{"model": "%s", "requests": 1, "ai_credits": 1.5}], "fusion": %s, "ai_credits": 1.5, "premium_requests": 1, "input_tokens": 15000, "output_tokens": %s, "cache_read_tokens": 4000, "reasoning_tokens": 90, "duration_ms": 2000, "files_modified": 1, "lines_added": 1, "lines_removed": 0, "session_id": "11111111-1111-4111-8111-111111111111", "exit": 0}\n' "$req" "$served" "$served" "$fobj" "$out_tok" >&2
+[ "$run" = 5149 ] && { printf 'ghcp-delegate: Copilot returned no answer\n' >&2; printf 'GHCP_SIGNAL {"status": "EMPTY_OUTPUT", "reason": "empty answer", "model": "%s", "retry": null}\n' "$model" >&2; exit 3; }
+exit 0

@@ -1,6 +1,6 @@
 {
   "name": "conductor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Code conducts; the subscriptions you already pay for execute. The conductor routes each piece of work to the executor best suited to it: GitHub Copilot CLI through the ghcp plugin, Grok Build through the raw grok CLI, and Antigravity through the raw agy CLI for Opus plus the antigravity plugin's wrappers for Gemini. It sends Opus 5.5 fan-out to the included pools (Antigravity claude-opus-5-5-high, then Copilot claude-opus-5.5 at high effort, then Claude's own subagents) and keeps Claude the judge of quality: Claude owns the spec, the gates and the merge. Free health checks (cx-doctor), a repo bundle writer (cx-init), Windows Git Bash to WSL forwarding (cx-wsl) and one session-start routing policy.",
   "author": {
     "name": "40chalk",

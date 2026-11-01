@@ -1,0 +1,26 @@
+Usage:
+  agy-delegate.sh [options] "the task prompt"
+  echo "long prompt" | agy-delegate.sh [options] -      # read prompt from stdin
+
+Options:
+  -t, --tier <flash|flash-lo|pro>  Model tier (default: flash)
+  -d, --dir  <path>                Add a workspace dir (repeatable)
+      --timeout <dur>              Print-mode timeout, e.g. 10m (default: 5m)
+      --yolo                       Auto-approve all tool permissions (DANGEROUS). Reaches agy as
+                                   --dangerously-skip-permissions; agy 1.1.25 rejects a literal --yolo
+      --sandbox                    Run agent with terminal sandbox restrictions
+      --digest                     Append a digest-only output contract to the prompt
+                                   (ingest digests, not raw dumps — the biggest cost lever)
+      --mode <accept-edits|plan|auto> agy execution mode (agy >= 1.1.0; auto >= 1.3.5). accept-edits is NOT a
+                                   write grant: measured on agy 1.1.13, where the flag is
+                                   applied at all (1.1.12 fixed it being ignored headless),
+                                   the write is denied exactly like one without it. Use a
+                                   permissions.allow rule or --yolo. plan: strategize only.
+                                   auto: dynamic plan/execute based on task complexity.
+  -c, --continue                   Resume the most recent agy conversation (stateful)
+      --conversation <id>          Resume a specific agy conversation by ID (stateful)
+  -m, --model <exact name>         Use an exact agy model (any from `agy models`: Gemini/Claude/GPT…)
+      --print-command              Print the resolved agy command and exit (dry run)
+  -h, --help                       Show this help
+
+Exit codes: 0 ok | 1 usage | 2 agy failed | 3 empty | 10 quota | 11 auth | 12 timeout

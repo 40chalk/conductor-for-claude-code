@@ -1,0 +1,24 @@
+Usage:
+  ghcp-cloud create [-R OWNER/REPO] [--base B] [--agent NAME] [--follow] "<task>"
+  ghcp-cloud create [-R OWNER/REPO] [--base B] [--agent NAME] [--follow] -    (task on stdin)
+  ghcp-cloud list [-L N]
+  ghcp-cloud view <session-id | PR number | URL> [--log] [-R OWNER/REPO]
+  ghcp-cloud -h | --help
+
+  create   the task text reaches gh on stdin (`gh agent-task create -F -`), never as an
+           argument; prints gh's output (the agent session / pull request URL).
+           --base B       base branch of the pull request (default: the repo's default branch)
+           --agent NAME   custom agent from .github/agents/NAME.md
+           --follow       stream the agent session log until it finishes
+  list     recent agent tasks (gh agent-task list)
+  view     one task; --log shows the agent session log
+
+Notes: `gh agent-task` is a PREVIEW feature of the GitHub CLI and may change. Every task
+spends Copilot premium requests / AI credits AND GitHub Actions minutes. The repository must
+be on GitHub with the Copilot coding agent enabled. Review the pull request like any other
+contribution before merging.
+
+Exit codes: 0 ok | 1 usage error | 2 gh failed | 11 gh not authenticated (run: gh auth login) |
+            13 gh missing, or too old for `agent-task` | 16 GitHub unreachable (network blocked,
+            e.g. by Claude Code's Bash sandbox: re-run outside it or allow api.github.com)
+

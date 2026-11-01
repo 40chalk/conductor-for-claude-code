@@ -1,5 +1,101 @@
 # Changelog
 
+## 0.2.0 — 2026-11-01
+
+Phase 2 (docs/DESIGN.md section 15, build order items 1 to 3): every executor lane runs through
+`cx-run` and `cx-job`. Executor runs are billed to the subscriptions as before; the suite still
+spends nothing.
+
+- Cross-process pool slots (`scripts/lib/locks.sh`, `flock`): `cap_agy`, `cap_copilot` and
+  `cap_grok` hold across every session, Work locally thread and forwarded call on the computer;
+  agy launches never overlap. `cx-wsl` takes a slot for its executor calls (free forms take
+  none); a pool that stays full for `CX_SLOT_WAIT_SECS` (600 s) exits 28 `NO_CAPACITY`. They
+  replace the Phase 1 agy lock (still honoured, shared, while an older skill copy runs).
+- Adapters `scripts/adapters/{copilot,grok,agy,claude,copilot-cloud}.sh` (probe, argv, run,
+  parse; the shared `scripts/lib/adapter.sh`): free preflight (pins 26, login 11, catalog 14,
+  agy paused 28; green probes cached 10 minutes), the worker environment (shims first,
+  `CX_WORKER=1`, API keys and `CLAUDE_PLUGIN_OPTION_*` unset, auto-update pins), executors under
+  `setsid timeout`, agy raw mode (registration, launch lock until the init event, init-model
+  check 21, SIGKILL 5 s after the result, tree snapshots 22 with `state/agy-paused`), Copilot
+  through ghcp (`GHCP_FALLBACK` on Fusion 21, #5149), grok's `permission required:` 15, the
+  claude dispatch and `--headless`, the Copilot cloud agent through `ghcp-cloud`.
+- `normalize.py` (classification, `result.json`, `CX_RESULT`, `CX_DENIED`, `CX_NOTE`, the
+  `VERIFY THIS:` line) and `ledger.py` (append-only, flock and fsync; `claude_session`,
+  `claude_effort`).
+- `cx-run`: one task on one lane (`--exec auto|agy|copilot|grok|claude|copilot-cloud`, `--mode
+  write|read|review`, `--family gemini|gpt`, `--dry-run`, `--explain`, `--background`,
+  `--finish`): the task contract (line-1 JSON, or free text in `templates/task.md`) and its
+  hash (23), a worktree on `cx/<id>` under `worktree_root`, the repo's setup (25), the pool
+  slot, the post-checks (no diff 3, diffstat), `vars.sh` for the skill's commit and gate step;
+  `--exec auto` follows `opus_lane_order`, waits for a slot, then takes the claude lane; a cwd
+  under `.claude/worktrees/` needs `--repo`; `--finish` of the cloud lane gates the pull
+  request head (20 `GATE_FAILED`). Forwarded from Git Bash, `host_path` fields are Windows
+  paths.
+- `cx-job`: `start`, `status` (with `queued`), `wait`, `result`, `kill` (rc 130 first, TERM to
+  the runner's group and session and to every recorded executor session, KILL after 10 s,
+  pid-reuse guards), `list`, `unpause agy`. Jobs run from the runtime copy in their own
+  session and outlive the Git Bash forwarder.
+- `cx-init --user-grants`: agy's `write_file(<worktree_root>)` and `command(<cmd>)` grants, the
+  grok `cx-workspace` sandbox profile (`templates/grok-sandbox.toml`) and grok's
+  `[cli] auto_update = false`, merged idempotently with `.cx-bak` backups.
+- The skill's recipe, both policies and the Projects instructions route through `cx-run` and
+  `cx-job`; the hand steps left are the conductor commit and gate (until `cx-gate`), GitHub and
+  commit-message drafting, and their two executor calls run as `cx-wsl grok` and `cx-wsl
+  ghcp-ci-debug` (in WSL as from Windows), so they take the pool slots too. The policy names
+  the Opus order `agy (raw), then Copilot, then own subagents`; the Windows policy keeps `cx-wsl`
+  to `gh`, `git`, `ghcp-cloud list`/`view`, `ghcp-ci-debug` and the hand steps.
+- `cx-doctor` D25 is narrow: one rule per command form the skill runs (`Bash(cx-run:*)`,
+  `Bash(cx-job:*)`, `Bash(cx-wsl grok:*)`, `Bash(cx-wsl ghcp-ci-debug:*)`, `Bash(ghcp-cloud
+  list:*)`, `Bash(ghcp-cloud view:*)`, the `vars.sh` line, `git -C "$WT" push`, `gh pr`; on
+  Windows the `cx-wsl` forms it runs directly), no raw `agy`, `agy-delegate`, `ghcp-delegate` or
+  job rule, never `Bash(cx-wsl:*)`; the suite checks the rules against the skill both ways. New
+  D29 (free): copilot, grok and agy start with the worker shims first on PATH. D32 prints the
+  slot caps next to the workflow concurrency.
+- Hardening of the run machinery (final review): a signal while the executor is being started
+  still kills and records its session; the Copilot token reaches ghcp-delegate through the
+  environment only, never a command line; only the adapter holds the pool slot and the agy
+  locks (the executor gets no descriptor of them) and the executor's session is killed after
+  every run, so a daemon it leaves behind never keeps a slot; a TERM-ignoring executor is killed
+  10 s after a cancellation (`CX_KILL_GRACE_SECS`), every process group of its session too; the
+  preflight cache is per caller side (a WSL terminal and a forwarded call never share a login
+  verdict); agy's pause is checked again after the slot and launch-lock waits (also in `cx-wsl`);
+  agy's tree check also covers HEAD, branches and tags no worktree has checked out, the stash,
+  git config (without `branch.*`), `info/exclude`, the hooks and ignored files, so a commit or a
+  planted hook outside the worktree is a `wrong_tree`; stale running marks (a failed task's, a
+  killed `cx-run`'s) no longer hide a tree from it.
+- `cx-run`: `--` ends the options (a task text may start with `-`), and `--background` and
+  `cx-job start` always store the text after `--`; a taken id, a `cx/<id>` branch, a running
+  task (`$OUT/.run.lock`, one `cx-run` per task) and, forwarded, an unmappable path (42) are
+  refused by the `--dry-run` preflight before a job starts; a gate checkout is removed on every
+  exit; the running mark stays only for an ok change waiting for Step 3; `--finish` refuses a
+  finished task, books a run and its finish once each in the ledger, and fetches a cloud pull
+  request from the task's repository (never a fork's `origin`) and gates it only when GitHub
+  names that commit as its head. `cx-job result`/`wait` exit with the job's rc and a last
+  `CX_SIGNAL` that names it (rc 1: the job's notes, no signal; a wall-clock kill: 12).
+- The runtime copy: an unchanged reinstall refreshes the stamp (no re-copy on every call after
+  an mtime-only change), and changed content is never swapped into `runtime/<version>` while a
+  `cx-run` or a job still uses it (the update waits for the next call after they end). `cx-wsl
+  grok -v` is a free form. Worktree creation's error file comes from `mktemp`.
+- 19 more worker shims (the sibling wrappers and the `cx-*` bins) and `templates/cx-worker.json`.
+- A task worktree is marked running from its creation (setup included), so a sibling task's
+  own work never gives a concurrent agy run a false `wrong_tree`; a cancelled run reports
+  `cancelled` even when several signals reach it (a late TERM no longer ends the adapter
+  before its `rc` is written); the raw agy lane reads agy's init event in one read, so a run is
+  never killed as a false model mismatch.
+- Tests: the Phase 2 cases A1–A18, A25–A28 and A30 of DESIGN section 15.8, including twelve
+  concurrent `cx-run --background` (direct and forwarded) against the shared caps, plus a
+  regression check for each fix above; the forwarded `cx-run`/`cx-job` sections check their own
+  python3 trap (P42).
+- Not built (optional item 4 of the build order, because ultracode is normally off): the
+  `conductor:cx-runner` agent, its fail-closed `hooks/gate.sh`, the `workflows/opus-pools.js`
+  workflow and doctor check D33 (A19–A24, A29). Phase 3 (`cx-gate`, the conductor commit,
+  `cx-fanout`, the integration queue), Phase 4 (`--mode ci`, review findings parsing) and the
+  v1.1 Docker lanes are not built either.
+- Still to capture: `agy --help` (the raw agy flags `--add-dir`, `--print-timeout`,
+  `--output-format stream-json`, `--disable-slash-commands` and `--new-project` are docs-only;
+  A1 checks them against the synthetic `tests/fixtures/agy-help.synthetic.txt`), agy's
+  stream-json and `/usage` shapes, and grok's JSON result fields (DESIGN section 20).
+
 ## 0.1.0 — 2026-11-01
 
 Phase 1: skeleton, host layer and hand-dispatched lanes (docs/DESIGN.md sections 2 to 14),

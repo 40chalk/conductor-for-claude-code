@@ -1,0 +1,99 @@
+{
+ "totalPremiumRequestCost": 1,
+ "totalUserRequests": 1,
+ "totalNanoAiu": 238600000,
+ "aiCreditsStatus": "complete",
+ "tokenDetails": {
+  "input": {
+   "tokenCount": 11766
+  },
+  "cache_read": {
+   "tokenCount": 1280
+  },
+  "cache_write": {
+   "tokenCount": 0
+  },
+  "output": {
+   "tokenCount": 6
+  }
+ },
+ "totalApiDurationMs": 1929,
+ "sessionStartTime": "2026-10-31T03:29:48.374Z",
+ "codeChanges": {
+  "linesAdded": 0,
+  "linesRemoved": 0,
+  "filesModifiedCount": 0,
+  "filesModified": []
+ },
+ "modelMetrics": {
+  "mai-code-1.1-flash": {
+   "requests": {
+    "count": 1,
+    "cost": 1
+   },
+   "usage": {
+    "inputTokens": 13046,
+    "outputTokens": 6,
+    "cacheReadTokens": 1280,
+    "cacheWriteTokens": 0,
+    "reasoningTokens": 0
+   },
+   "cacheExpiresAt": "2026-10-31T03:59:50.254Z",
+   "totalNanoAiu": 238600000,
+   "aiCreditsStatus": "complete",
+   "tokenDetails": {
+    "input": {
+     "tokenCount": 11766
+    },
+    "cache_read": {
+     "tokenCount": 1280
+    },
+    "cache_write": {
+     "tokenCount": 0
+    },
+    "output": {
+     "tokenCount": 6
+    }
+   }
+  }
+ },
+ "agentMetrics": {
+  "main": {
+   "totalApiDurationMs": 1929,
+   "totalNanoAiu": 238600000,
+   "modelMetrics": {
+    "mai-code-1.1-flash": {
+     "requests": {
+      "count": 1,
+      "cost": 1
+     },
+     "usage": {
+      "inputTokens": 13046,
+      "outputTokens": 6,
+      "cacheReadTokens": 1280,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0
+     },
+     "totalNanoAiu": 238600000,
+     "tokenDetails": {
+      "input": {
+       "tokenCount": 11766
+      },
+      "cache_read": {
+       "tokenCount": 1280
+      },
+      "cache_write": {
+       "tokenCount": 0
+      },
+      "output": {
+       "tokenCount": 6
+      }
+     }
+    }
+   }
+  }
+ },
+ "currentModel": "mai-code-1.1-flash",
+ "lastCallInputTokens": 13046,
+ "lastCallOutputTokens": 6
+}

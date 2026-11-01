@@ -25,6 +25,7 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   tsv-to-json FILE             dotted TSV facts -> one JSON object
   agy-grant FILE PATH          checks the agy write_file grant (D18)
   wsl-resolve ...              cx-wsl: a tool's absolute path, PATH and copilot from the host record (7.7)
+  record-env ...               the host record as CXR_* shell assignments for the adapters (15.2)
   doctor-siblings ...          D13, D20-D26 as doctor TSV records
   doctor-pools ...             section 8.4 as doctor TSV records plus the CX_POOLS payload
   claude-settings ...          the Claude Code settings layers D31/D32 read, as JSON (section 8.3)
@@ -33,6 +34,8 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   init-detect DIR              detection JSON (section 9.3)
   init-plan ...                detection plus cx-init's overrides -> plan JSON
   init-apply ...               bundle writer (section 9.2); exit 0 or 5
+  user-grants ...              cx-init --user-grants (section 15.7): the agy grant, the grok
+                               sandbox profile and [cli] auto_update; exit 0 or 5
   pools-mtd --file F [--set N] reads or writes the month-to-date record (section 8.4)
 """
 
@@ -41,11 +44,12 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 CURSOR_WORKER_MSG = "a grok worker process registers this machine with Cursor as a private worker; stop it"
 CURSOR_POOL_MSG = "interactive Cursor IDE use on Grok/Composer drains the same weekly pool"
@@ -949,36 +953,27 @@ GHCP_ID, AGY_ID, GROKB_ID = SIBLINGS[0], SIBLINGS[1], SIBLINGS[2]
 SIBLING_SOURCES = {GHCP_ID: "40chalk/ghcp-for-claude-code", AGY_ID: "yuting0624/antigravity-for-claude-code"}
 GHCP_WRAPPERS = ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models", "ghcp-cloud")
 AGY_WRAPPERS = ("agy-delegate", "agy-handoff", "agy-job", "agy-media")
-GHCP_PREFIX = ("env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL "
-               "CX_WORKER=1 COPILOT_AUTO_UPDATE=false")
-AGY_PREFIX = "env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true"
 SANDBOX_EXCLUDES = ("ghcp-*", "agy-*", "agy", "grok", "gh", "git", "copilot", "cx-*")
-AGY_REG_PREFIX = "env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true"
-GROK_PREFIX = 'env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}"'
-# D25 (U2): allow rules for the Phase 1 command forms exactly as the skill writes them (section
-# 12.2), one per leading form of a simple command: the vars.sh line that starts every step, each
-# prefixed executor call, the raw agy and grok calls, and the GitHub steps. The suite checks every
-# executor and GitHub command in the skill's code blocks against this list. agy-media is not
-# here: it always passes --yolo and is not a Phase 1 lane (section 0.3).
+# D25 (U2): the narrow allow rules for the command forms the skill writes (section 12.2), one per
+# leading form of a simple command in its bash blocks and no other (the suite checks both ways):
+# cx-run and cx-job (every executor run), the hand steps' two executor calls through cx-wsl (it
+# takes their pool slot and adds the per-tool prefix, in WSL as from Windows), ghcp-cloud list /
+# view (the cloud agent, free), the vars.sh line that starts every hand step and the GitHub steps.
+# No raw agy, agy-delegate, ghcp-delegate or job form: those would bypass cx-run's slots, agy
+# registration, tree snapshots and served-model checks.
 D25_HOST_RULES = (
-    ["Bash(cx-doctor:*)", "Bash(cx-init:*)"]
-    + ["Bash(%s:*)" % n for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models",
-                                  "ghcp-cloud", "agy-delegate", "agy-job")]
-    + ["Bash(%s %s:*)" % (GHCP_PREFIX, n) for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug",
-                                                    "ghcp-cloud")]
-    + ["Bash(%s %s:*)" % (AGY_PREFIX, n) for n in ("agy-delegate", "agy-job")]
-    + ["Bash(%s timeout -k 5 60 agy --new-project:*)" % AGY_REG_PREFIX,
-       "Bash(%s timeout -k 15s 35m agy:*)" % AGY_PREFIX,
-       "Bash(%s grok:*)" % GROK_PREFIX,
-       'Bash(. "$HOME/.conductor/out/:*)',
-       'Bash(git -C "$WT" push:*)', "Bash(git push:*)", "Bash(gh pr:*)", "Bash(gh repo view:*)"])
-# The Windows side reaches WSL only through cx-wsl. D25 lists its tool forms, never Bash(cx-wsl:*):
-# that rule also covers cx-wsl bash -c/-s, i.e. every command in WSL, and U2 grants spending,
-# pushes, PRs and @copilot reviews, not every shell command (the user's choice, 2026-11-01). The
-# skill's cx-wsl bash steps therefore prompt until Phase 2's cx-run replaces them.
-D25_CXWSL_TOOLS = ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models", "ghcp-cloud",
-                   "agy-delegate", "gh pr", "gh repo view", "git push")
-D25_WIN_RULES = ["Bash(cx-doctor:*)", "Bash(cx-init:*)"] + ["Bash(cx-wsl %s:*)" % t for t in D25_CXWSL_TOOLS]
+    ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-run:*)", "Bash(cx-job:*)",
+     "Bash(cx-wsl grok:*)", "Bash(cx-wsl ghcp-ci-debug:*)", "Bash(ghcp-cloud list:*)", "Bash(ghcp-cloud view:*)",
+     'Bash(. "$HOME/.conductor/out/:*)', 'Bash(git -C "$WT" push:*)', "Bash(gh pr:*)"])
+# The Windows side reaches WSL through cx-run and cx-job (they forward themselves, so
+# Bash(cx-run:*) and Bash(cx-job:*) suffice there) and cx-wsl. D25 lists the cx-wsl forms the
+# skill runs directly from Windows, never Bash(cx-wsl:*): that rule also covers cx-wsl bash -c/-s,
+# i.e. every command in WSL, and U2 grants spending, pushes, PRs and @copilot reviews, not every
+# shell command (the user's choice, 2026-11-01). The skill's cx-wsl bash steps (Step 3's commit
+# and gate, Step 5) prompt.
+D25_CXWSL_TOOLS = ("ghcp-ci-debug", "ghcp-cloud list", "ghcp-cloud view", "gh pr")
+D25_WIN_RULES = (["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-run:*)", "Bash(cx-job:*)"]
+                 + ["Bash(cx-wsl %s:*)" % t for t in D25_CXWSL_TOOLS])
 D25_CXWSL_BROAD = ("Bash(cx-wsl:*) is in %s: it also allows cx-wsl bash -c and -s, i.e. any command in WSL, without a "
                    "prompt, which is more than U2 (spending, pushes, PRs, @copilot reviews); %s")
 
@@ -1130,8 +1125,8 @@ def cmd_doctor_siblings(a):
             lines.append(rec_line("ok", "D25", sec, "autonomy allow rules present in %s" % where))
         if "Bash(cx-wsl:*)" in allow:
             lines.append(rec_line("warn", "D25", sec, D25_CXWSL_BROAD % (
-                where, "replace it with the tool rules " + ", ".join(D25_WIN_RULES[2:]) + " (cx-wsl bash steps then prompt)"
-                if a.forwarded else "remove it: sessions in WSL never need cx-wsl, which is the Windows side's bridge")))
+                where, "replace it with the tool rules " + ", ".join(D25_WIN_RULES[4:]) + " (cx-wsl bash steps then prompt)"
+                if a.forwarded else "remove it: a session in WSL needs only the cx-wsl tool rules listed (the skill's grok and ghcp-ci-debug calls)")))
         if isinstance(sandbox, dict) and sandbox.get("enabled") is True:
             exc = sandbox.get("excludedCommands")
             exc = [x for x in exc if isinstance(x, str)] if isinstance(exc, list) else []
@@ -1207,6 +1202,55 @@ def cmd_wsl_resolve(a):
             dirs.append(d)
     cop = bins.get("copilot") if runnable(bins.get("copilot")) else ""
     out(tool + "\n" + ":".join(dirs) + "\n" + cop + "\n")
+    return 0
+
+
+RECORD_BINS = ("claude", "copilot", "grok", "agy", "gh", "git", "python3", "ghcp_delegate", "ghcp_job",
+               "ghcp_handoff", "ghcp_ci_debug", "ghcp_models", "ghcp_cloud", "agy_delegate", "agy_job")
+
+
+def cmd_record_env(a):
+    """The Phase 2 adapters (section 15.2): the host record as shell assignments (printf %q
+    style, through shell_quote) for eval: CXR_PATH, CXR_COPILOT_HOME (set or unset),
+    CXR_COPILOT_TOKEN_ENV, CXR_RECORDED_AT, CXR_PLUGIN_VERSION and CXR_BIN_<key> for every key
+    of RECORD_BINS (empty when missing, not executable or under the automount root; a sibling
+    wrapper that moved is re-resolved once from installed_plugins.json, like wsl-resolve).
+    Exit 3 without a readable record."""
+    rec = load_json_file(a.record)
+    if not isinstance(rec, dict):
+        return 3
+    mnt = a.mnt_root if a.mnt_root.endswith("/") else a.mnt_root + "/"
+    drive = re.compile("(%s|/mnt/)[A-Za-z]/" % re.escape(mnt))
+
+    def runnable(p):
+        if not (isinstance(p, str) and p.startswith("/")) or drive.match(p):
+            return False
+        return os.path.isfile(p) and os.access(p, os.X_OK)
+
+    bins = dict(rec.get("bin")) if isinstance(rec.get("bin"), dict) else {}
+    for prefix, pid, names in (("ghcp_", GHCP_ID, GHCP_WRAPPERS), ("agy_", AGY_ID, AGY_WRAPPERS)):
+        if any(k.startswith(prefix) and k in RECORD_BINS and not runnable(bins.get(k)) for k in
+               [n.replace("-", "_") for n in names]):
+            info = plugins_report(a.config_dir)["plugins"][pid]
+            if info["installed"] and info["install_path"]:
+                for n in names:
+                    cand = os.path.abspath(os.path.join(info["install_path"], "bin", n))
+                    if runnable(cand) and not runnable(bins.get(n.replace("-", "_"))):
+                        bins[n.replace("-", "_")] = cand
+    path = rec.get("path") if isinstance(rec.get("path"), str) else ""
+    path = ":".join(d for d in path.split(":") if d.startswith("/") and not drive.match(d + "/"))
+    lines = ["CXR_PATH=" + shell_quote(path)]
+    ch = rec.get("copilot_home")
+    lines.append("CXR_COPILOT_HOME_SET=" + ("1" if isinstance(ch, str) else "0"))
+    lines.append("CXR_COPILOT_HOME=" + shell_quote(ch if isinstance(ch, str) else ""))
+    te = rec.get("copilot_token_env")
+    lines.append("CXR_COPILOT_TOKEN_ENV=" + shell_quote(te if te in ("GH_TOKEN", "GITHUB_TOKEN") else ""))
+    lines.append("CXR_RECORDED_AT=" + shell_quote(str(rec.get("recorded_at") or "")))
+    lines.append("CXR_PLUGIN_VERSION=" + shell_quote(str(rec.get("plugin_version") or "")))
+    for k in RECORD_BINS:
+        v = bins.get(k)
+        lines.append("CXR_BIN_%s=%s" % (k, shell_quote(v if runnable(v) else "")))
+    out("\n".join(lines) + "\n")
     return 0
 
 
@@ -1371,6 +1415,8 @@ def _ledger_month(path):
         ts = str(ev.get("ts") or ev.get("started_at") or "")
         pool = str(ev.get("pool") or ev.get("lane") or "")
         cr = ev.get("credits", ev.get("ai_credits"))
+        if cr is None and isinstance(ev.get("cost"), dict):
+            cr = ev["cost"].get("ai_credits")  # Phase 2 ledger lines (section 15.4)
         if ts.startswith(month) and "copilot" in pool and isinstance(cr, (int, float)):
             total += cr
     return round(total, 3)
@@ -1512,7 +1558,7 @@ def cmd_doctor_session(a):
         if off:
             lines.append(rec_line("info", "D32", sec, "ultracode is set (%s) but workflows are off, so it has no effect" % _where(u)))
         else:
-            lines.append(rec_line("info", "D32", sec, "ultracode on for new sessions (%s): workflow agents get the conductor's subagent rules and never run executors (Phase 1)" % _where(u)))
+            lines.append(rec_line("info", "D32", sec, "ultracode on for new sessions (%s): workflow agents get the conductor's subagent rules and run executors only through cx-run --background (the shared pool slots cap them)" % _where(u)))
     else:
         lines.append(rec_line("info", "D32", sec, "ultracode not set in the settings files; a session can still turn it on (/effort ultracode, --effort ultracode, --settings, the keyword); the doctor cannot see session toggles"))
     # (3) keyword trigger, (4) size guideline
@@ -1538,6 +1584,9 @@ def cmd_doctor_session(a):
             n = 0
         if n > 0:
             lines.append(rec_line("info", "D32", sec, "workflow concurrency %d agents per workflow (min(16, max(2, %d CPUs - 2)); CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS overrides it)" % (min(16, max(2, n - 2)), n)))
+    # (7) Phase 2: the pool slot caps next to the concurrency (section 15.3)
+    if re.fullmatch(r"(cap_[a-z]+=[0-9]+ ?)+", a.caps or ""):
+        lines.append(rec_line("info", "D32", sec, "slot caps: %s (shared by every session, thread and workflow agent on this computer; a run beyond them queues, then exits 28)" % a.caps.strip()))
     if st["workflow_allow"]:
         lines.append(rec_line("info", "D32", sec, "Workflow allow rules: " + ", ".join(st["workflow_allow"])))
     sys.stdout.write("".join(lines))
@@ -2111,6 +2160,134 @@ def cmd_init_apply(a):
     return 5 if conflict else 0
 
 
+# --------------------------------------------------------------------------- cx-init --user-grants
+
+def _ug_target(path):
+    """Write through a symlinked dotfile to its target (dotfile managers), never replace the link."""
+    return os.path.realpath(path) if os.path.islink(path) else path
+
+
+def _ug_profile_defined(path, name):
+    data = _toml_load(path)
+    if data is not None:
+        prof = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
+        return isinstance(prof.get(name), dict)
+    _, headers = _toml_scan(path)
+    return any(h in ("profiles." + name, name) for h in headers)
+
+
+def cmd_user_grants(a):
+    """cx-init --user-grants (DESIGN section 15.7): user-level, once per machine, idempotent.
+    (1) agy: write_file(<worktree_root>) and one command(<cmd>) per routes command merged into
+        ~/.gemini/antigravity-cli/settings.json permissions.allow (other keys kept);
+    (2) grok: the grok_sandbox_profile profile from templates/grok-sandbox.toml appended to
+        ~/.grok/sandbox.toml when that profile is absent;
+    (3) grok: [cli] auto_update = false in ~/.grok/config.toml when the key is absent.
+    A file that changes is first copied to <file>.cx-bak. All or nothing: a file that cannot be
+    merged (invalid JSON, permissions or allow of the wrong type) is a conflict, and nothing at
+    all is written (exit 5)."""
+    home = a.home
+    grok_home = a.grok_home or os.path.join(home, ".grok")
+    root = a.root.rstrip("/") or "/"
+    cmds = []
+    for c in a.cmd or []:
+        c = c.strip()
+        if c and not CTRL_RE.search(c) and c not in cmds:
+            cmds.append(c)
+    results, writes, notes = [], [], []
+
+    # (1) agy
+    gf = os.path.join(home, ".gemini", "antigravity-cli", "settings.json")
+    want = ["write_file(%s)" % root] + ["command(%s)" % c for c in cmds]
+    if os.path.exists(gf):
+        obj = load_json_file(gf)
+        perms = obj.get("permissions", {}) if isinstance(obj, dict) else None
+        allow = perms.get("allow", []) if isinstance(perms, dict) else None
+        if not isinstance(obj, dict):
+            results.append({"path": gf, "action": "conflict", "reason": "not a JSON object; fix it by hand"})
+        elif not isinstance(perms, dict) or not isinstance(allow, list):
+            results.append({"path": gf, "action": "conflict", "reason": "permissions.allow is not a list; fix it by hand"})
+        else:
+            have = [re.sub(r"/+\)$", ")", x.strip()) for x in allow if isinstance(x, str)]
+            add = [w for w in want if w not in have]
+            if add:
+                obj.setdefault("permissions", perms)
+                perms["allow"] = list(allow) + add
+                writes.append((gf, json.dumps(obj, ensure_ascii=False, indent=2) + "\n", True))
+                results.append({"path": gf, "action": "update", "reason": "added " + ", ".join(add)})
+            else:
+                results.append({"path": gf, "action": "same", "reason": ""})
+    else:
+        writes.append((gf, json.dumps({"permissions": {"allow": want}}, ensure_ascii=False, indent=2) + "\n", False))
+        results.append({"path": gf, "action": "create", "reason": "added " + ", ".join(want)})
+    if not cmds:
+        notes.append("no routes commands found (run it inside a repo with .cx/routes.json to grant them): only write_file was considered")
+
+    # (2) grok sandbox profile
+    sf = os.path.join(grok_home, "sandbox.toml")
+    tpl = read_text(a.template).replace("{{name}}", a.profile)
+    if os.path.exists(sf) and _ug_profile_defined(sf, a.profile):
+        results.append({"path": sf, "action": "same", "reason": ""})
+    else:
+        old = read_text(sf) if os.path.exists(sf) else ""
+        new = old + ("" if not old or old.endswith("\n") else "\n") + ("\n" if old.strip() else "") + tpl
+        writes.append((sf, new, bool(old)))
+        results.append({"path": sf, "action": "update" if old else "create", "reason": "added profile %s (extends workspace; denies secrets; syntax docs-only)" % a.profile})
+
+    # (3) grok config: [cli] auto_update = false
+    cf = os.path.join(grok_home, "config.toml")
+    old = read_text(cf) if os.path.exists(cf) else ""
+    cur = toml_get(cf, "cli", "auto_update") if old else None
+    if cur is not None:
+        results.append({"path": cf, "action": "same", "reason": ""})
+        if str(cur).strip().lower() != "false":
+            notes.append("%s sets [cli] auto_update = %s: set it to false (the conductor pins grok %s)" % (cf, cur, a.grok_pin))
+    else:
+        lines = old.split("\n") if old else []
+        idx = next((i for i, ln in enumerate(lines) if re.match(r"^\s*\[\s*cli\s*\]\s*(#.*)?$", ln)), None)
+        if idx is not None:
+            lines.insert(idx + 1, "auto_update = false")
+            new = "\n".join(lines)
+        else:
+            new = old + ("" if not old or old.endswith("\n") else "\n") + ("\n" if old.strip() else "") + "[cli]\nauto_update = false\n"
+        writes.append((cf, new, bool(old)))
+        results.append({"path": cf, "action": "update" if old else "create", "reason": "added [cli] auto_update = false"})
+
+    conflict = any(r["action"] == "conflict" for r in results)
+    written, unchanged, conflicts = [], [], []
+    for r in results:
+        (conflicts if r["action"] == "conflict" else unchanged if r["action"] == "same" else written).append(r["path"])
+    if not a.dry_run and not conflict:
+        for path, data, existed in writes:
+            tgt = _ug_target(path)
+            if existed:
+                shutil.copy2(tgt, path + ".cx-bak")
+            atomic_write(tgt, data)
+    if a.json:
+        out(json.dumps({"user_grants": True, "dry_run": bool(a.dry_run), "files": results, "notes": notes},
+                       ensure_ascii=False, indent=1) + "\n")
+    else:
+        buf = []
+        for r in results:
+            act = r["action"]
+            if act == "conflict":
+                buf.append("CONFLICT %s (%s)\n" % (r["path"], r["reason"]))
+            elif act in ("update", "create"):
+                buf.append("%-8s %s (%s)\n" % (act, r["path"], r["reason"]))
+            else:
+                buf.append("same     %s\n" % r["path"])
+        out("".join(buf))
+        sys.stdout.flush()
+        for n in notes:
+            err("cx-init: %s\n" % sanitize(n, 400))
+    sys.stdout.flush()
+    err("CX_INIT %s\n" % dumps_line({"repo": a.repo or "", "dry_run": bool(a.dry_run),
+                                     "written": [] if (a.dry_run or conflict) else written,
+                                     "unchanged": unchanged, "conflicts": conflicts, "excluded": False,
+                                     "detected": {"user_grants": True, "commands": cmds, "worktree_root": root}}))
+    return 5 if conflict else 0
+
+
 # --------------------------------------------------------------------------- main
 
 def main(argv):
@@ -2196,6 +2373,11 @@ def main(argv):
     s.add_argument("--conductor-bin", default="")
     s.add_argument("--mnt-root", default="/mnt/")
     s.set_defaults(fn=cmd_wsl_resolve)
+    s = sub.add_parser("record-env")
+    s.add_argument("--record", required=True)
+    s.add_argument("--config-dir", required=True)
+    s.add_argument("--mnt-root", default="/mnt/")
+    s.set_defaults(fn=cmd_record_env)
     s = sub.add_parser("doctor-pools")
     for opt in ("--agy-ids", "--copilot-catalog", "--catalog-age", "--grok-ids", "--agy-usage", "--pools-file",
                 "--ledger", "--out-json"):
@@ -2224,6 +2406,7 @@ def main(argv):
     s.add_argument("--nproc", default="")
     s.add_argument("--host", default="")
     s.add_argument("--forwarded", type=int, default=0)
+    s.add_argument("--caps", default="")
     s.set_defaults(fn=cmd_doctor_session)
     s = sub.add_parser("doctor-render")
     s.add_argument("--checks", required=True)
@@ -2258,6 +2441,18 @@ def main(argv):
     s.add_argument("--force", action="store_true")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_init_apply)
+    s = sub.add_parser("user-grants")
+    s.add_argument("--home", required=True)
+    s.add_argument("--grok-home", default="")
+    s.add_argument("--root", required=True)
+    s.add_argument("--profile", required=True)
+    s.add_argument("--template", required=True)
+    s.add_argument("--grok-pin", default="")
+    s.add_argument("--repo", default="")
+    s.add_argument("--cmd", action="append")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_user_grants)
     s = sub.add_parser("pools-mtd")
     s.add_argument("--file", required=True)
     s.add_argument("--set")

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# tests/stubs/agy-delegate: stands in for the antigravity plugin's wrapper (reached through a fake
+# install dir). --help -> fixtures/real/antigravity/agy-delegate-help.txt; --print-command (free).
+# It finds agy with command -v, like the real wrapper, and logs that path (agy=<path>): a worker
+# shim there (exit 126) makes it fail with exit 2. A run needs STUB_AGY_DELEGATE_RUN, else it is
+# billable: ok (answer + AGY_USAGE echoing --model), denied (exit 15), partial (exit 12),
+# quota (exit 10), wrongtree (also writes cx-wrong.txt into $STUB_AGY_OTHER). A "-" prompt is read
+# from stdin into $STUB_AGY_STDIN_FILE when that is set.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_env_dump agy-delegate
+AGY="$(command -v agy 2>/dev/null)"
+stub_log agy-delegate "agy=${AGY:-none}" "run=${STUB_AGY_DELEGATE_RUN:-}" -- "$@"
+case "${1-}" in -h|--help) cat "$STUB_FIX/real/antigravity/agy-delegate-help.txt"; exit 0 ;; esac
+model="" dir="" print=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m|--model) model="$2"; shift 2 ;;
+    -d|--dir) [ -n "$dir" ] || dir="$2"; shift 2 ;;
+    --timeout|-t|--tier|--mode|--conversation) shift 2 ;;
+    --print-command) print=1; shift ;;
+    -) [ -z "${STUB_AGY_STDIN_FILE:-}" ] || cat > "$STUB_AGY_STDIN_FILE"; shift ;;
+    *) shift ;;
+  esac
+done
+[ -n "$print" ] && { printf 'agy --model %q --print-timeout 30m -p ...\n' "$model"; exit 0; }
+run="${STUB_AGY_DELEGATE_RUN:-}"
+case "$run" in ok|denied|partial|quota|wrongtree) ;; *) stub_billable agy-delegate "$@" ;; esac
+if [ -z "$AGY" ] || ! "$AGY" --version >/dev/null 2>&1; then
+  printf 'agy-delegate: agy exited 126\n' >&2
+  printf 'AGY_SIGNAL {"status":"AGY_FAILED","reason":"agy exited 126","model":"%s"}\n' "$model" >&2
+  exit 2
+fi
+usage() { printf 'AGY_USAGE {"status": "SUCCESS", "error": "", "usage": {"input": 800, "output": 90, "thinking": 30, "cache_read": 100, "total": 1020}, "conversation_id": "c-0001", "model": "%s", "tier": "", "duration_seconds": 3, "num_turns": 2}\n' "$model" >&2; }
+case "$run" in
+  ok|wrongtree)
+    [ "$run" = wrongtree ] && [ -n "${STUB_AGY_OTHER:-}" ] && printf 'wrong\n' > "$STUB_AGY_OTHER/cx-wrong.txt"
+    [ -n "$dir" ] && printf 'from agy-delegate\n' > "$dir/cx-agy.txt"
+    printf 'Reviewed.\nDIGEST: done.\n'; usage; exit 0 ;;
+  denied) usage; printf 'AGY_SIGNAL {"status":"PERMISSION_DENIED","reason":"write_file denied","model":"%s"}\n' "$model" >&2; exit 15 ;;
+  partial) printf 'Partial.\n'; usage; printf 'AGY_SIGNAL {"status":"TIMEOUT","reason":"print-timeout expired mid-turn","model":"%s"}\n' "$model" >&2; exit 12 ;;
+  quota) printf 'AGY_SIGNAL {"status":"QUOTA_EXHAUSTED","reason":"agy quota / rate limit","model":"%s","retry":"--continue"}\n' "$model" >&2; exit 10 ;;
+esac

@@ -1,11 +1,11 @@
 ---
 name: conductor
-description: Route work across the subscriptions Claude Code conducts - GitHub Copilot CLI (through the ghcp plugin), Grok Build (raw CLI) and Antigravity (raw agy for Opus, the antigravity plugin for Gemini) - while Claude owns the spec, the gates and the merge. Use when deciding which subscription or model should do a task, when delegating or offloading work, for Opus 5.5 fan-out or parallel workers, when Copilot, Grok, Antigravity or agy is mentioned, for cross-model or second-opinion review, PR or CI triage, media understanding or Google-grounded research, for cx-doctor, cx-init or cx-wsl, and for worktree task contracts (.conductor/task.md).
+description: Route work across the subscriptions Claude Code conducts - GitHub Copilot CLI (through the ghcp plugin), Grok Build (raw CLI) and Antigravity (raw agy for Opus, the antigravity plugin for Gemini) - while Claude owns the spec, the gates and the merge. Use when deciding which subscription or model should do a task, when delegating or offloading work, for Opus 5.5 fan-out or parallel workers, when Copilot, Grok, Antigravity or agy is mentioned, for cross-model or second-opinion review, PR or CI triage, media understanding or Google-grounded research, for cx-run, cx-job, cx-doctor, cx-init or cx-wsl, and for worktree task contracts (.conductor/task.md).
 ---
 
 # conductor: Claude conducts, the subscriptions execute
 
-**If you are a subagent or a workflow agent, do not run anything in this skill: return `EXECUTOR_NEEDED: <lane> - <reason>` and let the main session dispatch.**
+**If you are a subagent or a workflow agent, do not run anything in this skill: return `EXECUTOR_NEEDED: <lane> - <reason>` and let the main session dispatch, unless your task names a `cx-run --background` command: then run only that, and `cx-job wait` for it.**
 
 Section numbers (§) refer to `docs/DESIGN.md` in this plugin; a change there updates this file
 in the same commit.
@@ -22,24 +22,24 @@ in the same commit.
   concurrency limits, not spend caps.
 - **No data restrictions (U4).** Every pool is enabled for every repo (`.cx/routes.json`
   `pools` all true) unless the repo's `routes.json` says otherwise.
-- **Phase 1.** There is no `cx-run` yet. You dispatch by hand with the exact commands of
-  section 4, through the sibling plugins' wrappers (ghcp, antigravity) and the raw Grok and agy
-  CLIs. The conductor never uses the grok-build plugin.
+- **Phase 2.** You dispatch with `cx-run` and `cx-job` (section 4), which reach the sibling
+  plugins' wrappers (ghcp, antigravity) and the raw Grok and agy CLIs for you; you still commit
+  and gate by hand (Step 3) until Phase 3. The conductor never uses the grok-build plugin.
 
 ## 2. Routing (§6.1, §6.2)
 
 ### Lanes
 
-| Lane id | Executor and model | Pool | Writes | Phase 1 command |
+| Lane id | Executor and model | Pool | Writes | Command |
 |---|---|---|---|---|
-| `claude` | Claude Code, `claude-opus-5-5`, effort up to `max` | Claude plan (the pool to conserve) | yes | Your own Task/Agent subagents (Step 2d) |
-| `agy-opus` | agy, `claude-opus-5-5-{medium,high}` | Ultra Claude/GPT bucket | yes (static grant) | Step 2a, after registering the directory |
-| `copilot-opus` | ghcp, `claude-opus-5.5` at effort high | Copilot credits | yes | Step 2b |
-| `copilot-fusion` | ghcp Fusion Standard / Max | Copilot credits | yes | Step 2b (mechanical fallback; both Opus pools drained) |
-| `copilot-gpt` | ghcp, `gpt-6.1-sol` (`gpt-6-astra` critique, `gpt-6-luna` text) | Copilot credits | no | Step 2e, Step 4 |
-| `copilot-github` | Copilot code review, `ghcp-ci-debug`, the Copilot cloud agent (`ghcp-cloud`); ghcp's GitHub mode (`--github`) only for a task meant to act on GitHub | Copilot credits (the cloud agent also Actions minutes) | via PR; `--github` writes on GitHub as you | Step 5 |
-| `grok` | Grok Build 1.0.70, `-m grok-4.7` | xAI weekly first-party pool | yes (acceptEdits + allow-list) | Step 2c |
-| `agy-gemini` | `agy-delegate`, `Gemini 4 Argon (High)` / `gemini-3.8-flash-high` | Ultra Gemini quota (not the Claude/GPT bucket) | no | Step 2e, Step 4 |
+| `claude` | Claude Code, `claude-opus-5-5`, effort up to `max` | Claude plan (the pool to conserve) | yes | Your own Task/Agent subagents: `cx-run --exec claude`, then `--finish` (Step 2) |
+| `agy-opus` | agy, `claude-opus-5-5-{medium,high}` | Ultra Claude/GPT bucket | yes (static grant) | `cx-run --exec agy` (Step 2) |
+| `copilot-opus` | ghcp, `claude-opus-5.5` at effort high | Copilot credits | yes | `cx-run --exec copilot` (Step 2) |
+| `copilot-fusion` | ghcp Fusion Standard / Max | Copilot credits | yes | `cx-run --exec copilot --fusion standard\|max` (mechanical fallback; both Opus pools drained) |
+| `copilot-gpt` | ghcp, `gpt-6.1-sol` (`gpt-6-astra` critique, `gpt-6-luna` text) | Copilot credits | no | `cx-run --mode read --exec copilot`, `--mode review --family gpt` (Steps 2, 4) |
+| `copilot-github` | Copilot code review, `ghcp-ci-debug`, the Copilot cloud agent (`cx-run --exec copilot-cloud`, through ghcp's `ghcp-cloud`); ghcp's GitHub mode (`--github`) only for a task meant to act on GitHub | Copilot credits (the cloud agent also Actions minutes) | via PR; `--github` writes on GitHub as you | Step 5 |
+| `grok` | Grok Build 1.0.70, `-m grok-4.7` | xAI weekly first-party pool | yes (acceptEdits + allow-list) | `cx-run --exec grok` (Step 2) |
+| `agy-gemini` | `agy-delegate`, `Gemini 4 Argon (High)` / `gemini-3.8-flash-high` | Ultra Gemini quota (not the Claude/GPT bucket) | no | `cx-run --mode read --exec agy`, `--mode review --family gemini` (Steps 2, 4) |
 | `agy-media` | `agy-media`, `/antigravity:research` | Ultra Gemini quota | machine-wide: both always pass `--yolo` | none: not used outside Docker (v1.1 lane) |
 
 ### Routing table
@@ -52,11 +52,11 @@ integrated gate at merge.
 | Task type | Primary (lane · model · effort) | Fallback | Verification |
 |---|---|---|---|
 | Architecture / hard reasoning | `claude` · xhigh (max for one-way doors) | `copilot-opus` high | You write the ADR; read-only alternatives from `agy-opus` and a critique from `copilot-gpt` (`gpt-6-astra`) are input only |
-| Exploration / "where is X" | `grok` · `grok-4.7` medium, read-only, JSON schema `[{file,line,why}]` (Step 2c) | `agy-gemini` flash, read-only (register the dir) | Spot-check the cited lines |
+| Exploration / "where is X" | `grok` · `grok-4.7` medium, read-only, JSON schema `[{file,line,why}]` (Step 2) | `agy-gemini` flash, read-only (register the dir) | Spot-check the cited lines |
 | Small (under ~200 lines) or judgement-heavy change | `claude` | — | Normal tests (delegating below the break-even is a measured loss) |
 | Debugging / root cause | `claude` owns the hypotheses; `grok` high writes repro scripts, `git bisect run`, log digests | `agy-gemini` flash for logs over 200k tokens | See the test fail before and pass after |
-| Spec'd feature, design-sensitive | Opus lanes in the pool order (section 3), high, only with strong acceptance tests until the A/B | Next Opus lane; Fusion Max (`ghcp-handoff`, tier `pro`) when both pools are drained; then `claude` | Clean-checkout tests, tamper check, diff budget, cross-family review, integrated gate |
-| Spec'd feature, mechanical | `grok` · `grok-4.7` high, no subagents, 60 turns max (Step 2c) | `copilot-fusion` standard; `agy-gemini` flash high | Same gate plus the `permission required:` stderr scan |
+| Spec'd feature, design-sensitive | Opus lanes in the pool order (section 3), high, only with strong acceptance tests until the A/B (`cx-run --exec auto`) | Next Opus lane; Fusion Max (`--fusion max`) when both pools are drained; then `claude` | Clean-checkout tests, tamper check, diff budget, cross-family review, integrated gate |
+| Spec'd feature, mechanical | `grok` · `grok-4.7` high, no subagents, 60 turns max (Step 2) | `copilot-fusion` standard; `agy-gemini` flash high | Same gate plus the `permission required:` stderr scan |
 | Bulk edits / migrations | `claude` writes a codemod; `grok` high does the remainder, one worktree per directory shard, 4–6 lanes | `copilot-fusion` standard | Full checks; grep for leftovers; read a 5–10 % sample of hunks |
 | Dependency upgrades | `grok` mechanical (lockfiles exempt; only this task type may run `setup`) | `copilot-fusion` standard | Integrated gate; read the upstream changelog; `audit` when routes defines it |
 | Exhaustive tests | `grok` high against a contract you wrote | `agy-gemini` flash high; `copilot-gpt` medium | Tests pass on current code, zero source changes, opt-in mutation threshold, sample for tautologies |
@@ -67,15 +67,15 @@ integrated gate at merge.
 | Second opinion on Opus-written code | `agy-gemini` Argon High; `copilot-gpt` too on `high_risk` paths | `grok` xhigh | Opus reviewing Opus is never independent (`same_family_as_conductor`) |
 | Second opinion on Grok/Gemini-written code | `claude`, depth scaled by risk | — | — |
 | PR / issue / CI triage | `copilot-github` (`ghcp-ci-debug`); issues and PRs: fetch with `gh`, then a read-only `copilot-gpt` digest (Step 5; never `--github` for triage) | `grok` digest of `gh run view <id> --log-failed` | Fixes go through the same gates |
-| Commit messages, PR text, changelogs | `grok` low/medium, read-only, the diff in a prompt file (Step 2e) | `copilot-gpt` (`gpt-6-luna`) | You edit; nothing that is not in the diff |
+| Commit messages, PR text, changelogs | `grok` low/medium, read-only, the diff in a prompt file (Step 2) | `copilot-gpt` (`gpt-6-luna`) | You edit; nothing that is not in the diff |
 | Merge conflicts / integration fixes | `claude` | — | Integrated gate |
 | UI / frontend code | `claude` designs; Opus lanes make 2–3 parallel variants (one worktree each) | `claude` subagent | Screenshots, a11y lint; you pick and say why |
-| Media understanding | v1.1 Docker lane (`agy-media` always passes `--yolo`); in Phase 1 you read what you can (images, transcripts) | — | Check the timestamps you rely on |
+| Media understanding | v1.1 Docker lane (`agy-media` always passes `--yolo`); until then you read what you can (images, transcripts) | — | Check the timestamps you rely on |
 | Web-grounded research | your own WebSearch / WebFetch; `grok` (real time, X) | `agy-gemini` flash on text you fetched (headless agy web search needs `--yolo`, so `/antigravity:research` waits for Docker) | Re-fetch load-bearing citations; at least 2 sources per claim |
 | Long-file / codebase digest | `agy-gemini` Argon High above ~200k tokens, flash below (register the dir) | `grok`; Copilot long-context | Spot-check 3–5 file:line references |
 | Docs | `grok` medium for reference docs; `claude` for narrative and architecture | `agy-gemini` flash; `copilot-fusion` | Examples and doctests run; you edit |
 | Images (v2 lane) | agy's image generator, interactive until headless is confirmed | — | Open each file |
-| N-way Opus fan-out | `cx-fanout` (Phase 3); in Phase 1 dispatch by hand in the pool order | Fail over down the chain after a worktree reset | Section 5 gates and an integration step per merge |
+| N-way Opus fan-out | `cx-fanout` (Phase 3); until then one `cx-run --background` per task in the pool order (section 4, Workflows and ultracode) | Fail over down the chain after a worktree reset | Section 5 gates and an integration step per merge |
 
 ## 3. Opus 5.5 pool order, A/B status and effort map (§6.3, §6.7)
 
@@ -105,8 +105,8 @@ Never switch model or effort inside one executor session (it invalidates the cac
 
 **A/B status: pending.** The Phase 1 blinded A/B decides the order. For each of 3 real tasks
 with acceptance tests written first, one identical `task.md`, three worktrees from the same
-BASE: agy-opus-high (Step 2a, preferably the raw arm), copilot-opus-high (Step 2b) and a
-Claude subagent at high (Step 2d), each one background call. Commit and gate each (Step 3);
+BASE: `cx-run --exec agy` (raw mode: the served model is verified), `cx-run --exec copilot` and
+`cx-run --exec claude`, all at effort high, each its own id and worktree. Commit and gate each (Step 3);
 record gate result, diffstat, wall time, credits/quota, served model and how it was verified,
 tamper findings. A fresh Claude subagent scores the diffs, copied to files `A`, `B`, `C` in a
 random order kept in a sealed file, 1–5 on correctness, minimality, test integrity and
@@ -117,92 +117,65 @@ under `~/.conductor/ab/2026-11/` (never in a repo); only an aggregate table goes
 `printf '%s' '{"opus_lane_order":"copilot,agy,claude"}' | claude plugin configure conductor@conductor-for-claude-code --values-stdin`
 (it takes effect at the next session start).
 
-## 4. Phase 1 recipe and exact lane commands (§12.2)
+## 4. Recipe and exact lane commands (§12.2)
 
-Copy these commands verbatim, prefixes included. They are written for a Bash tool running in
-WSL, where the sibling wrappers are on the Bash tool's PATH; from the Windows app see "From
-Windows (Git Bash)" below. Replace `t1` with the task's id, and `npm ci --prefer-offline` /
-`npm test` / `npm run lint` / `npx tsc --noEmit` with the repo's `setup` and `commands` from
-`.cx/routes.json` (written by `cx-init`; one `--allow-shell` or `--allow 'Bash(...)'` per
-command).
+`cx-run` runs one task on one lane; `cx-job` runs it in the background. Copy their commands
+verbatim. They create the task's worktree, copy the contract and record its hash, run the repo's
+`setup`, take the shared pool slot, set every environment prefix, register agy directories and
+snapshot the other worktrees for agy, check denials and the served model, and write
+`result.json`, one ledger line and one `CX_RESULT` line. You write the contract, commit, gate and
+merge. Hand steps remain only where `cx-run` has no lane yet: the commit and gate (Step 3, until
+Phase 3's `cx-gate`), GitHub (Step 5) and commit-message drafting. They are written for a Bash
+tool in WSL; from the Windows app see "From Windows (Git Bash)" below. Replace `t1` with the
+task's id, and `npm ci --prefer-offline` / `npm test` / `npm run lint` / `npx tsc --noEmit`
+with the repo's `setup` and `commands` from `.cx/routes.json` (written by `cx-init`).
 
 ### Rules for every call
 
-- **Fresh shell per call.** Each Bash tool call starts a fresh shell. Step 1 writes the task's
-  variables to `$OUT/vars.sh`; every later call starts with
-  `. "$HOME/.conductor/out/<id>/vars.sh"`.
-- **Background for long calls.** Any call that may run longer than 9 minutes (every executor
-  run with `--timeout 30m`, `ghcp-handoff`, a slow gate) is ONE background Bash call with
-  `run_in_background: true` and `timeout: 7200000` (the tool notifies you when it exits), or is
-  started as a `ghcp-job` and waited for inside one such background call with the wait lines
-  below (agy has no job form: its lock and tree snapshots must span the whole run). A background call is stopped at its timeout too, and the default (30
-  minutes) is shorter than a 30m run plus registration, the raw arm's 35m bound or
-  `ghcp-handoff`'s delegation, tests and fix-up: pass `timeout: 7200000` (the 2-hour maximum)
-  on every background executor or wait call, and keep each lane's own clock below it.
-  Only calls with `--timeout 9m` or less may run in the foreground. A foreground call killed at
-  the Bash tool's timeout wastes the run: ghcp forwards TERM to Copilot (billed tokens, exit
-  130), and agy ignores TERM and is orphaned. Never wait by re-checking across turns.
-- **Outside the sandbox.** Executor calls (`ghcp-*`, `agy-*`, `agy`, `grok`, `gh`, `git push`)
-  and every step that writes under `worktree_root` (default `~/.cx-wt`) or `~/.conductor` run
-  outside Claude Code's Bash sandbox: Copilot writes `~/.copilot`, agy `~/.gemini` and
-  `~/.antigravity`, Grok `~/.grok`.
-- **Environment prefixes**, written in front of each command and never exported (an export
-  would turn your own shell into a "worker" and leak into unrelated commands). Never export
-  `CLAUDE_PLUGIN_OPTION_*` either: both sibling plugins read the same names.
+- **Background for long calls.** A write run may take 30 minutes or more: start it with
+  `cx-run --background …`, which prints `JOB_ID <id>` at once, and wait for it with ONE
+  background Bash call `cx-job wait <id>` with `run_in_background: true` and `timeout: 7200000`
+  (the 2-hour maximum; the tool notifies you when it exits). A background call is stopped at
+  its timeout too, and the default (30 minutes) is shorter than a 30m run plus setup and agy's
+  grace. Only runs with `--timeout 9m` or less, `--dry-run`, `--explain`, the claude dispatch
+  and `--finish` may run in the foreground. Never wait by re-checking across turns.
+- **Outside the sandbox.** `cx-run`, `cx-job` and the hand steps (they touch the worktree,
+  `~/.conductor`, `gh` and `git push`) run outside Claude Code's Bash sandbox: Copilot writes
+  `~/.copilot`, agy `~/.gemini` and `~/.antigravity`, Grok `~/.grok`, and the worktrees live
+  under `worktree_root` (default `~/.cx-wt`).
+- **Ids** are unique on this computer: no `cx/<id>` branch in the repo and no
+  `~/.conductor/out/<id>` (threads and repos share that directory; `cx-run` refuses a taken id).
+  Run `cx-run` from the repository's main checkout, or pass `--repo DIR`: from a checkout under
+  `.claude/worktrees/` it exits 1.
+- **Results are claims.** Read the `VERIFY THIS:` line and the `CX_RESULT` line (`status`,
+  `model_served`, `denied`, `diffstat`, `reason`): exit 0 means the checks `cx-run` can make
+  passed, not that the work is right.
+- **No exports.** Never export `CX_WORKER` or `CLAUDE_PLUGIN_OPTION_*` (both sibling plugins
+  read the same names); `cx-run` builds the worker environment per run. The hand steps' two
+  executor calls (Grok for commit messages, `ghcp-ci-debug`) go through `cx-wsl`, in WSL as from
+  Windows: it takes their pool slot (shared with every `cx-run`) and adds the per-tool prefix
+  (`grok`: `XAI_API_KEY` and `GROK_SANDBOX` unset, `CX_WORKER=1`, `GROK_DISABLE_AUTOUPDATER=1`
+  and the five `GROK_CLAUDE_*_ENABLED=false`; `ghcp-*`: `COPILOT_MODEL`, `COPILOT_ALLOW_ALL`,
+  `COPILOT_AUTO_TIER` and `COPILOT_PROVIDER_BASE_URL` unset, `CX_WORKER=1`,
+  `COPILOT_AUTO_UPDATE=false`, the recorded copilot binary). `XAI_API_KEY` would bill the xAI
+  API account instead of the subscription, and the `COPILOT_*` variables can change Copilot's
+  model, permissions or endpoint.
 
-  | Commands | Prefix |
-  |---|---|
-  | `grok` | `env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}"` (`G_ENV` from `vars.sh`: `GROK_DISABLE_AUTOUPDATER=1` and the five `GROK_CLAUDE_*_ENABLED=false`) |
-  | `agy`, `agy-delegate`, `agy-job` | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true` |
-  | `ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug` | `env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false` |
+**Once per machine** (and again after adding routes commands), from inside the repo:
+`cx-init --user-grants` merges `write_file(<worktree_root>)` and one `command(<cmd>)` per routes
+command into `~/.gemini/antigravity-cli/settings.json` (agy's write grant), adds the
+`cx-workspace` sandbox profile to `~/.grok/sandbox.toml` and `[cli] auto_update = false` to
+`~/.grok/config.toml`, keeping a `.cx-bak` copy of every file it changes (`--dry-run` shows
+what it would do). Never use the yolo / skip-permissions flags (`--yolo`,
+`--dangerously-skip-permissions`) outside Docker, and never `agy-handoff`, `agy-media` or
+`/antigravity:research` for conductor work (they always pass them: a grant over the whole
+machine).
 
-  `XAI_API_KEY` would bill the xAI API account instead of the subscription, `GEMINI_API_KEY` /
-  `GOOGLE_API_KEY` the Gemini key instead of the plan, and the `COPILOT_*` variables can
-  change Copilot's model, permissions or endpoint. `GH_TOKEN` / `GITHUB_TOKEN` are left alone
-  (they may be how Copilot signs in).
+### Step 1: the contract
 
-**Once per machine (agy writes):** merge into `~/.gemini/antigravity-cli/settings.json`:
-
-```json
-{"permissions": {"allow": ["write_file(/home/<you>/.cx-wt)", "command(npm test)"]}}
-```
-
-One `command(<cmd>)` per routes command; the `write_file` grant is recursive and covers only
-the worktree root (use `worktree_root`'s value when it is not the default). Never use the
-yolo / skip-permissions flags (`--yolo`, `--dangerously-skip-permissions`) outside Docker,
-and never use `agy-handoff`, `agy-media` or `/antigravity:research` for conductor work (they
-always pass them: a grant over the whole machine).
-
-### Step 1: worktree and contract
-
-Outside the sandbox; foreground unless `setup` is slow, run from inside the repo. Pick a short
-id that is unused on this computer: no `cx/<id>` branch in the repo and no
-`~/.conductor/out/<id>` (other threads and repos share that directory). `vars.sh` also defines
-`trees`, the snapshot Step 2a compares.
-
-```bash
-ID=t1
-TOP=$(git rev-parse --show-toplevel); BASE=$(git -C "$TOP" rev-parse HEAD)
-WT="$HOME/.cx-wt/$(basename "$TOP")-$ID"; OUT="$HOME/.conductor/out/$ID"; mkdir -p "$OUT"
-REPO=$(gh repo view --json url --jq .url 2>/dev/null | sed -E 's#^https?://##')   # host/owner/repo for gh -R; gh resolves ssh host aliases
-[ -n "$REPO" ] || REPO=$(git -C "$TOP" remote get-url origin 2>/dev/null | sed -E 's#^[a-z+]+://([^@/]*@)?##; s#^[^@/]*@([^:/]+):#\1/#; s#^([^/:]+):[0-9]+/#\1/#; s#\.git$##')   # gh not logged in: from the URL
-P='Read .conductor/task.md in the working directory and do exactly what it says. Do not spawn subagents. End with the DIGEST: line it specifies.'
-{ printf '%s=%q\n' ID "$ID" TOP "$TOP" BASE "$BASE" WT "$WT" OUT "$OUT" REPO "$REPO" P "$P"
-  echo 'G_ENV=(GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false)'
-  cat <<'SH'
-trees() { local m; m=$(git -C "$TOP" worktree list --porcelain | sed -n '1s/^worktree //p'); git -C "$TOP" worktree list --porcelain | sed -n 's/^worktree //p' | grep -vxF -e "$WT" -e "$(cd "$WT" && pwd -P)" | grep -vxF -f <(cat "$HOME"/.conductor/out/*/running 2>/dev/null) | while IFS= read -r d; do case "$d" in "$TOP") ;; "$m"/.claude/worktrees/*) continue ;; esac; printf '== %s\n' "$d"; git -C "$d" status --porcelain=v1 --untracked-files=all -- . ':!.claude/worktrees'; git -C "$d" diff HEAD | sha256sum; (cd "$d" && git ls-files -z -o --exclude-standard -- . ':!.claude/worktrees' | xargs -0r sha256sum); done; }
-SH
-} > "$OUT/vars.sh"
-git -C "$TOP" worktree add -q -b "cx/$ID" "$WT" "$BASE"
-EX="$(git -C "$TOP" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
-grep -qx '/.conductor/' "$EX" 2>/dev/null || echo '/.conductor/' >> "$EX"
-```
-
-`~/.cx-wt` is `worktree_root`'s default; use the option's value when `cx-doctor` lists it.
-
-Then write the contract to `$OUT/task.md` (the Write tool with the absolute path, or a quoted
-heredoc `cat > "$OUT/task.md" <<'TASK'` … `TASK`). `$OUT/task.md` is canonical. Line 1 is
-machine-readable, the rest is prose for the executor:
+Write the contract to a file with the Write tool (any path, e.g. `/tmp/cx-t1.md`; `cx-run`
+copies it to `~/.conductor/out/<id>/task.md`, its canonical place, and into the worktree as
+`.conductor/task.md`). Line 1 is machine-readable, the rest is prose for the executor:
 
 ```markdown
 <!-- cx-task {"id": "t1", "base": "<sha>", "lane": "agy-opus", "effort": "high", "allowed_paths": ["src/feature/**"], "lockfiles": false, "commands": ["npm test"]} -->
@@ -226,216 +199,83 @@ Reply with a compact digest: what changed (file:line), what you ran and its resu
 issues. No full file contents, no raw logs. End with exactly one line: DIGEST: <one sentence>.
 ```
 
-Before EVERY dispatch (also after a failover reset), copy the contract into the worktree,
-record its hash and mark the worktree `running` (a lane may write there, so other agy runs'
-snapshots leave it out until Step 3); the first time, also run the repo's `setup`:
+`id` and `base` may be left out (`--id`, `--base`, else a generated id and `HEAD`); `commands`
+are the only shell commands the executor may run (default: the routes commands);
+`"subagents": true` lets a Grok task use subagents. A one-line task may go as quoted text
+instead of `--task-file` (wrapped into the same template with the routes commands and no
+`allowed_paths`); prefer task files.
+
+### Step 2: dispatch
+
+One lane per task (G2). `--exec auto` (the default) takes the first lane of the policy's order
+whose pool is on in `routes.json`, is not paused, passes the free preflight, supports the
+effort and has a free slot (agy in raw mode, which verifies the served model); when every
+eligible pool is full it waits up to 10 minutes for a slot, then gives you the claude lane:
 
 ```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-mkdir -p "$WT/.conductor" && cp "$OUT/task.md" "$WT/.conductor/task.md" \
-  && sha256sum "$OUT/task.md" | cut -d' ' -f1 > "$OUT/task.sha"
-printf '%s\n' "$WT" "$(cd "$WT" && pwd -P)" > "$OUT/running"   # a lane may write here: agy snapshots skip it until Step 3
-(cd "$WT" && npm ci --prefer-offline) > "$OUT/setup.log" 2>&1 || echo ENV_FAILED   # routes.json setup
+cx-run --background --task-file /tmp/cx-t1.md --id t1 --effort high
+cx-job wait '<job id>'   # the id after JOB_ID; one background Bash call with timeout: 7200000
 ```
 
-`ENV_FAILED` is the repo's problem, not the executor's: fix the setup before dispatching.
-
-### Step 2a: agy Opus (lane `agy-opus`)
-
-One background Bash call. It takes the machine-wide agy lock first (flock on
-`~/.conductor/locks/agy`: one agy run at a time across every session and Work locally thread on
-this computer, because pool slots are not shared yet; it waits up to 80 minutes, then prints
-`AGY_BUSY` and exits 28: use the next pool in the order), registers the directory (free,
-bounded: print mode can hang), and snapshots every other worktree of the repo (the main
-checkout, previous tasks' worktrees, gate checkouts), with content, not just status. Left out of
-the snapshot: Claude Code's worktrees under the main checkout's `.claude/worktrees/` (other
-threads and agents at work; your own checkout `$TOP` stays in) and every worktree marked
-`running` by its dispatch (another lane at work there, in any thread):
+`cx-run --dry-run …` creates nothing and starts no executor; `--explain` also says why each
+lane was chosen or skipped and which preflight results came from the cache. An explicit lane,
+each started the same way and waited for with `cx-job wait`:
 
 ```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-rm -f "$OUT/running"   # an agy task's tree stays in later agy runs' snapshots
-mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
-(cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > "$OUT/agy-model.json"
-trees > "$OUT/trees.before"
-(cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true \
-  agy-delegate --model claude-opus-5-5-high --dir "$WT" --timeout 30m --digest "$P") \
-  > "$OUT/answer.txt" 2> "$OUT/agy.err"; echo $? > "$OUT/rc"
-trees > "$OUT/trees.after"; cmp -s "$OUT/trees.before" "$OUT/trees.after" || echo WRONG_TREE
-grep -E '^AGY_(USAGE|SIGNAL)' "$OUT/agy.err"
+cx-run --background --exec agy --task-file /tmp/cx-t1.md --id t1                        # agy Opus (raw mode: served model verified)
+cx-run --background --exec copilot --effort high --task-file /tmp/cx-t1.md --id t1      # Copilot Opus
+cx-run --background --exec copilot --fusion standard --task-file /tmp/cx-t1.md --id t1  # mechanical fallback (Fusion Standard)
+cx-run --background --exec copilot --fusion max --task-file /tmp/cx-t1.md --id t1       # both Opus pools drained (Fusion Max)
+cx-run --background --exec grok --task-file /tmp/cx-t1.md --id t1                       # Grok grok-4.7, mechanical work
 ```
 
-`AGY_USAGE`'s `model` only echoes the requested model: record the served model as
-`unverified (wrapper)`, never as verified. Exit 15 = missing grant (report it, never retry with
-the yolo flag); exit 12 = timeout or PARTIAL output. `WRONG_TREE` = a tree in the snapshot
-changed while agy ran, usually because agy wrote into its last project root, often a previous
-task's worktree under `~/.cx-wt` (the `write_file` grant covers all of them); `diff
-"$OUT/trees.before" "$OUT/trees.after"` names the tree. Report the tree and that diff, stop
-using agy for this task, and never reset or restore a tree you did not create in this task:
-when it may belong to another thread or lane, ask the user. Known false alarms: a worktree of
-the repo added or removed meanwhile (another task's Step 1, a gate checkout) and a lane of
-another thread writing here without a `running` mark.
+An explicit lane whose pool stays full exits 28 (`NO_CAPACITY`) after 10 minutes, or at once
+with `--no-wait`: use the next pool in the order. `cx-job status <id>` says `queued` while a job
+waits for its slot; `cx-job kill <id>` cancels one; `cx-job list` shows them. agy runs in raw
+mode by default (option `agy_opus_mode`; `--agy-mode wrapper` uses `agy-delegate`, whose served
+model is recorded as unverified). A `GHCP_FALLBACK` on a Fusion lane is a model mismatch (21).
 
-agy has no job form in Phase 1: the lock, the registration and both snapshots must span the
-whole run, which only one background call can do (an `agy-job` started in one call and waited
-for in another would release the lock early, and the next agy run would land in its snapshot).
-
-Raw arm (served model verified; preferred for the A/B). Its flags are documented but not yet
-captured from `agy --help`, and the init event shape is unverified. The same lock,
-registration and tree snapshots, as one background call:
+The claude lane (your own subagent, Opus 5.5 at the task's effort): `cx-run` creates the
+worktree, runs `setup` and prints a dispatch JSON (`worktree`, `host_path`, `prompt`,
+`effort`); give a Task/Agent subagent that prompt, told that its working directory is the
+`worktree` (every command runs there, every path is under it) and that it must not commit.
+Then finish it:
 
 ```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-rm -f "$OUT/running"   # an agy task's tree stays in later agy runs' snapshots
-mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
-(cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > "$OUT/agy-model.json"
-trees > "$OUT/trees.before"
-(cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true \
-  timeout -k 15s 35m agy --model claude-opus-5-5-high --add-dir "$WT" --print-timeout 30m \
-  --output-format stream-json -p "$P" </dev/null) > "$OUT/agy.ndjson" 2> "$OUT/agy.err"; echo $? > "$OUT/rc"
-trees > "$OUT/trees.after"; cmp -s "$OUT/trees.before" "$OUT/trees.after" || echo WRONG_TREE
-python3 -I - "$OUT/agy.ndjson" <<'PY'
-import json, sys
-served = None
-for line in open(sys.argv[1], encoding="utf-8", errors="replace").read().split("\n"):
-    try:
-        ev = json.loads(line)
-    except ValueError:
-        continue
-    if isinstance(ev, dict) and (ev.get("type") == "init" or "init" in ev):
-        body = ev.get("init") if isinstance(ev.get("init"), dict) else ev
-        served = body.get("model") or (body.get("data") or {}).get("model")
-        break
-print("served model:", served if served else "unknown (no init event with a model)")
-PY
+cx-run --exec claude --task-file /tmp/cx-t1.md --id t1
+cx-run --finish t1
 ```
 
-The served model must be `claude-opus-5-5-high`; anything else (or `unknown`) is a model
-mismatch for the A/B record. `timeout -k 15s 35m` bounds the hang after the result.
+On Windows give the subagent the `host_path` (`\\wsl.localhost\<distro>\…`) for Read, Edit,
+Write, Glob and Grep, and `cx-wsl bash -c 'cd "<worktree>" && <command>'` for every command;
+never `~` (on Windows that is `C:\Users\<you>`), and never Git Bash's own git, npm or test tools
+on those files.
 
-### Step 2b: Copilot Opus (lane `copilot-opus`)
-
-One background Bash call:
+Read-only lanes (no worktree: a detached checkout of `--base`, removed afterwards; the text is
+the question):
 
 ```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
-  ghcp-delegate --model claude-opus-5.5 --effort high --dir "$WT" --write --allow-shell 'npm test' \
-  --timeout 30m --digest "$P" > "$OUT/answer.txt" 2> "$OUT/ghcp.err"; echo $? > "$OUT/rc"
-grep -E '^GHCP_(SESSION|DENIED|NOTE|USAGE|SIGNAL|FALLBACK)' "$OUT/ghcp.err"
+cx-run --mode read --exec grok --effort medium '<question>'                           # exploration: [{file, line, why}]
+cx-run --mode read --exec agy '<digest request>'                                      # gemini-3.8-flash-high: logs, digests under ~200k tokens
+cx-run --mode read --exec agy --model 'Gemini 4 Argon (High)' '<digest request>'      # digests above ~200k tokens
+cx-run --mode read --exec copilot '<question>'                                        # gpt-6.1-sol (option review_model_gpt)
 ```
 
-One `--allow-shell` per routes command. `GHCP_USAGE` `models_used[].model` must be
-`claude-opus-5.5`; any `GHCP_DENIED` of kind `write` fails the run; about 32k output tokens
-with an empty answer is the #5149 signature.
-
-Job form: the same prefix and options, with `ghcp-job`'s `start` subcommand in place of
-`ghcp-delegate`:
-
-```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
-  ghcp-job start --model claude-opus-5.5 --effort high --dir "$WT" --write --allow-shell 'npm test' --timeout 30m --digest "$P"
-```
-
-It prints `JOB_ID <id>`; wait in one background call (exit = the job's rc):
-
-```bash
-J='<job id>'   # the id after JOB_ID
-while env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-job status "$J" | grep -qx running; do sleep 15; done
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-job result "$J"
-```
-
-Mechanical fallback (lane `copilot-fusion`, same prefix, background):
-
-```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
-  ghcp-delegate --fusion standard --write --allow-shell 'npm test' --dir "$WT" --timeout 30m --digest "$P" > "$OUT/answer.txt" 2> "$OUT/ghcp.err"; echo $? > "$OUT/rc"
-```
-
-Both Opus pools drained (Fusion Max; same prefix, background). `--test-cmd` is the routes
-`test` command, so `ghcp-handoff` does not detect its own:
-
-```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
-  ghcp-handoff --dir "$WT" --tier pro --test-cmd 'npm test' --timeout 30m "$P" > "$OUT/answer.txt" 2> "$OUT/ghcp.err"; echo $? > "$OUT/rc"
-```
-
-A `GHCP_FALLBACK` line on a Fusion lane means the answer came from a billed plain-`auto`
-re-run: treat it as a model mismatch.
-
-### Step 2c: Grok (lane `grok`)
-
-The raw CLI, never the grok-build plugin's bridge; one background Bash call:
-
-```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-UUID=$(cat /proc/sys/kernel/random/uuid); printf '%s\n' "$P" > "$WT/.conductor/prompt.txt"
-env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok --prompt-file "$WT/.conductor/prompt.txt" \
-  -m grok-4.7 --effort high --cwd "$WT" -s "$UUID" --output-format json --sandbox workspace \
-  --permission-mode acceptEdits --allow 'Bash(npm test)' --allow 'Bash(git status)' --allow 'Bash(git diff)' \
-  --no-subagents --max-turns 60 </dev/null > "$OUT/grok.json" 2> "$OUT/grok.err"; echo $? > "$OUT/rc"
-grep -n 'permission required:' "$OUT/grok.err" && echo DENIED     # a hit means denied, even with rc 0
-env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok usage "$UUID"
-```
-
-Read-only exploration (no worktree needed; `TOP` from `vars.sh` or `git rev-parse
---show-toplevel`):
-
-```bash
-env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok -p "<question>" -m grok-4.7 --effort medium --cwd "$TOP" --sandbox read-only --always-approve --no-subagents --output-format json --json-schema '{"type":"array","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":"integer"},"why":{"type":"string"}},"required":["file","line","why"]}}' </dev/null
-```
-
-Without a task's `vars.sh`, define `G_ENV` in the same call first (the `G_ENV=(…)` line of
-Step 1). `--sandbox workspace` becomes `cx-workspace` (option `grok_sandbox_profile`) once
-Phase 2 writes that profile; `--always-approve` is only ever combined with `read-only` outside
-Docker. The `Bash(<cmd>)` rule syntax and the `workspace` profile name are documented but not
-yet verified, so the `permission required:` scan is mandatory.
-
-### Step 2d: Claude (lane `claude`)
-
-A Task/Agent subagent (Opus 5.5, effort high unless the task needs more) with prompt `$P`,
-told that its working directory is `$WT` (every command runs there, every path is under it)
-and that it must not commit. It is still an executor: Step 3 applies unchanged.
-
-On Windows (Git Bash) the worktree is in WSL, so give the subagent two paths and say which is
-for what: the `\\wsl.localhost\<distro>\home\<you>\.cx-wt\<repo>-<id>` form for Read, Edit,
-Write, Glob and Grep (`cx-wsl bash -c '. "$HOME/.conductor/out/t1/vars.sh"; wslpath -w "$WT"'`
-prints it), and `cx-wsl bash -c 'cd "/home/<you>/.cx-wt/<repo>-<id>" && <command>'` for every
-command. Never `~` (on Windows that is `C:\Users\<you>`), and never Git Bash's own git, npm or
-test tools on those files.
-
-### Step 2e: read-only lanes (no worktree, no task contract)
-
-Same rules (prefixes, background, outside the sandbox); `DIR` is the checkout to read. An agy
-reader is one call: the lock line, the registration, then one `agy-delegate` line:
-
-```bash
-mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
-(cd DIR && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > /dev/null
-(cd DIR && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true agy-delegate --model gemini-3.8-flash-high --dir DIR --timeout 30m --digest "<question>")
-(cd DIR && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true agy-delegate --model 'Gemini 4 Argon (High)' --dir DIR --timeout 30m --digest "<digest request>")
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-delegate --model gpt-6.1-sol --effort high --dir DIR --digest "<question>"
-```
-
-The first `agy-delegate` line is flash (exploration fallback, long logs, digests under ~200k
-tokens), the second Argon (digests above ~200k tokens, synthesis); then the GPT-family
-reader. Not in Phase 1: `agy-media` and `/antigravity:research` (both always pass `--yolo`,
-machine-wide); research goes to your own WebSearch and grok, media waits for the v1.1 Docker
-lane. Commit messages, PR text and changelogs go to Grok with the diff inside the prompt file
-(one call; `ID`, `TOP`, `BASE`, `OUT` from `vars.sh`):
+Not lanes: `agy-media` and `/antigravity:research` (both always pass `--yolo`); research goes
+to your own WebSearch and Grok, media waits for the v1.1 Docker lane. Commit messages, PR text
+and changelogs go to Grok with the diff inside the prompt file (one call; `vars.sh` is written
+by `cx-run`):
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
 { printf '%s\n\n' 'Write a commit message (a subject under 72 characters, a blank line, a short body) for the diff below. Describe only what the diff shows.'; git -C "$TOP" diff "$BASE" "cx/$ID"; } > "$OUT/msg-prompt.txt"
-env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok --prompt-file "$OUT/msg-prompt.txt" -m grok-4.7 --effort low --cwd "$TOP" --sandbox read-only --always-approve --no-subagents --output-format plain </dev/null
+cx-wsl grok --prompt-file "$OUT/msg-prompt.txt" -m grok-4.7 --effort low --cwd "$TOP" --sandbox read-only --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
 ```
 
 ### Step 3: after every run (the conductor commits; the gate never runs in `$WT`)
 
-Background when the checks are slow:
+After a write run ended with exit 0 (for the claude lane, after `cx-run --finish`); background
+when the checks are slow:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
@@ -452,43 +292,34 @@ G="$HOME/.conductor/gate/$ID.1"; git -C "$TOP" worktree add -q --detach "$G" "$C
 (cd "$G" && npm ci --prefer-offline && npm test && npm run lint && npx tsc --noEmit)   # routes setup + commands
 ```
 
-The served model in the commit message is the verified one, or `unverified (wrapper)` (Step
-2a). `SPEC_TAMPERED` (exit 23), `BRANCH_TAMPERED` (exit 24: the executor created or switched
-branches, so a squash and commit would land on its branch while `cx/$ID` stays at BASE) and
-`NO_CHANGES` (exit 3) stop the step before the commit: nothing is committed or gated; inspect
-the worktree, then fail over or re-dispatch. The gate checks out the exact commit `C`, never a
-branch name. A second
-gate attempt uses `$ID.2`. Failover to the next lane: `git -C "$WT" reset -q --hard "$BASE" &&
-git -C "$WT" clean -ffdxq -e /.conductor/` (inside the conductor's own worktree only), re-copy
-`task.md` (Step 1), dispatch. Never let two lanes write to one worktree.
+The served model in the commit message is `CX_RESULT`'s `model_served` (`unverified` for agy's
+wrapper mode and the claude lane). `SPEC_TAMPERED` (exit 23), `BRANCH_TAMPERED` (exit 24: the
+executor created or switched branches, so a squash and commit would land on its branch while
+`cx/$ID` stays at BASE) and `NO_CHANGES` (exit 3) stop the step before the commit: nothing is
+committed or gated; inspect the worktree, then fail over or re-dispatch. The gate checks out the
+exact commit `C`, never a branch name. A second gate attempt uses `$ID.2`. Failover to the next
+lane: `git -C "$WT" reset -q --hard "$BASE" && git -C "$WT" clean -ffdxq -e /.conductor/`
+(inside the conductor's own worktree only), then `cx-run --reuse-worktree --exec <next lane>
+--task-file /tmp/cx-t1.md --id t1`. Never let two lanes write to one worktree.
 
-### Step 4: reviews (read-only, on the same gate checkout `$G`; only after Step 3 committed)
+### Step 4: reviews (read-only, on a gate checkout of the committed branch; only after Step 3)
 
-No second `worktree add`: Step 3 created `$G`. Each reviewer is one background call: the
-first four lines, then either the agy lines (lock, registration, reviewer) or the ghcp line:
+Each reviewer is one background call (or `--background` plus `cx-job wait`); the diff of
+`cx/t1` against its base is in `.conductor/change.diff` of a fresh checkout of the branch:
 
 ```bash
-. "$HOME/.conductor/out/t1/vars.sh"; G="$HOME/.conductor/gate/$ID.1"
-git -C "$TOP" diff "$BASE" "cx/$ID" > "$OUT/change.diff"
-[ -s "$OUT/change.diff" ] || { echo EMPTY_DIFF; exit 3; }     # nothing committed: do not review
-R="Review the change in $OUT/change.diff against the code in this checkout. List findings as file:line - severity - issue, most severe first. Do not edit files."
-mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
-(cd "$G" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > /dev/null
-(cd "$G" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true \
-  agy-delegate --model 'Gemini 4 Argon (High)' --dir "$G" --dir "$OUT" --timeout 30m --digest "$R")
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
-  ghcp-delegate --model gpt-6.1-sol --effort high --dir "$G" --add-dir "$OUT" --digest "$R"     # high_risk paths
+cx-run --mode review --family gemini --branch cx/t1    # Argon (option review_model_gemini) on Opus-written code
+cx-run --mode review --family gpt --branch cx/t1       # GPT (option review_model_gpt) on high_risk paths and security-relevant changes
 ```
 
-The model names are the defaults of options `review_model_gemini` and `review_model_gpt`. Run
-the Argon reviewer on Opus-written code; add the GPT reviewer on `high_risk` paths and
-security-relevant changes; review Grok- or Gemini-written code yourself. Confirm every
-accepted finding at file:line and give a reason for every rejected one. Clean up the gate
-checkout with `git -C "$TOP" worktree remove --force "$G"` once the reviews are in.
+Review Grok- or Gemini-written code yourself. Confirm every accepted finding at file:line and
+give a reason for every rejected one. A Claude-family reviewer of Claude-written code
+(`CX_NOTE same_family_as_conductor`) is not independent. Clean up Step 3's gate checkout with
+`git -C "$TOP" worktree remove --force "$G"` once the reviews are in.
 
 ### Step 5: GitHub (only after a green gate)
 
-Write the PR body to `$OUT/pr-body.md` first (Step 2e drafts it), then:
+Write the PR body to `$OUT/pr-body.md` first (Step 2's Grok call drafts it), then:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
@@ -497,17 +328,17 @@ gh pr create -R "$REPO" --head "cx/$ID" --title '<title>' --body-file "$OUT/pr-b
 gh pr edit "cx/$ID" -R "$REPO" --add-reviewer @copilot
 ```
 
-`REPO` (`host/owner/repo` as gh resolves the checkout's remote, ssh host aliases included;
-from the origin URL when gh is not logged in, Step 1) lets every `gh` call name the repo with
-`-R`, so each line starts with an allow-listed command (`cx-doctor`'s D25 lists the rules) and
-none needs a `cd`. `--add-reviewer @copilot` needs a gh whose `gh pr edit --help` mentions
-`@copilot` (`cx-doctor` checks it); otherwise use the REST fallback (reviewer login unverified;
-`<N>` from `gh pr view "cx/$ID" -R "$REPO" --json number --jq .number`):
+`REPO` (`host/owner/repo` as gh resolves the checkout's remote, ssh host aliases included; from
+the origin URL when gh is not logged in; `cx-run` writes it into `vars.sh`) lets every `gh` call
+name the repo with `-R`, so each line starts with an allow-listed command (`cx-doctor`'s D25
+lists the rules) and none needs a `cd`. `--add-reviewer @copilot` needs a gh whose `gh pr edit
+--help` mentions `@copilot` (`cx-doctor` checks it); otherwise use the REST fallback (reviewer
+login unverified; `<N>` from `gh pr view "cx/$ID" -R "$REPO" --json number --jq .number`):
 `gh api -X POST "repos/{owner}/{repo}/pulls/<N>/requested_reviewers" -f 'reviewers[]=copilot-pull-request-reviewer[bot]'`.
 CI failures:
 
 ```bash
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-ci-debug --pr 123   # the PR number
+cx-wsl ghcp-ci-debug --pr 123   # the PR number; a copilot slot
 ```
 
 (or `--run <run id>`), read-only. Its apply mode creates and switches to a branch
@@ -519,132 +350,129 @@ worktree, and hand the edits back to `cx/<id>` before Step 3 (which otherwise st
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
 printf '%s\n' "$WT" "$(cd "$WT" && pwd -P)" > "$OUT/running"
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
-  ghcp-ci-debug --pr 123 --apply --dir "$WT" > "$OUT/ci-fix.txt" 2> "$OUT/ci-fix.err"; echo $? > "$OUT/rc"
+cx-wsl ghcp-ci-debug --pr 123 --apply --dir "$WT" > "$OUT/ci-fix.txt" 2> "$OUT/ci-fix.err"; echo $? > "$OUT/rc"
 F=$(git -C "$WT" symbolic-ref -q --short HEAD); case "$F" in ghcp/ci-fix-*) git -C "$WT" switch -q "cx/$ID" && git -C "$WT" branch -q -D "$F" ;; esac   # hand the edits back to cx/$ID
 printf 'BASE=%q\n' "$(git -C "$WT" rev-parse "cx/$ID")" >> "$OUT/vars.sh"   # Step 3 commits the fix on top of the pushed commit
 ```
 
 Both branches point at the same commit, so the switch carries the uncommitted edits; the new
 `BASE` makes Step 3 commit the fix on top of `cx/<id>` (no squash into the pushed commit, so
-Step 5's push stays a fast-forward) and Step 4 review only the fix. Then Step 3 (gate
-`$ID.2` when `$ID.1` still exists), Step 4 and the push. Issue and PR triage is read-only: fetch
-first (`gh issue view N --json title,body,comments,labels > "$OUT/issue.json"`, or
-`gh pr view N` / `gh pr diff N`), then run `ghcp-delegate --model gpt-6.1-sol --effort medium
---add-dir "$OUT" --digest "<question about $OUT/issue.json>"` with the ghcp prefix. Never use
-`ghcp-delegate --github` for triage: it adds every GitHub MCP tool acting as you (comment,
-label, close, merge); keep it for a task that is meant to act on GitHub. Copilot approvals
-count only after the user opts in; you adjudicate every review comment.
+Step 5's push stays a fast-forward). Then Step 3 (gate `$ID.2` when `$ID.1` still exists),
+Step 4 and the push. Issue and PR triage is read-only: fetch first (`gh issue view N --json
+title,body,comments,labels`, `gh pr view N`, `gh pr diff N`), then `cx-run --mode read --exec
+copilot '<question about the fetched text>'`. Never use `ghcp-delegate --github` for triage: it
+adds every GitHub MCP tool acting as you (comment, label, close, merge); keep it for a task that
+is meant to act on GitHub. Copilot approvals count only after the user opts in; you adjudicate
+every review comment.
 
-Copilot cloud agent (lane `copilot-github`; an executor's own cloud, welcome from a local
-session, U7): the agent works in GitHub Actions and opens a pull request, billed in Copilot
-premium requests and Actions minutes. Run Step 1 for the task (its worktree stays unused) and
-write `$OUT/task.md`, with "committing, pushing or branching" taken out of its Forbidden list
-(the agent's pull request is its output), then start it (one call; the task text goes on stdin):
-
-```bash
-. "$HOME/.conductor/out/t1/vars.sh"
-env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-cloud create -R "$REPO" - < "$OUT/task.md" > "$OUT/cloud.txt"
-```
-
-`ghcp-cloud list` and `ghcp-cloud view <PR number> --log` (same prefix) follow it. Its pull
-request is an executor's draft like any other: gate it before anything merges, on a gate
-checkout of the PR head (`N` = the PR number):
+Copilot cloud agent (an executor's own cloud, welcome from a local session, U7): it works in
+GitHub Actions and opens a pull request, billed in Copilot premium requests and Actions
+minutes. `cx-run` renders the contract for it (the ban on committing, pushing and branching is
+dropped: the pull request is its output) and records the task and the pull request; `--finish`
+fetches the pull request head into a gate checkout and runs `setup` and every routes command
+there (exit 20 `GATE_FAILED` when one fails, 25 when `setup` does):
 
 ```bash
-. "$HOME/.conductor/out/t1/vars.sh"; N='<PR number>'
-git -C "$TOP" fetch -q origin "pull/$N/head" && C=$(git -C "$TOP" rev-parse FETCH_HEAD) || { echo FETCH_FAILED; exit 2; }
-git -C "$TOP" diff --stat "$BASE...$C"; git -C "$TOP" diff --name-only "$BASE...$C"   # tamper review (G4)
-G="$HOME/.conductor/gate/$ID.1"; git -C "$TOP" worktree add -q --detach "$G" "$C"         # gate the exact commit
-(cd "$G" && npm ci --prefer-offline && npm test && npm run lint && npx tsc --noEmit)   # routes setup + commands
+cx-run --exec copilot-cloud --task-file /tmp/cx-t1.md --id t1
+ghcp-cloud list                          # follow the agent
+ghcp-cloud view '<PR number>' --log      # one task's log
+cx-run --finish t1 --pr '<PR number>'
 ```
 
-Read the name-only list against `allowed_paths` and the protected set (G4), then Step 4 on `$G`
-with `git -C "$TOP" diff "$BASE...$C" > "$OUT/change.diff"` as its diff line. Post your
-findings on the PR; it merges only after a green gate and your adjudication, never on the
-agent's own word. Grok remote sessions are not a Phase 1 command: grok 1.0.70 can only resume
-one (`--resume`); the user starts them.
+`ghcp-cloud list` and `ghcp-cloud view <PR number> --log` follow the agent (`--pr` is needed
+only when gh printed no pull request URL at creation). `--finish` fetches the head from the
+task's repository (the `--gh-repo` the task ran in, never a fork's `origin` by default) and gates
+it only when GitHub names that commit as the pull request's head; a gated task is gated again
+only with `--pr N` (a re-gate after new commits; the ledger books it once). Read `changed.txt` in the out directory
+against `allowed_paths` and the protected set (G4), then Step 4 with `--branch <the commit
+--finish names>`. Post your findings on the PR; it merges only after a green gate and your
+adjudication, never on the agent's own word. Grok remote sessions are not a conductor command:
+grok 1.0.70 can only resume one (`--resume`); the user starts them.
 
 ### From Windows (Git Bash)
 
 The Windows desktop app's Bash tool is Git Bash, and nothing above exists on the Windows side:
-every step runs inside WSL through `cx-wsl`, and nothing is installed on Windows (never
-install ghcp, antigravity or grok-build there, never call `wsl.exe` or agent CLIs directly, and
-never make worktrees with Git for Windows).
+the work runs inside WSL, and nothing is installed on Windows (never install ghcp, antigravity
+or grok-build there, never call `wsl.exe` or agent CLIs directly, and never make worktrees with
+Git for Windows).
 
-- Run `cx-doctor` once first: `cx-wsl` resolves every tool from the host record it writes
-  (exit 13 without it). From this session it forwards into WSL and records what it finds; for
-  the user's full interactive PATH they run `/conductor:doctor` in a Claude Code session in
-  WSL, or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal (a plain terminal has
-  no plugin `bin/` on its PATH; the copy exists after the first forwarded call or
-  `cx-doctor --install-runtime`).
-- Shell steps: write the step text verbatim (its `vars.sh` line included) to a Windows-side
-  scratch file with the Write tool, with LF line endings, and run `cx-wsl bash -s < FILE` (FILE
-  in its Git Bash form, e.g. `/c/Users/<you>/AppData/Local/Temp/cx-t1-2b.sh`), as one
-  background Bash call with `timeout: 7200000` when the step is long. `cx-wsl` strips CRLF
-  from such a step and says so on stderr: a CR would end up in every word. In Step 1 the `task.md` text goes into the step as a quoted heredoc
-  (`cat > "$OUT/task.md" <<'TASK'` … `TASK`).
-- Single commands may go direct: `cx-wsl ghcp-job status <id>`, `cx-wsl gh pr view <N>`,
-  `cx-wsl git -C /home/<you>/<repo> status`. `cx-wsl` adds the environment prefixes above
-  for `ghcp-*`, `agy-*`, `agy` and `grok` itself.
-- Paths inside steps and arguments are WSL paths (`$HOME`, `~/.cx-wt`, `/home/<you>/…`),
-  never `C:\…` or `/c/…`; `cx-wsl` passes arguments byte for byte.
-- Read results with `cx-wsl bash -c 'cat "$HOME/.conductor/out/t1/answer.txt"'` (the WSL
-  home; replace `t1` with the task's id).
-- The Claude lane (Step 2d, the claude-pool script): file tools on the task's
-  `\\wsl.localhost\<distro>\…` path, commands through `cx-wsl bash -c 'cd "<WSL path>" && …'`.
+- Run `cx-doctor` once first: the conductor resolves every tool from the host record it writes
+  (exit 13 without it). For the user's full interactive PATH they run `/conductor:doctor` in a
+  Claude Code session in WSL, or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal.
+- `cx-run` and `cx-job` forward themselves into WSL: run the same commands as above, except the
+  task file. Write the contract with the Write tool to a Windows-side path (e.g.
+  `C:\Users\<you>\AppData\Local\Temp\cx-t1.md`) and pass `--task-file` as that path or its
+  `/c/Users/<you>/AppData/Local/Temp/cx-t1.md` form, never a Git Bash `/tmp/…` path: it has no
+  WSL form, so `cx-run` exits 42 `PATH_UNMAPPABLE` (with `--background` before any job starts).
+  Path options (`--task-file`, `--repo`, `--diff`) may be Windows paths (`C:\…`, `/c/…`) or
+  `\\wsl.localhost\…` paths; they are mapped. `CX_RESULT`'s `host_path` fields and the claude
+  dispatch's `host_path` are Windows paths you can open with the file tools. A job keeps
+  running when its forwarded `cx-job start` returns; waiting with `cx-job wait <id>` in one
+  background call also keeps WSL running.
+- The hand steps (Step 3, Step 5, commit-message drafting): write the step text verbatim (its
+  `vars.sh` line included) to a Windows-side scratch file with the Write tool, with LF line
+  endings, and run `cx-wsl bash -s < FILE` (FILE in its Git Bash form, e.g.
+  `/c/Users/<you>/AppData/Local/Temp/cx-t1-3.sh`), as one background Bash call with
+  `timeout: 7200000` when the step is long. `cx-wsl` strips CRLF from such a step and says so
+  on stderr: a CR would end up in every word.
+- Single commands may go direct: `cx-wsl gh pr view <N>`, `cx-wsl git -C /home/<you>/<repo>
+  status`, `cx-wsl ghcp-ci-debug --pr <N>` (read-only), `cx-wsl ghcp-cloud list` and
+  `cx-wsl ghcp-cloud view <N> --log`. Executors run only through `cx-run` and `cx-job` (and the
+  hand steps' `cx-wsl grok` and `cx-wsl ghcp-ci-debug` lines), never as other `cx-wsl` calls.
+  Paths inside steps and `cx-wsl` arguments are WSL paths (`$HOME`, `~/.cx-wt`,
+  `/home/<you>/…`), never `C:\…` or `/c/…`; `cx-wsl` passes arguments byte for byte. Read results
+  from `CX_RESULT`'s `host_path` or with `cx-wsl bash -c 'cat "$HOME/.conductor/out/t1/answer.txt"'`.
 - With the Copilot token file (`cx-doctor --login-help copilot`; the keyring is unreachable
-  through wsl.exe), `cx-wsl ghcp-*` exports `COPILOT_GITHUB_TOKEN` for that call only and a
-  `cx-wsl bash -s` step does not get it: run Copilot lanes as direct calls with literal WSL
-  paths, e.g. `cx-wsl ghcp-job start --model claude-opus-5.5 --effort high --dir
-  /home/<you>/.cx-wt/<repo>-t1 --write --allow-shell 'npm test' --timeout 30m --digest '<the
-  $P text of Step 1>'`, then wait in one background call with `while cx-wsl ghcp-job status
-  "$J" | grep -qx running; do sleep 15; done; cx-wsl ghcp-job result "$J"`.
-- `cx-wsl` calls run outside the sandbox. `cx-wsl` runs exactly these tools: `ghcp-delegate`,
-  `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-models`, `ghcp-cloud`, `agy-delegate`,
-  `agy-job`, `agy`, `grok`, `gh`, `git` and `bash`; anything else exits 1. Copilot is reached
-  only through ghcp, and `claude`, `agy-handoff` and `agy-media` (both always `--yolo`) are
-  left out on purpose. `cx-*` commands forward themselves.
+  through wsl.exe), `cx-run`'s Copilot lanes and `cx-wsl ghcp-*` export `COPILOT_GITHUB_TOKEN`
+  for that run only; a `cx-wsl bash -s` step does not get it.
+- `cx-wsl` runs exactly these tools: `ghcp-delegate`, `ghcp-job`, `ghcp-handoff`,
+  `ghcp-ci-debug`, `ghcp-models`, `ghcp-cloud`, `agy-delegate`, `agy-job`, `agy`, `grok`, `gh`,
+  `git` and `bash`; anything else exits 1. Its executor calls take the same pool slots as
+  `cx-run`. `cx-run`, `cx-job` and `cx-wsl` calls run outside the sandbox.
 
 ### Workflows and ultracode (§12.1)
 
 Ultracode is a session setting, normally off: the `ultracode` settings key, `--effort
 ultracode`, `/effort ultracode`, or the word "ultracode" typed in a prompt. The plugin can
 neither detect nor force it; `cx-doctor` D32 shows what the settings files say. **Ultracode
-changes how thorough you are, not who executes.** In Phase 1 every workflow and Agent-tool
-subagent gets the conductor's subagent rules (a SubagentStart hook): it never runs Copilot,
-Grok or Antigravity, in any form, and returns `EXECUTOR_NEEDED: <lane> - <reason>` instead,
-because pool slots are not shared between processes yet. The hybrid recipe for a fan-out:
+changes how thorough you are, not who executes.** Every workflow and Agent-tool subagent gets
+the conductor's subagent rules (a SubagentStart hook): it never runs Copilot, Grok or
+Antigravity directly and never follows this skill's recipes; it returns `EXECUTOR_NEEDED:
+<lane> - <reason>` instead, unless its task names a `cx-run --background` command (Phase 2),
+which takes the shared pool slots. The hybrid recipe for a fan-out:
 
 1. **Scout or design workflow (Claude only).** It returns the decomposition, with disjoint
    `files` per task.
-2. **Main turn: worktrees.** Step 1 for every task, with unique ids `t1`…`tn`.
-3. **Main turn: executor runs**, in the policy's order, each with `timeout: 7200000`: agy tasks
-   as Step 2a, one background Bash call each (the lock runs them one at a time across the
-   computer; agy has no job form); Copilot tasks as Step 2b's job form, each waited on in one
-   background Bash call.
-4. **Claude-pool workflow, in parallel with them**, for the remaining Opus tasks: the script
-   below, one agent per task at effort `high` (the §6.3 map, not the inherited xhigh), in the
-   task's `~/.cx-wt` worktree (Step 1 marked it `running`, so agy's snapshots leave it out). On
-   Windows pass `wt_win` too: the prompt then names that `\\wsl.localhost\<distro>\…` path for
-   file tools and `cx-wsl bash -c 'cd "<wt>" && …'` for commands.
-5. **Main turn: collect and review.** Collect the jobs, then Step 3 per task (the claude-pool
-   tasks too) and Step 4; Claude-side reviews may be another workflow, executor reviews run
-   from the main turn.
+2. **Main turn: contracts.** Step 1 for every task, with unique ids `t1`…`tn`.
+3. **Main turn: executor runs**, in the policy's order: `cx-run --background` per task (Step 2),
+   each waited on with one background `cx-job wait <id>` call (`timeout: 7200000`). The pool
+   slots cap them across the computer; a job shows `queued` until it gets one.
+4. **Claude-pool workflow, in parallel with them**, for the remaining Opus tasks: the main turn
+   first runs `cx-run --exec claude --task-file <F> --id <id>` per task (it creates the
+   worktree, runs `setup`, marks it `running` so agy's snapshots leave it out, and prints the
+   dispatch JSON), then the script below, one agent per task at effort `high` (the §6.3 map,
+   not the inherited xhigh), with `wt` = the dispatch's `worktree`; on Windows also `wt_win` =
+   its `host_path`, so the prompt names that `\\wsl.localhost\<distro>\…` path for file tools
+   and `cx-wsl bash -c 'cd "<wt>" && …'` for commands. Then `cx-run --finish <id>` per task.
+5. **Main turn: collect and review.** `cx-job result <id>` per job, then Step 3 per task (the
+   claude-pool tasks too) and Step 4; Claude-side reviews may be another workflow, executor
+   reviews run from the main turn.
 
 Rules:
 - Never `isolation: 'worktree'` or `isolation: 'remote'` for conductor tasks: remote throws in
   workflows, and worktree isolation fences the agent inside `<repo>/.claude/worktrees/`, away
   from `~/.cx-wt` and from Step 3.
-- No `agentType` for conductor stages in Phase 1, and never another plugin's delegate agent
-  (`antigravity:antigravity-delegate`, `grok-build:grok-delegate`, `ghcp:ghcp-delegate`): they
-  bypass the conductor's contract and gates.
+- No `agentType` for conductor stages (the optional runner agent is not built while ultracode
+  stays off), and never another plugin's delegate agent (`antigravity:antigravity-delegate`,
+  `grok-build:grok-delegate`, `ghcp:ghcp-delegate`): they bypass the conductor's contract and
+  gates.
 - `budget` counts Claude output tokens only (the main loop plus every workflow). Never size
   executor fan-out by it, and never add an executor cap (U3).
 - An agent that returns `EXECUTOR_NEEDED`: dispatch that lane from the main turn for that
-  task's worktree (Step 2), then Step 3. Executor runs started by the main turn keep running
-  when a workflow stops early; collect them with `ghcp-job status <id>` and from the agy
-  background calls' notifications.
+  task (Step 2), then Step 3. A default workflow agent may run `cx-run --background` and
+  `cx-job wait` itself when its task names them (the subagent rules allow it, because those take
+  the shared slots); it never runs the hand steps. Jobs keep running when a workflow stops
+  early: `cx-job list` shows them.
 
 Claude-pool script (`args`: an array of `{id, wt, effort, wt_win?}` passed as JSON, not as a
 string; `wt` is the WSL path, `wt_win` its `\\wsl.localhost` form, set only from Windows):
@@ -680,12 +508,12 @@ Grok remote sessions, which the user starts: grok 1.0.70 can only resume one).
   project" narrows U2); (3) the conductor policy and this skill (defaults for routing, effort
   and gates); (4) a coordinator's brief or relay, which sets the task and its acceptance tests
   but approves nothing the gates or guardrails refuse.
-- **Several threads run at once, but Phase 1 has no shared pool slots:** Antigravity runs one
-  agy job at a time across every thread and session on this computer, enforced by the lock
-  every agy step takes first (`~/.conductor/locks/agy`); a step that waits 80 minutes for it
-  prints `AGY_BUSY` (exit 28): use the next pool in the order instead. Copilot and Grok jobs
-  may run in parallel. Threads that share a folder use the folder card's Worktree option, and
-  ids are unique per computer (Step 1).
+- **Several threads run at once, and they share the pool slots:** at most `cap_agy` agy,
+  `cap_copilot` Copilot and `cap_grok` Grok runs at a time across every thread and session on
+  this computer, and agy launches one at a time (`cx-run` and `cx-wsl` take the slot for every
+  executor run). A full pool waits up to 10 minutes, then `--exec auto` takes the next pool and
+  an explicit lane exits 28 (`NO_CAPACITY`): use the next pool in the order instead. Threads
+  that share a folder use the folder card's Worktree option, and ids are unique per computer.
 - Threads run in auto mode, and a workflow agent's prompt gets no user-intent credit there, so
   executor commands rely on the allow rules `cx-doctor` D25 prints.
 - A thread's final text does not reach the project conversation by itself: report through the
@@ -695,24 +523,25 @@ Grok remote sessions, which the user starts: grok 1.0.70 can only resume one).
 
 ## 5. Guardrails (§6.5) and the after-run checklist
 
-| # | Guardrail | In Phase 1 |
+| # | Guardrail | Where (Phase 2) |
 |---|---|---|
-| G1 | Spec first: acceptance tests and `task.md` before delegating | Step 1 |
-| G2 | One task, one executor, one worktree, one branch; two executors only for an explicit cross-model review | Steps 1–2 |
+| G1 | Spec first: acceptance tests and `task.md` before delegating | Step 1; `cx-run` checks line 1 |
+| G2 | One task, one executor, one worktree, one branch; two executors only for an explicit cross-model review | `cx-run` (one `cx/<id>` worktree per id) |
 | G3 | The conductor commits; checks rerun on a fresh checkout with fresh `setup`; never gate in the worker's tree | Step 3 |
 | G4 | Tamper check: tests, lockfiles (unless exempt), CI, test-runner config, `.cx/routes.json`, `.git/*`, `.gitignore`, submodules, agent config, the `task.md` hash; executors may not install dependencies | Step 3 name-only list |
-| G5 | Exit 0 is not success: agy denials / finish reason / exit 15; Grok's `permission required:`; Copilot `GHCP_DENIED` / exit 15; and a diff must exist | Step 2 checks |
-| G6 | Check the served model every run; any mismatch (including `GHCP_FALLBACK` on a Fusion lane) fails the run | Copilot: `GHCP_USAGE` `models_used`. agy wrapper runs: `unverified (wrapper)`; only the raw arm's init event verifies it |
+| G5 | Exit 0 is not success: agy denials / finish reason / exit 15; Grok's `permission required:`; Copilot `GHCP_DENIED` / exit 15; and a diff must exist | `cx-run` (15, 3) |
+| G6 | Check the served model every run; any mismatch (including `GHCP_FALLBACK` on a Fusion lane) fails the run | `cx-run` (21): Copilot `models_used`, agy raw mode's init event, Grok `modelUsage`; agy wrapper mode and the claude lane record `unverified` |
 | G7 | Cross-family review; your own review scaled to risk; every accepted finding confirmed at file:line, every rejected one gets a reason | Step 4 |
-| G8 | No self-reported success: a digest you relay ends with "VERIFY THIS" until you verified it | always |
-| G9 | Versions pinned at install level; model and effort passed explicitly every time | `cx-doctor`; the commands above |
-| G10 | Workers fenced by the environment: `CX_WORKER=1`, worker shims, `GROK_CLAUDE_*_ENABLED=false`, scrubbed `COPILOT_*` and API keys; no skip-permissions outside Docker; no conductor content in a repo's `CLAUDE.md` or `.claude/` | the prefixes (never exported); `cx-init` writes nothing there |
-| G11 | Secrets: repos with secrets use Docker lanes (v1.1) or exclude pools in `.cx/routes.json` (default all on); Grok always runs under a sandbox profile | routes.json `pools` |
+| G8 | No self-reported success: a digest you relay ends with "VERIFY THIS" until you verified it | `cx-run`'s `VERIFY THIS:` line |
+| G9 | Versions pinned at install level; model and effort passed explicitly every time | `cx-doctor`; `cx-run`'s preflight (26) |
+| G10 | Workers fenced by the environment: `CX_WORKER=1`, worker shims, `GROK_CLAUDE_*_ENABLED=false`, scrubbed `COPILOT_*` and API keys; no skip-permissions outside Docker; no conductor content in a repo's `CLAUDE.md` or `.claude/` | `cx-run`'s worker environment; the hand steps' prefixes (never exported); `cx-init` writes nothing there |
+| G11 | Secrets: repos with secrets use Docker lanes (v1.1) or exclude pools in `.cx/routes.json` (default all on); Grok always runs under a sandbox profile | routes.json `pools`; the `cx-workspace` profile (`cx-init --user-grants`) |
 
 After every run, before you accept anything:
 
-1. `rc` read from the file, not assumed; the lane's denial signals checked (G5).
-2. Served model checked (G6); agy wrapper runs recorded as `unverified (wrapper)`.
+1. `CX_RESULT` read: `status`, `denied` (G5), `model_served` (G6; `unverified` for agy's
+   wrapper mode and the claude lane), `reason`.
+2. The `VERIFY THIS:` line followed.
 3. `task.md` hash equal (else `SPEC_TAMPERED`); the worktree still on `cx/<id>` (else
    `BRANCH_TAMPERED`); executor commits squashed; a diff exists; the gate on that exact commit.
 4. The name-only list read against `allowed_paths`, the protected set (G4) and the repo's
@@ -727,12 +556,12 @@ After every run, before you accept anything:
 - **The grok-build plugin's SessionEnd hook** also fires on `/clear` and kills and erases its
   session-tagged bridge jobs in the current workspace: never use that bridge for conductor
   work. Its bridge also caps effort, writes unsandboxed with always-approve, fails on prompts
-  over 128 KiB and calls an import command 1.0.70 lacks: use the raw CLI (Step 2c).
+  over 128 KiB and calls an import command 1.0.70 lacks: `cx-run --exec grok` uses the raw CLI.
 - **Ungated proactive subagents** `grok-build:grok-delegate` and
   `antigravity:antigravity-delegate`: never use them; `cx-doctor` checks the user-level deny
   rules.
 - **Wrappers that hard-code `--yolo`** (`agy-handoff`, `agy-media`, `/antigravity:research`):
-  a grant over the whole machine; not Phase 1 lanes, whatever their own docs suggest.
+  a grant over the whole machine; not conductor lanes, whatever their own docs suggest.
 - **Two sibling policies and two nudges**: turn off ghcp's and antigravity's `coding_policy`
   and `delegation_nudge` at user level (and set antigravity's `timeout` to `30m`); the
   conductor injects one policy. `cx-doctor` prints the `claude plugin configure` commands.
@@ -742,15 +571,16 @@ After every run, before you accept anything:
   `GROK_CLAUDE_*_ENABLED=false` prefix on every Grok run.
 - **`/antigravity:migrate` and agy's plugin import** copy every Claude plugin into agy: never
   run them on conductor machines.
-- **agy works in its last project root** for a directory it has never seen: register with
-  `--new-project -p /model` first, one run at a time under the agy lock, compare tree
-  snapshots (`WRONG_TREE`; never restore a tree you did not create in this task).
-- **agy print mode hangs** (after the result, without a TTY, with long prompts): keep prompts
-  tiny (the fixed `$P`), bound every raw run with `timeout`, and pass `--timeout 30m` to the
-  wrapper (its 5-minute default returns PARTIAL output).
-- **`agy-job`** is not a Phase 1 form (the agy lock and snapshots must span the run). If you
-  meet one: its `result` exits 0 whatever the job's rc (read `<jobdir>/rc`), and its status
-  output contains the job's task text (match `  state=running` exactly).
+- **agy works in its last project root** for a directory it has never seen: `cx-run` registers
+  every directory first (`--new-project -p /model`), launches one agy at a time and compares
+  tree snapshots (22 `WRONG_TREE` pauses agy dispatch until `cx-job unpause agy`; never restore
+  a tree you did not create in this task).
+- **agy print mode hangs** (after the result, without a TTY, with long prompts): `cx-run` keeps
+  the prompt tiny (the contract is a file), kills the session 5 seconds after the result event
+  and bounds every run.
+- **`agy-job`** is not a conductor form (`cx-job` is). If you meet one: its `result` exits 0
+  whatever the job's rc (read `<jobdir>/rc`), and its status output contains the job's task
+  text (match `  state=running` exactly).
 - **Parallel `--continue` races**: resume only by explicit session or conversation id.
 - **Copilot 1.0.106-1** lacks the Fusion flag strings: stay on 1.0.105.
 - **A Fusion refusal** re-runs on plain `auto` (billed) and prints `GHCP_FALLBACK`: a model
@@ -765,7 +595,8 @@ After every run, before you accept anything:
   `timeout` (default 30 minutes): background calls with `timeout: 7200000` (section 4).
 - **Billing switches in the environment** (`XAI_API_KEY`, `GEMINI_API_KEY`,
   `GOOGLE_API_KEY`, `COPILOT_ALLOW_ALL`, `COPILOT_PROVIDER_BASE_URL`, `COPILOT_AUTO_TIER`,
-  `COPILOT_MODEL`): the per-command `env -u` prefixes; `cx-doctor` warns.
+  `COPILOT_MODEL`): `cx-run` unsets them per run, the hand steps' `env -u` prefixes; `cx-doctor`
+  warns.
 - **`AGENTS.md` imported into `CLAUDE.md`** would bind you to worker rules: the worker-only
   rules apply only where `.conductor/task.md` exists.
 - **A git-based line-ending fix** run in a plugin cache copy resolves the enclosing repo:
@@ -775,7 +606,9 @@ After every run, before you accept anything:
 
 Every `cx-*` command uses one table. Every exit other than 0, 1 and 126 prints exactly one
 `CX_SIGNAL {json}` line, the last line on stderr; exit 1 prints a `<prog>: …` message only.
-`cx-wsl` returns the passed-through tool's own status and adds no `CX_*` line to it.
+`cx-wsl` returns the passed-through tool's own status and adds no `CX_*` line to it. `cx-run`
+prints one `CX_RESULT` line per run (also on most failures) before its `CX_SIGNAL`; `cx-job
+result` and `wait` relay the job's `CX_*` lines and exit with its code.
 
 | Exit | Status | Meaning |
 |---|---|---|
@@ -800,7 +633,7 @@ Every `cx-*` command uses one table. Every exit other than 0, 1 and 126 prints e
 | 25 | ENV_FAILED | The repo's `setup` command failed (not charged to the executor) |
 | 26 | VERSION_MISMATCH | CLI version is not the pin; lane refused before running |
 | 27 | PARTIAL | Partial output (agy print timeout expired with rc 0) |
-| 28 | NO_CAPACITY | Every eligible lane at its cap, disabled or paused |
+| 28 | NO_CAPACITY | Every eligible lane at its cap, disabled or paused (an explicit `cx-run` lane or `cx-wsl`: no pool slot within `CX_SLOT_WAIT_SECS`, 10 minutes) |
 | 40 | FORWARD_FAILED | Git Bash to WSL: `wsl.exe` or the distro missing, or wsl.exe failed or died |
 | 41 | RUNTIME_MISSING | No conductor runtime copy in WSL, or a version mismatch |
 | 42 | PATH_UNMAPPABLE | A path has no equivalent on the other side (e.g. `\\server\share`) |
@@ -810,8 +643,8 @@ Every `cx-*` command uses one table. Every exit other than 0, 1 and 126 prints e
 | 126 | — | A worker shim: `blocked: CX_WORKER` (no `CX_SIGNAL`) |
 | 130 | CANCELLED | INT / TERM / HUP, or a job kill |
 
-Codes 2, 3, 10–16 and 130 equal ghcp's and agy-delegate's. Sibling codes that matter in
-Phase 1:
+Codes 2, 3, 10–16 and 130 equal ghcp's and agy-delegate's. Sibling codes that matter when
+you meet the wrappers directly (`cx-wsl`, the hand steps):
 
 - ghcp (`ghcp-delegate`, `ghcp-job`'s `result`, `ghcp-handoff`): 10 quota, 11 not logged in, 12
   timeout, 13 `copilot` missing, 14 model or Fusion unavailable, 15 permission denied, 16
@@ -830,20 +663,31 @@ Phase 1:
 - **agy or Grok fails with permission, `EROFS` or `Read-only file system` text, or agy
   hangs**, inside the sandbox: rerun unsandboxed. agy has no exit 16, so this shows as 2, 11
   or a hang.
-- **Exit 130 from ghcp after about 2 minutes**: the call ran in the foreground and the Bash
-  tool killed it (billed tokens). Rerun it in the background.
+- **Exit 130 after about 2 minutes**: a `cx-run` (or ghcp) call ran in the foreground and the
+  Bash tool killed it (billed tokens). Rerun it with `--background` and wait with `cx-job wait`.
 - **Exit 11**: `cx-doctor --login-help <cli>` prints the fresh-login command; the user runs it
   in a WSL terminal. Logged in from a WSL terminal but not through `cx-wsl`: the keyring is
   unreachable through wsl.exe (no D-Bus); `cx-doctor --windows` explains the token-file route.
 - **Exit 26 / version pins**: `cx-doctor` prints the install command for the pinned version
   (Copilot 1.0.105, Grok 1.0.70) and the auto-update exports for `~/.profile`.
-- **`WRONG_TREE`**: a worktree of the repo changed while agy ran, usually agy writing into its
-  last project root (the main checkout or a previous task's worktree). `diff` the two
-  snapshots to find it and report it with its diff; restore only a tree you created in this
-  task, and ask the user when it may belong to another thread or lane. Register before every
-  run (`--new-project`) and keep agy runs under the lock.
-- **`AGY_BUSY`** (exit 28): another agy run held the lock for 80 minutes; use the next pool in
-  the order.
+- **`WRONG_TREE`** (exit 22): a worktree of the repo changed while agy ran, usually agy writing
+  into its last project root (the main checkout or a previous task's worktree). The changed
+  trees are in `~/.conductor/state/agy-paused` and the run's `agy.trees.changed`; report them
+  with their diff; restore only a tree you created in this task, and ask the user when it may
+  belong to another thread or lane. agy dispatch stays paused (`--exec auto` skips agy, `--exec
+  agy` exits 28) until `cx-job unpause agy`. Known false alarm: someone editing the main
+  checkout during the run.
+- **`NO_CAPACITY`** (exit 28): every slot of the pool (or the agy launch lock) stayed busy for
+  `CX_SLOT_WAIT_SECS` (10 minutes), the pool's cap is 0, it is off in `routes.json`, or agy is
+  paused; use the next pool in the order. A step of an older skill copy may still hold Phase 1's
+  `~/.conductor/locks/agy`; agy slots wait for it too.
+- **Exit 25 `ENV_FAILED`**: the repo's `setup` failed in the fresh worktree (`setup.log` in the
+  out directory); the executor never started: fix `setup` in `.cx/routes.json`, then re-dispatch
+  with `--reuse-worktree`.
+- **Exit 23 `SPEC_TAMPERED`** from `cx-run`: the executor edited `.conductor/task.md`; do not
+  commit; fail over (Step 3).
+- **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
+  checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing
   was committed or gated; fail over after the reset. After a CI fix in apply mode
   (`ghcp-ci-debug --apply --dir "$WT"`), hand its edits back to `cx/<id>` first (Step 5).
@@ -851,7 +695,7 @@ Phase 1:
   routes command to the allow list or change the task; never widen to `--always-approve` on a
   writer.
 - **gh without `@copilot` reviewer support**: upgrade gh or use the REST fallback of Step 5.
-- **Exit 13 from `cx-wsl`**: no host record yet; run `cx-doctor` from this session (it
+- **Exit 13 from `cx-run` or `cx-wsl`**: no host record yet (`cx-run` refreshes a stale one); run `cx-doctor` from this session (it
   forwards and records), or have the user run `/conductor:doctor` in a Claude Code session in
   WSL (or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal, once the runtime copy
   exists).
