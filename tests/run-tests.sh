@@ -71,7 +71,7 @@ ISO_VARS=(CLAUDE_CODE_REMOTE CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_REMOTE_ENV
   CLAUDE_CODE_SUBAGENT_MODEL_FORCE CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_EFFORT
   CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS CLAUDE_CODE_REMOTE_TOOLS_FORWARD CLAUDE_EFFORT AI_AGENT
   CLAUDE_CODE_SESSION_ID CLAUDE_CODE_REMOTE_SESSION_ID CLAUDE_CODE_CONTAINER_ID CLAUDE_CODE_CHILD_SESSION
-  NUMBER_OF_PROCESSORS ProgramFiles PROGRAMFILES)
+  NUMBER_OF_PROCESSORS ProgramFiles PROGRAMFILES CLAUDECODE)
 unset "${ISO_VARS[@]}"
 # The default host is plain Linux, also when the suite runs on a WSL machine: cases that need WSL
 # or Git Bash set STUB_UNAME_S/_R themselves, and a real WSL kernel would turn every cloud case
@@ -1900,6 +1900,10 @@ doc_bg s-blockers CLAUDE_CONFIG_DIR="$(doc_cfg s-blockers "$TMP/s-block.json")" 
 mkdir -p "$DOCS/s-wsl/root/etc"
 printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$DOCS/s-wsl/root/etc/os-release"
 doc_bg s-wsl CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STUB_UNAME_R=6.6.87.2-microsoft-standard-WSL2 \
+  CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 -- --no-record
+doc_bg s-wsl-loaded CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STUB_UNAME_R=6.6.87.2-microsoft-standard-WSL2 \
+  CLAUDECODE=1 PATH="$ROOT/bin:$PATH" CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 -- --no-record
+doc_bg s-wsl-term CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STUB_UNAME_R=6.6.87.2-microsoft-standard-WSL2 \
   CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 -- --no-record
 doc_bg s-bridge CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STUB_UNAME_R=6.6.87.2-microsoft-standard-WSL2 \
   CLAUDE_CODE_ENVIRONMENT_KIND=bridge CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 CLAUDE_CODE_SESSION_ATTENDED=0 STUB_NPROC=3 -- --no-record
@@ -2218,8 +2222,14 @@ check "[P51] D31: each blocker (env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, se
   eval 'rc_is 0 && d_info D31 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set (environment)" && d_info D31 "DISABLE_GROWTHBOOK is set (user settings" && d_info D31 "disableRemoteControl is true" && d_info D31 "claude 2.1.279 is older than 2.1.280" && d_info D31 "ANTHROPIC_BASE_URL=https://gw.example (environment)" && d_info D31 "ANTHROPIC_API_KEY is set" && ! d_info D31 "prerequisites met" && ! grep -Eq "^  [!$FAILG] .*\[D3[012]\]$" "$O"'
 check "[P59] ultracode true in user settings -> on for new sessions (user settings)" d_info D32 "ultracode on for new sessions (user settings"
 doc_use s-wsl
-check "[P51] a desktop app session in WSL (entrypoint claude-desktop): ! D30 plugins are not loaded there, with the Windows-folder / WSL terminal / remote-control fix" \
-  eval 'd_warn D30 "Claude desktop app session opened on a WSL folder" && out_has "fix: open the repo in a desktop session on a Windows folder" && out_has "claude remote-control from a WSL terminal"'
+check "[P51] a desktop app session in WSL whose PATH lacks the plugin bin/: ! D30 not loaded in this session, with the Windows-folder / WSL terminal / remote-control fix" \
+  eval 'd_warn D30 "has not loaded the conductor plugin" && out_has "fix: open the repo in a desktop session on a Windows folder" && out_has "claude remote-control from a WSL terminal"'
+doc_use s-wsl-loaded
+check "[P51] a desktop app session in WSL with the plugin bin/ on PATH: ✓ D30 loaded in this session, no warning (live run 2026-11-01)" \
+  eval 'd_ok D30 "the conductor plugin is loaded in this session" && ! d_warn D30 "not loaded"'
+doc_use s-wsl-term
+check "[P51] desktop signals without CLAUDECODE (not a Claude Code Bash call): no D30 plugin line either way" \
+  eval '! d_warn D30 "conductor plugin" && ! d_ok D30 "conductor plugin"'
 }
 bg_section doctor sec_doctor
 

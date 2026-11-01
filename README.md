@@ -181,10 +181,13 @@ exit 28, after 80 minutes). Do not add
 the conductor under Project settings > Plugins: claude.ai refuses plugins with a top-level
 `bin/`, and the cloud has no executors anyway.
 
-Desktop app sessions opened on a `\\wsl.localhost\...` folder (or in the WSL environment) run
-inside WSL and load no plugins. Use a desktop session on a Windows folder (it forwards into
-WSL), `claude` in a WSL terminal, or `claude remote-control` in WSL for Work locally threads on
-a repo that lives in WSL (that last route is pending a live check).
+Anthropic's docs say desktop app sessions opened on a `\\wsl.localhost\...` folder (or in the
+WSL environment) run inside WSL and load no plugins, but on this setup a desktop session in WSL
+did load the conductor (2026-11-01). `cx-doctor` checks the session it runs in: ✓ D30 when the
+plugin is loaded, ! when it is not. If it shows !, use a desktop session on a Windows folder (it
+forwards into WSL), `claude` in a WSL terminal, or `claude remote-control` in WSL for Work
+locally threads on a repo that lives in WSL (a Remote Control session in WSL loaded the plugin
+in the 2026-11-01 run; a Work locally project thread is still to be checked).
 
 In a cloud session (`CLAUDE_CODE_REMOTE`, a cloud thread, claude.ai/code) the conductor never
 fails the session: the session-start hook injects a short "conductor inactive" notice instead of

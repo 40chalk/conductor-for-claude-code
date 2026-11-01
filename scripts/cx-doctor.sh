@@ -307,8 +307,20 @@ session_lines() {
   fi
   return 0
 }
-# The desktop app's WSL sessions (a \\wsl.localhost folder from the picker, or the WSL
-# environment) run inside WSL and load no plugins (DESIGN section 1.5).
+# plugin_bin_on_path: true when a PATH entry holds this plugin's own cx-doctor (same file, by
+# device and inode, so a symlinked or differently spelled install path still matches). Claude
+# Code adds a plugin's bin/ to the Bash tool's PATH only for a loaded plugin.
+plugin_bin_on_path() {
+  local e
+  local -a parts=()
+  IFS=: read -r -a parts <<< "${PATH:-}"
+  for e in ${parts[@]+"${parts[@]}"}; do
+    [ -n "$e" ] && [ "$e/cx-doctor" -ef "$CX_ROOT/bin/cx-doctor" ] && return 0
+  done
+  return 1
+}
+# The docs say the desktop app's WSL sessions (a \\wsl.localhost folder from the picker, or the
+# WSL environment) load no plugins (DESIGN section 1.5); D30 checks this session instead.
 DESKTOP_WSL_FIX="open the repo in a desktop session on a Windows folder (C:\\...; it forwards into WSL), run claude in a WSL terminal, or serve the WSL folder with claude remote-control from a WSL terminal (unverified until live check L11)"
 
 # The last CRLF fix of D3 and W6 (after the sed line, which works for every source): CRs come
@@ -1315,7 +1327,14 @@ if [ "$FORWARDED" != 1 ]; then
   if [ "$CX_HOST" = wsl ] && [ "$CX_SESSION" = local ]; then
     case "${CLAUDE_CODE_ENTRYPOINT:-}:${CLAUDE_CODE_DESKTOP_APP_VERSION:-}" in
       claude-desktop*:*|*:?*)
-        chk warn D30 "$S_SESSION" "this looks like a Claude desktop app session opened on a WSL folder (\\\\wsl.localhost or the WSL environment): such sessions run inside WSL and load no plugins, so the conductor's policy, skill and cx-* commands are missing here" "$DESKTOP_WSL_FIX" ;;
+        # Decide from this session, not from the docs: Claude Code puts a plugin's bin/ on the
+        # Bash tool's PATH only when the plugin is loaded. A live run on 2026-11-01 found the
+        # conductor loaded in a desktop session in WSL (DESIGN section 1.5, section 20 item 66).
+        if plugin_bin_on_path; then
+          chk ok D30 "$S_SESSION" "Claude desktop app session in WSL: the conductor plugin is loaded in this session (its bin/ is on PATH)"
+        elif [ -n "${CLAUDECODE:-}" ]; then
+          chk warn D30 "$S_SESSION" "this Claude desktop app session in WSL has not loaded the conductor plugin (its bin/ is not on this session's PATH), so its policy, skill and cx-* commands are missing here" "$DESKTOP_WSL_FIX"
+        fi ;;
     esac
   fi
 fi
