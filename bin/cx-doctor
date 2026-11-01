@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Plugin bin/ entry point (Claude Code puts bin/ on the Bash tool's PATH); forwards to scripts/cx-doctor.sh.
+exec "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/scripts/cx-doctor.sh" "$@"

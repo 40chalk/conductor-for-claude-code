@@ -1,0 +1,4 @@
+{
+  "enabledPlugins": {"ghcp@ghcp-for-claude-code": true, "antigravity@antigravity-for-claude-code": true},
+  "permissions": {"deny": ["Agent(antigravity:antigravity-delegate)"]}
+}

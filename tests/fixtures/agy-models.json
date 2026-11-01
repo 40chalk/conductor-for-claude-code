@@ -1,0 +1,7 @@
+{"models": [
+  {"slug": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)"},
+  {"slug": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)"},
+  {"slug": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)"},
+  {"slug": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)"},
+  {"slug": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)"}
+]}

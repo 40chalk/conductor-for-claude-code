@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tests/stubs/ghcp-models: --json -> fixtures/ghcp-models.json (or STUB_GHCP_MODELS_FILE), rc 0;
+# STUB_GHCP_MODELS=auth|sandbox|timeout|catalog -> rc 11|16|12|2; STUB_COPILOT_TOKEN_ONLY=VAR ->
+# rc 11 unless VAR is set; exits 98 unless GHCP_COPILOT_BIN is an absolute path. Reached through
+# the fake ghcp install dir (the doctor resolves wrappers from installed_plugins.json). Logs cwd,
+# GHCP_COPILOT_BIN and whether --refresh was given.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_env_dump ghcp-models
+refresh=no
+for a in "$@"; do [ "$a" = --refresh ] && refresh=yes; done
+stub_log ghcp-models "copilot_bin=${GHCP_COPILOT_BIN:-}" "refresh=$refresh" -- "$@"
+case "${GHCP_COPILOT_BIN:-}" in /*) ;; *) printf 'ghcp-models stub: GHCP_COPILOT_BIN is not absolute\n' >&2; exit 98 ;; esac
+if [ -n "${STUB_COPILOT_TOKEN_ONLY:-}" ] && [ -z "${!STUB_COPILOT_TOKEN_ONLY:-}" ]; then
+  printf 'ghcp-models: Copilot is not authenticated (copilot login)\n' >&2; exit 11
+fi
+case "${STUB_GHCP_MODELS:-}" in
+  auth) printf 'ghcp-models: Copilot is not authenticated (No authentication information found.)\n' >&2; exit 11 ;;
+  sandbox) printf 'ghcp-models: Copilot cannot write ~/.copilot (Read-only file system): run outside the Claude Code sandbox\n' >&2; exit 16 ;;
+  timeout) printf 'ghcp-models: the catalog probe timed out\n' >&2; exit 12 ;;
+  catalog) printf 'ghcp-models: no model catalog in the probe output\n' >&2; exit 2 ;;
+esac
+cat "${STUB_GHCP_MODELS_FILE:-$STUB_FIX/ghcp-models.json}"
+exit 0

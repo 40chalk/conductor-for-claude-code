@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# tests/stubs/wslpath (WSL side): -u 'X:\rest' -> $CX_MNT_ROOT<x>/rest; -w /p ->
+# \\wsl.localhost\$WSL_DISTRO_NAME\p; STUB_WSLPATH_ROOT overrides the mount root (mismatch test).
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_log wslpath -- "$@"
+root="${STUB_WSLPATH_ROOT:-${CX_MNT_ROOT:-/mnt/}}"
+case "$root" in */) ;; *) root="$root/" ;; esac
+case "${1-}" in
+  -u)
+    w="${2//\\//}"
+    if [[ $w =~ ^([A-Za-z]):(/.*)?$ ]]; then
+      r="${BASH_REMATCH[2]}"
+      [ "$r" = / ] && r=""
+      printf '%s%s%s\n' "$root" "${BASH_REMATCH[1],,}" "$r"
+      exit 0
+    fi
+    case "$w" in /*) printf '%s\n' "$w"; exit 0 ;; esac
+    printf 'wslpath: %s: Invalid argument\n' "${2-}" >&2; exit 1 ;;
+  -w)
+    p="${2-}"
+    printf '\\\\wsl.localhost\\%s%s\n' "${WSL_DISTRO_NAME:-Ubuntu}" "${p//\//\\}"
+    exit 0 ;;
+esac
+printf 'wslpath stub: unsupported %s\n' "$*" >&2
+exit 1

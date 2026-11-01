@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# tests/stubs/grok: --version -> "grok ${STUB_GROK_VERSION:-1.0.70} (f50904eaee6c)"; models ->
+# fixtures/grok-models-auth.txt when STUB_GROK_AUTH=1, else the verified unauthenticated text,
+# rc ${STUB_GROK_MODELS_RC:-0} (STUB_GROK_MODELS_FAIL=network: one error line, no ids, rc 1);
+# usage -> fixture; everything else (prompts) is billable. STUB_ENV_FILE receives its environment.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+stub_env_dump grok
+stub_log grok -- "$@"
+case "${1-}" in
+  --version)
+    [ $# -eq 1 ] || stub_billable grok "$@"
+    printf 'grok %s (f50904eaee6c)\n' "${STUB_GROK_VERSION:-1.0.70}"
+    exit 0 ;;
+  models)
+    [ $# -eq 1 ] || stub_billable grok "$@"
+    if [ "${STUB_GROK_MODELS_FAIL:-}" = network ]; then
+      printf 'Error: failed to fetch models: error sending request: network is unreachable\n' >&2
+      exit 1
+    fi
+    if [ "${STUB_GROK_AUTH:-}" = 1 ]; then cat "$STUB_FIX/grok-models-auth.txt"; else cat "$STUB_FIX/grok-models-unauth.txt"; fi
+    exit "${STUB_GROK_MODELS_RC:-0}" ;;
+  usage)
+    cat "$STUB_FIX/grok-usage.txt"
+    exit 0 ;;
+esac
+stub_billable grok "$@"

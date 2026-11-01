@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# tests/stubs/billable NAME [ARGS...]: stands in for every sibling wrapper that would be billable
+# (ghcp-delegate, agy-delegate, ...): logs BILLABLE and its name, exits 99.
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/.stublib"
+name="${1:-billable}"
+shift
+stub_env_dump "$name"
+stub_billable "$name" "$@"

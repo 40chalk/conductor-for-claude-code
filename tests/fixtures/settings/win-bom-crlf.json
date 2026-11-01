@@ -1,0 +1,12 @@
+﻿{
+  "pluginConfigs": {
+    "conductor@conductor-for-claude-code": {
+      "options": {
+        "cap_grok": "6",
+        "cap_copilot": "2",
+        "wsl_distro": "Ubuntu-24.04",
+        "exec_host": "wsl"
+      }
+    }
+  }
+}

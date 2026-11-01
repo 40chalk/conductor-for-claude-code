@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tests/stubs/uname: -s/-r/-m/-n from STUB_UNAME_S/_R/_M/_N, else the real uname (found on PATH
+# minus this directory). Reads no $HOME/.stub.env: a forwarded (WSL-side) call must see the real
+# Linux values even when the Git Bash side set STUB_UNAME_S.
+here="$(cd -- "$(dirname -- "$0")" && pwd)"
+real() {
+  local IFS=: d
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    [ "$(cd -- "$d" 2>/dev/null && pwd)" = "$here" ] && continue
+    [ -x "$d/uname" ] && exec "$d/uname" "$@"
+  done
+  for d in /usr/bin /bin; do [ -x "$d/uname" ] && exec "$d/uname" "$@"; done
+  exit 127
+}
+if [ $# -eq 1 ]; then
+  case "$1" in
+    -s) [ -n "${STUB_UNAME_S:-}" ] && { printf '%s\n' "$STUB_UNAME_S"; exit 0; } ;;
+    -r) [ -n "${STUB_UNAME_R:-}" ] && { printf '%s\n' "$STUB_UNAME_R"; exit 0; } ;;
+    -m) [ -n "${STUB_UNAME_M:-}" ] && { printf '%s\n' "$STUB_UNAME_M"; exit 0; } ;;
+    -n) [ -n "${STUB_UNAME_N:-}" ] && { printf '%s\n' "$STUB_UNAME_N"; exit 0; } ;;
+  esac
+fi
+real "$@"

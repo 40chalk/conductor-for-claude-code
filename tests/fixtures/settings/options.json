@@ -1,0 +1,18 @@
+{
+  "pluginConfigs": {
+    "other@x": {"options": {"cap_grok": "31", "policy": "off"}},
+    "conductor@conductor-for-claude-code": {
+      "options": {
+        "cap_grok": "7",
+        "policy": false,
+        "cap_agy": 3,
+        "copilot_reserve_pct": 12.0,
+        "grok_bulk_model": null,
+        "opus_lane_order": ["copilot"],
+        "review_model_gemini": {"x": 1},
+        "bad-key": "x",
+        "worktree_root": "/home/me/it's here"
+      }
+    }
+  }
+}

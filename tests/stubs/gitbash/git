@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# tests/stubs/gitbash/git: Git for Windows on the simulated Git Bash PATH only. rev-parse
+# --show-toplevel with STUB_GIT_DUBIOUS=1 -> git's dubious-ownership message (with its own
+# `git config --global --add safe.directory '...'` line), rc 128; otherwise the real git
+# (STUB_REAL_GIT).
+# shellcheck source=/dev/null  # the shared stub helpers
+. "$(dirname -- "$0")/../.stublib"
+stub_log git-for-windows -- "$@"
+if [ "${STUB_GIT_DUBIOUS:-}" = 1 ] && [ "${1-}" = rev-parse ] && [ "${2-}" = --show-toplevel ]; then
+  r="${STUB_GIT_DUBIOUS_PATH:-//wsl.localhost/Ubuntu/home/me/repo}"
+  {
+    printf "fatal: detected dubious ownership in repository at '%s'\n" "$r"
+    printf "'%s' is owned by:\n\t(inconvertible) (S-1-5-21-1000)\n" "$r"
+    printf 'but the current user is:\n\tPC/me (S-1-5-21-1001)\n'
+    printf 'To add an exception for this directory, call:\n\n'
+    printf "\tgit config --global --add safe.directory '%%(prefix)/%s'\n" "$r"
+  } >&2
+  exit 128
+fi
+exec "${STUB_REAL_GIT:?}" "$@"

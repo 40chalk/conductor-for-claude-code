@@ -1,0 +1,8 @@
+{"dynamic_auto_tiers": true, "models": [
+  {"id": "claude-opus-5.5", "name": "Claude Opus 5.5", "vendor": "Anthropic", "policy": "enabled", "price_category": "premium", "input_price": 400, "output_price": 2000, "restricted_to": null},
+  {"id": "claude-sonnet-5.5", "name": "Claude Sonnet 5.5", "vendor": "Anthropic", "policy": "enabled", "price_category": "standard", "input_price": 80, "output_price": 400, "restricted_to": null},
+  {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol", "vendor": "OpenAI", "policy": "enabled", "price_category": "premium", "input_price": 300, "output_price": 1200, "restricted_to": null},
+  {"id": "gpt-6-astra", "name": "GPT-6 Astra", "vendor": "OpenAI", "policy": "enabled", "price_category": "premium", "input_price": 300, "output_price": 1200, "restricted_to": null},
+  {"id": "gpt-6-luna", "name": "GPT-6 Luna", "vendor": "OpenAI", "policy": "enabled", "price_category": "standard", "input_price": 50, "output_price": 200, "restricted_to": null},
+  {"id": "gemini-4-argon", "name": "Gemini 4 Argon", "vendor": "Google", "policy": "enabled", "price_category": "premium", "input_price": 250, "output_price": 1000, "restricted_to": null}
+]}

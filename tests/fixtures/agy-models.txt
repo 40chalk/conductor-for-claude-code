@@ -1,0 +1,6 @@
+Fetching available models...
+claude-opus-5-5-high	Claude Opus 5.5 (High)
+claude-opus-5-5-medium	Claude Opus 5.5 (Medium)
+claude-opus-5-5-low	Claude Opus 5.5 (Low)
+gemini-4-argon-high	Gemini 4 Argon (High)
+gemini-3.8-flash-high	Gemini 3.8 Flash (High)

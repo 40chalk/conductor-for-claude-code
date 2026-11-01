@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# worker-shims/cursor-agent: stands in for an agent CLI on a conductor worker's PATH (docs/DESIGN.md section 11).
+printf 'blocked: CX_WORKER\n' >&2
+exit 126

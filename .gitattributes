@@ -4,3 +4,5 @@ bin/* text eol=lf
 hooks/* text eol=lf
 worker-shims/* text eol=lf
 *.ps1 text eol=crlf
+tests/fixtures/** -text
+*.utf16le binary

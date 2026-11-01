@@ -1,0 +1,7 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "CONDUCTOR PLUGIN DISABLED: its installed files have CRLF line endings, so its cx-* commands (cx-doctor, cx-init, cx-wsl) cannot run; they fail with errors such as env: 'bash\\r': No such file or directory. Do not route work through the conductor in this session; do the work yourself. The user has been shown the fix; apply it only when the user asks: git config --global core.autocrlf input, then claude plugin marketplace update conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code (or reinstall the plugin), then cx-doctor. Never use git commands inside the plugin's install folder to repair it."
+  },
+  "systemMessage": "conductor: this plugin copy has CRLF line endings, so its cx-* commands cannot run and its routing policy is off. Fix: git config --global core.autocrlf input, then claude plugin marketplace update conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code (or reinstall the plugin), then run cx-doctor."
+}
