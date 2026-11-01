@@ -153,12 +153,16 @@ export `COPILOT_GITHUB_TOKEN` for that call only; shell steps through `cx-wsl ba
 get it, so run Copilot lanes as direct `cx-wsl ghcp-job start …` calls then.
 
 To remove the permission prompts (U2), add these allow rules to the Windows-side Claude Code
-settings: `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)`. Know the scope:
-`Bash(cx-wsl:*)` also allows `cx-wsl bash -c` and `-s`, that is any command in WSL, without a
-prompt, which is more than U2's spending, pushing, PRs and `@copilot` reviews. To keep shell
-steps prompted, allow only the tool forms instead (`Bash(cx-wsl ghcp-job:*)`,
-`Bash(cx-wsl ghcp-delegate:*)`, `Bash(cx-wsl gh pr:*)`, …) and approve each step. In WSL the
-doctor lists the rules for the sibling wrappers too; it never edits settings itself.
+settings: `Bash(cx-doctor:*)`, `Bash(cx-init:*)` and the `cx-wsl` tool forms
+`Bash(cx-wsl ghcp-delegate:*)`, `Bash(cx-wsl ghcp-job:*)`, `Bash(cx-wsl ghcp-handoff:*)`,
+`Bash(cx-wsl ghcp-ci-debug:*)`, `Bash(cx-wsl ghcp-models:*)`, `Bash(cx-wsl ghcp-cloud:*)`,
+`Bash(cx-wsl agy-delegate:*)`, `Bash(cx-wsl gh pr:*)`, `Bash(cx-wsl gh repo view:*)` and
+`Bash(cx-wsl git push:*)`. Never add `Bash(cx-wsl:*)`: it also allows `cx-wsl bash -c` and
+`-s`, that is any command in WSL, without a prompt, which is more than U2's spending, pushing,
+PRs and `@copilot` reviews; the doctor warns when it finds it (in WSL, where nothing needs
+`cx-wsl`, it says to remove it). The skill's `cx-wsl bash -s` steps therefore ask each time
+until Phase 2's `cx-run` replaces them with one command. In WSL the doctor lists the rules for
+the sibling wrappers too; it never edits settings itself.
 
 ## Claude Code Projects (beta), cloud sessions and ultracode
 

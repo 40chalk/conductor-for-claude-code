@@ -1905,6 +1905,9 @@ doc_bg s-wsl-loaded CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STU
   CLAUDECODE=1 PATH="$ROOT/bin:$PATH" CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 -- --no-record
 doc_bg s-wsl-term CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STUB_UNAME_R=6.6.87.2-microsoft-standard-WSL2 \
   CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 -- --no-record
+mk_settings "$TMP/s-broad.json" 'permissions={"allow": ["Bash(cx-wsl:*)", "Bash(cx-doctor:*)"]}'
+doc_bg d25-broad-wsl CLAUDE_CONFIG_DIR="$(doc_cfg d25-broad-wsl "$TMP/s-broad.json")" -- --no-record
+doc_bg d25-broad-win CX_FORWARDED=1 CX_CALLER=gitbash CX_WIN_SETTINGS="$TMP/s-broad.json" -- --no-record
 doc_bg s-bridge CX_DETECT_ROOT="$DOCS/s-wsl/root" WSL_DISTRO_NAME=Ubuntu STUB_UNAME_R=6.6.87.2-microsoft-standard-WSL2 \
   CLAUDE_CODE_ENVIRONMENT_KIND=bridge CLAUDE_CODE_DESKTOP_APP_VERSION=1.5.0 CLAUDE_CODE_SESSION_ATTENDED=0 STUB_NPROC=3 -- --no-record
 doc_bg login-help -- --login-help
@@ -2088,8 +2091,8 @@ check "[X]   ... the first probe ran without GH_TOKEN, the second kept it" \
 doc_use fwd-pins
 check "[P28] forwarded, the three exports in ~/.profile: ok D14 although the environment lacks them" \
   eval 'd_ok D14 "COPILOT_AUTO_UPDATE=false is exported in your WSL login files" && d_ok D14 "GROK_DISABLE_AUTOUPDATER=1 is exported" && d_ok D14 "AGY_CLI_DISABLE_AUTO_UPDATE=true is exported"'
-check "[P27] forwarded: D25 reads CX_WIN_SETTINGS and lists Bash(cx-wsl:*) (not the executor-host rules)" \
-  eval 'd_info D25 "Bash(cx-wsl:*)" && d_info D25 "the Windows-side settings" && ! d_info D25 "Bash(ghcp-delegate:*)"'
+check "[P27] forwarded: D25 reads CX_WIN_SETTINGS and lists the cx-wsl tool rules, never Bash(cx-wsl:*) (not the executor-host rules)" \
+  eval 'd_info D25 "Bash(cx-wsl ghcp-job:*)" && d_info D25 "Bash(cx-wsl gh pr:*)" && ! d_info D25 "Bash(cx-wsl:*)" && d_info D25 "the Windows-side settings" && ! d_info D25 "Bash(ghcp-delegate:*)"'
 check "[X]   forwarded with no host record: D2 info naming a doctor command that works in a plain WSL terminal (the runtime copy)" d_info D2 "run ~/.conductor/runtime/current/bin/cx-doctor once in a WSL terminal"
 doc_use crlf-policy
 check "[P29] a plugin copy with a CRLF hooks/policy.sh: cross D3 naming the file, the sed fix, then the folder-marketplace / archive fallback (no autocrlf advice)" \
@@ -2230,6 +2233,12 @@ check "[P51] a desktop app session in WSL with the plugin bin/ on PATH: ✓ D30 
 doc_use s-wsl-term
 check "[P51] desktop signals without CLAUDECODE (not a Claude Code Bash call): no D30 plugin line either way" \
   eval '! d_warn D30 "conductor plugin" && ! d_ok D30 "conductor plugin"'
+doc_use d25-broad-wsl
+check "[P27] Bash(cx-wsl:*) in this host's settings: ! D25 remove it (sessions in WSL never need cx-wsl); not among the suggested rules" \
+  eval 'd_warn D25 "remove it: sessions in WSL never need cx-wsl" && ! d_info D25 "Bash(cx-wsl:*)"'
+doc_use d25-broad-win
+check "[P27] forwarded, Bash(cx-wsl:*) in the Windows-side settings: ! D25 replace it with the cx-wsl tool rules" \
+  eval 'd_warn D25 "replace it with the tool rules Bash(cx-wsl ghcp-delegate:*)" && d_info D25 "Bash(cx-wsl gh pr:*)"'
 }
 bg_section doctor sec_doctor
 

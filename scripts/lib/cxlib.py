@@ -961,7 +961,7 @@ GROK_PREFIX = 'env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}"'
 # executor and GitHub command in the skill's code blocks against this list. agy-media is not
 # here: it always passes --yolo and is not a Phase 1 lane (section 0.3).
 D25_HOST_RULES = (
-    ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-wsl:*)"]
+    ["Bash(cx-doctor:*)", "Bash(cx-init:*)"]
     + ["Bash(%s:*)" % n for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models",
                                   "ghcp-cloud", "agy-delegate", "agy-job")]
     + ["Bash(%s %s:*)" % (GHCP_PREFIX, n) for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug",
@@ -972,12 +972,15 @@ D25_HOST_RULES = (
        "Bash(%s grok:*)" % GROK_PREFIX,
        'Bash(. "$HOME/.conductor/out/:*)',
        'Bash(git -C "$WT" push:*)', "Bash(git push:*)", "Bash(gh pr:*)", "Bash(gh repo view:*)"])
-# Bash(cx-wsl:*) also covers cx-wsl bash -c/-s, i.e. every command in WSL: D25 says so.
-D25_CXWSL_SCOPE = ("scope: Bash(cx-wsl:*) also allows cx-wsl bash -c and -s, i.e. any command in WSL, without a prompt "
-                   "(U2 grants spend, pushes, PRs and @copilot reviews, not every shell command); to keep cx-wsl bash "
-                   "prompted, allow only the tool forms instead, e.g. Bash(cx-wsl ghcp-job:*), Bash(cx-wsl ghcp-delegate:*), "
-                   "Bash(cx-wsl gh pr:*), and approve the shell steps one by one")
-D25_WIN_RULES = ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-wsl:*)"]
+# The Windows side reaches WSL only through cx-wsl. D25 lists its tool forms, never Bash(cx-wsl:*):
+# that rule also covers cx-wsl bash -c/-s, i.e. every command in WSL, and U2 grants spending,
+# pushes, PRs and @copilot reviews, not every shell command (the user's choice, 2026-11-01). The
+# skill's cx-wsl bash steps therefore prompt until Phase 2's cx-run replaces them.
+D25_CXWSL_TOOLS = ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models", "ghcp-cloud",
+                   "agy-delegate", "gh pr", "gh repo view", "git push")
+D25_WIN_RULES = ["Bash(cx-doctor:*)", "Bash(cx-init:*)"] + ["Bash(cx-wsl %s:*)" % t for t in D25_CXWSL_TOOLS]
+D25_CXWSL_BROAD = ("Bash(cx-wsl:*) is in %s: it also allows cx-wsl bash -c and -s, i.e. any command in WSL, without a "
+                   "prompt, which is more than U2 (spending, pushes, PRs, @copilot reviews); %s")
 
 
 def _opt_off(opts, key, default="on"):
@@ -1125,8 +1128,10 @@ def cmd_doctor_siblings(a):
             lines.append(rec_line("info", "D25", sec, "the rules match the skill's commands as written (prefixes and $VAR text included); how 2.1.316 matches env -u prefixes and multi-line steps is unverified; the doctor never writes settings"))
         else:
             lines.append(rec_line("ok", "D25", sec, "autonomy allow rules present in %s" % where))
-        if "Bash(cx-wsl:*)" in want:
-            lines.append(rec_line("info", "D25", sec, D25_CXWSL_SCOPE))
+        if "Bash(cx-wsl:*)" in allow:
+            lines.append(rec_line("warn", "D25", sec, D25_CXWSL_BROAD % (
+                where, "replace it with the tool rules " + ", ".join(D25_WIN_RULES[2:]) + " (cx-wsl bash steps then prompt)"
+                if a.forwarded else "remove it: sessions in WSL never need cx-wsl, which is the Windows side's bridge")))
         if isinstance(sandbox, dict) and sandbox.get("enabled") is True:
             exc = sandbox.get("excludedCommands")
             exc = [x for x in exc if isinstance(x, str)] if isinstance(exc, list) else []
