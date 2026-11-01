@@ -7,9 +7,9 @@ owns the spec, the gates and the merge; executors draft.
 
 | Executor | How the conductor reaches it | Used for |
 |---|---|---|
-| GitHub Copilot CLI | your `ghcp` plugin (`ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-models`) | Opus 5.5 at high effort, Fusion, GPT-family review, PR review, CI triage |
+| GitHub Copilot CLI | your `ghcp` plugin (`ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-models`, `ghcp-cloud`) | Opus 5.5 at high effort, Fusion, GPT-family review, PR review, CI triage, the Copilot cloud agent (its pull requests go through the same gate) |
 | Grok Build | the raw `grok` 1.0.70 CLI (never the grok-build bridge plugin) | exploration, mechanical edits, tests to a contract, docs, commit and PR text |
-| Antigravity | the raw `agy` CLI for Opus, the `antigravity` plugin (`agy-delegate`, `agy-job`, `agy-media`) for Gemini | Opus 5.5 at high effort, Gemini-family review, media, Google-grounded research, long digests |
+| Antigravity | the raw `agy` CLI for Opus, the `antigravity` plugin (`agy-delegate`, `agy-job`) for Gemini | Opus 5.5 at high effort, Gemini-family review, long digests (media and research wait for the v1.1 Docker lane: `agy-media` and `/antigravity:research` always pass `--yolo`) |
 | Claude | your own subagents | architecture, one-way doors, xhigh/max reasoning, merge conflicts, small or judgement-heavy edits |
 
 Opus 5.5 offload fills the pools in the order of option `opus_lane_order` (default
@@ -33,8 +33,8 @@ The full build spec is `docs/DESIGN.md`; this README condenses it.
 | First-pass review | grok (local diff) or Copilot code review (GitHub PR) | Gemini flash | Claude confirms every finding at file:line |
 | Security review | Claude + GPT (`gpt-6.1-sol`) + CodeQL; never Grok alone | Gemini Argon | Claude adjudicates |
 | Second opinion on Opus-written code | Gemini Argon High (+ GPT on high-risk paths) | grok xhigh | Opus reviewing Opus is not independent |
-| PR, issue and CI triage | Copilot (`ghcp-ci-debug`, `ghcp-delegate --github`) | grok digest | fixes go through the same gates |
-| Media, Google-grounded research, digests over 200k tokens | `agy-media`, `/antigravity:research`, `agy-delegate --digest` | grok, Claude WebSearch | Claude re-checks what it relies on |
+| PR, issue and CI triage | Copilot (`ghcp-ci-debug`); issues and PRs fetched with `gh`, then a read-only `ghcp-delegate` digest (`--github` acts as you on GitHub, so never for triage) | grok digest | fixes go through the same gates |
+| Research; digests over 200k tokens | Claude WebSearch, grok; `agy-delegate --digest` | agy flash on fetched text | Claude re-checks what it relies on |
 
 Phase 1 has no `cx-run` yet: the session-start policy and the `conductor` skill give the exact
 commands for each lane through the sibling wrappers (`/conductor:route <task>` explains one).
@@ -57,14 +57,24 @@ already keep git checkouts LF). Never install ghcp, antigravity or grok-build on
 side: their policies would send Claude to run their wrappers in Git Bash, bypassing WSL.
 
 Prerequisites, all in WSL: python3 ≥ 3.8, bash ≥ 4.4, coreutils and util-linux (`timeout`,
-`setsid`, `flock`, `sha256sum`), git ≥ 2.31; Copilot CLI 1.0.105, grok 1.0.70, agy, gh; the
-ghcp and antigravity plugins. No jq, no node, no pip packages.
+`setsid`, `flock`, `sha256sum`), git ≥ 2.31; Copilot CLI 1.0.105, grok 1.0.70, agy, gh; Claude
+Code itself, logged in (`claude auth login`; the sibling plugins install into it, also when you
+work from the Windows app); and the two sibling plugins, each with its marketplace:
+
+```
+claude plugin install ghcp --marketplace 40chalk/ghcp-for-claude-code
+claude plugin install antigravity --marketplace yuting0624/antigravity-for-claude-code
+```
+
+No jq, no node, no pip packages.
 
 ## First run
 
-1. `/conductor:doctor` (or `cx-doctor` outside Claude Code's Bash sandbox): host, prerequisites,
-   CLI versions against the pins, free login probes, sibling plugin overlap. It never calls a
-   model.
+1. `/conductor:doctor` in a Claude Code session (or `cx-doctor` from its Bash tool, outside the
+   sandbox): host, prerequisites, CLI versions against the pins, free login probes, sibling
+   plugin overlap. It never calls a model. In a plain WSL terminal `cx-doctor` is not on PATH:
+   use `~/.conductor/runtime/current/bin/cx-doctor` there, after `/conductor:doctor
+   --install-runtime` (or any call forwarded from Windows) has created that copy.
 2. `cx-doctor --login-help [copilot|grok|agy|gh|claude]` prints the exact fresh-login commands
    for each CLI (device-code flows where they exist: `grok login --device-auth`,
    `copilot login`, `gh auth login --web`).
@@ -83,10 +93,10 @@ ghcp and antigravity plugins. No jq, no node, no pip packages.
 | Command | What it does |
 |---|---|
 | `cx-doctor [--pools] [--json] [--no-record]` | Health check with free probes; writes the host record `~/.conductor/hosts/<hostkey>.json` |
-| `cx-doctor --windows` | Git Bash only: the Windows-side checks W1–W9 |
+| `cx-doctor --windows` | Git Bash only: the Windows-side checks W1–W11 |
 | `cx-doctor --login-help [cli]` | Fresh-login commands per CLI |
 | `cx-init [--dry-run] [--force] [--only agents\|routes\|copilot]` | The repo bundle |
-| `cx-wsl TOOL [ARG...]` | One allow-listed WSL-side tool (`ghcp-*`, `agy-*`, `agy`, `grok`, `gh`, `git`, `bash`) with the per-tool environment prefixes |
+| `cx-wsl TOOL [ARG...]` | One allow-listed WSL-side tool with the per-tool environment prefixes: exactly `ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-models`, `ghcp-cloud`, `agy-delegate`, `agy-job`, `agy`, `grok`, `gh`, `git`, `bash` (never `agy-handoff` or `agy-media`, which always pass `--yolo`) |
 | `/conductor:doctor`, `/conductor:init`, `/conductor:route` | The same from Claude Code; `route` explains where a task should go and runs nothing |
 
 ## Options
@@ -96,8 +106,8 @@ Every option is a string; an empty value means the default.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `policy` | `on` | Inject the routing policy at SessionStart (startup, clear, compact) |
-| `exec_host` | `auto` | Where executors run: `auto` (Git Bash forwards into WSL), `wsl`, `local` (refused on Git Bash) |
+| `policy` | `on` | Inject the routing policy at SessionStart (startup, clear, compact) and the subagent rules at SubagentStart |
+| `exec_host` | `auto` | Where executors run: `auto` (Git Bash forwards into WSL), `wsl`, `local` (refused on Git Bash; on a BYOC runner it means "this runner is the executor host") |
 | `wsl_distro` | `auto` | WSL distribution for forwarding; `auto` = wsl.exe's default |
 | `docker_compose_file` | (empty) | v1.1: the coding-agents-docker `compose.yaml` |
 | `docker_service` | `agents` | v1.1: the compose service |
@@ -129,12 +139,68 @@ form, exit codes and Ctrl-C propagate). The first forwarded call installs a runt
 
 Before `cx-run` exists, the Windows app delegates through `cx-wsl`: `cx-wsl ghcp-job status <id>`,
 `cx-wsl gh pr view 12`, or a whole shell step written to a file and run with
-`cx-wsl bash -s < FILE`. Paths in arguments are WSL paths (`/home/<you>/...`). Run
-`cx-doctor` once from a WSL terminal first: `cx-wsl` takes its tool paths from the host record.
+`cx-wsl bash -s < FILE` (step files must be LF; `cx-wsl` strips CRLF with a note). Paths in
+arguments are WSL paths (`/home/<you>/...`). Run `cx-doctor` once first: `cx-wsl` takes its tool
+paths from the host record. From the Windows session it forwards into WSL and records what it
+finds; for your full interactive PATH, run `/conductor:doctor` in a Claude Code session in WSL,
+or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal (a plain terminal has no
+plugin `bin/` on its PATH; the copy exists after the first forwarded call). The fixes of a
+forwarded report act on WSL: run them in a WSL terminal, never in Git Bash.
+
+When Copilot's keyring login is unreachable through `wsl.exe`, the doctor's token-file fix
+(`~/.conductor/secrets/copilot-token`, mode 0600, a fine-grained PAT) makes `cx-wsl ghcp-*`
+export `COPILOT_GITHUB_TOKEN` for that call only; shell steps through `cx-wsl bash -s` do not
+get it, so run Copilot lanes as direct `cx-wsl ghcp-job start …` calls then.
 
 To remove the permission prompts (U2), add these allow rules to the Windows-side Claude Code
-settings: `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)`. In WSL the doctor lists the
-rules for the sibling wrappers too; it never edits settings itself.
+settings: `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)`. Know the scope:
+`Bash(cx-wsl:*)` also allows `cx-wsl bash -c` and `-s`, that is any command in WSL, without a
+prompt, which is more than U2's spending, pushing, PRs and `@copilot` reviews. To keep shell
+steps prompted, allow only the tool forms instead (`Bash(cx-wsl ghcp-job:*)`,
+`Bash(cx-wsl ghcp-delegate:*)`, `Bash(cx-wsl gh pr:*)`, …) and approve each step. In WSL the
+doctor lists the rules for the sibling wrappers too; it never edits settings itself.
+
+## Claude Code Projects (beta), cloud sessions and ultracode
+
+Run every thread of a Claude Code Project as a **Work locally** thread on your computer (the
+desktop app's "Use this computer from your phone and claude.ai" with the folder added, or
+`claude remote-control` running in the folder): such a thread is a Remote Control child that
+loads this machine's plugins, hooks and settings, so the conductor works there exactly as in a
+local session (`cx-doctor` shows `session bridge`). The executors may still use their own clouds
+from it: the skill starts the Copilot cloud agent through `ghcp-cloud` and gates its pull request
+like any executor's draft; Grok remote sessions are yours to start (grok 1.0.70 can only resume
+one).
+
+Paste `templates/projects-instructions.md` into **Project settings > Memory** (the Projects
+instructions, up to 16,000 characters). It tells every thread to run locally, sets the
+precedence (your messages, then those instructions and `CLAUDE.md`, then the conductor policy,
+then coordinator briefs), and carries the Phase 1 rule: until Phase 2 shares pool slots between
+processes, Antigravity runs one agy job at a time across all threads on the computer (every agy
+step of the skill takes the lock `~/.conductor/locks/agy` first, and gives up with `AGY_BUSY`,
+exit 28, after 80 minutes). Do not add
+the conductor under Project settings > Plugins: claude.ai refuses plugins with a top-level
+`bin/`, and the cloud has no executors anyway.
+
+Desktop app sessions opened on a `\\wsl.localhost\...` folder (or in the WSL environment) run
+inside WSL and load no plugins. Use a desktop session on a Windows folder (it forwards into
+WSL), `claude` in a WSL terminal, or `claude remote-control` in WSL for Work locally threads on
+a repo that lives in WSL (that last route is pending a live check).
+
+In a cloud session (`CLAUDE_CODE_REMOTE`, a cloud thread, claude.ai/code) the conductor never
+fails the session: the session-start hook injects a short "conductor inactive" notice instead of
+the policy, and every `cx-*` command exits 43 with a one-line note before probing anything. A
+BYOC or self-hosted runner (any `CLAUDE_CODE_ENVIRONMENT_KIND` but `bridge`) counts as cloud
+unless option `exec_host` is `local`. A Git Bash or WSL host is never treated as a cloud
+session, whatever the variables say: Anthropic's cloud containers are plain Linux, and the
+conductor must not switch itself off on your own computer.
+
+Ultracode is normally off and the plugin cannot turn it on. When it is on, workflows run the
+Claude stages and the own-subagent pool, while executor lanes start from the main turn between
+workflows: a SubagentStart hook gives every workflow and Agent-tool subagent the rule that only
+the main session runs Copilot, Grok or Antigravity (`EXECUTOR_NEEDED` otherwise). Claude-pool
+agents work in the task's `~/.cx-wt` worktree (from Windows: file tools on its `\\wsl.localhost`
+path, commands through `cx-wsl bash -c`). `cx-doctor` reports the workflow settings it can see
+(D32, W11).
 
 ## Exit codes
 
@@ -149,15 +215,15 @@ rules for the sibling wrappers too; it never edits settings itself.
 | 10 | `QUOTA_EXHAUSTED` | Quota or rate limit |
 | 11 | `AUTH_REQUIRED` | Executor not logged in |
 | 12 | `TIMEOUT` | Wall clock expired |
-| 13 | `CLI_MISSING` | Executor binary or sibling wrapper not found (`cx-wsl`: run `cx-doctor` in WSL first) |
+| 13 | `CLI_MISSING` | Executor binary or sibling wrapper not found (`cx-wsl`: no host record yet, run `cx-doctor` first) |
 | 14 | `MODEL_UNAVAILABLE` | Model, slug or effort refused before any model call |
 | 15 | `PERMISSION_DENIED` | A denied write, or a denial with no answer or diff |
 | 16 | `SANDBOX_BLOCKED` | Claude Code's Bash sandbox blocks the executor: rerun outside it |
-| 20–28 | `GATE_FAILED` … `NO_CAPACITY` | Gates, model mismatch, wrong tree, tampering, setup, version pin, partial output, no capacity (Phases 2–3) |
+| 20–28 | `GATE_FAILED` … `NO_CAPACITY` | Gates, model mismatch, wrong tree, tampering, setup, version pin, partial output, no capacity (Phases 2–3; the Phase 1 skill's steps already exit 23 `SPEC_TAMPERED`, 24 `BRANCH_TAMPERED` and 28 `AGY_BUSY`) |
 | 40 | `FORWARD_FAILED` | `wsl.exe` missing or failed, distribution missing, or the WSL VM stopped |
 | 41 | `RUNTIME_MISSING` | No runtime copy in WSL (or a version mismatch): `cx-doctor --install-runtime` |
 | 42 | `PATH_UNMAPPABLE` | A path (or the working directory) has no equivalent on the other side |
-| 43 | `HOST_UNSUPPORTED` | This host cannot do this (Cygwin, `exec_host=local` on Git Bash, Docker before v1.1) |
+| 43 | `HOST_UNSUPPORTED` | This host cannot do this (a cloud session, Cygwin, `exec_host=local` on Git Bash, Docker before v1.1) |
 | 44 | `CRLF_CORRUPT` | A runtime file still contains CR |
 | 75 | `RUNNING` | Job still running (Phase 2) |
 | 126 | — | A worker shim blocked an agent CLI inside a conductor worker |
@@ -170,8 +236,8 @@ Every exit outside 0, 1 and 126 prints exactly one `CX_SIGNAL {json}` line, last
 
 | Phase | Deliverable | State |
 |---|---|---|
-| 1 | Manifests, libraries, host layer and forwarding, `cx-doctor`, `cx-init`, `cx-wsl`, policy hook, worker shims, skill and commands, hermetic tests | this release (0.1.0) |
-| 2 | Adapters, `cx-run`, `cx-job`, ledger, locks | specified |
+| 1 | Manifests, libraries, host layer and forwarding, session kinds (cloud refusal, never on Git Bash or WSL), `cx-doctor`, `cx-init`, `cx-wsl`, policy and subagent hooks, Projects instructions template, worker shims, skill and commands (hand-dispatched lanes, the agy lock, the Copilot cloud agent with its gate), hermetic tests | this release (0.1.0) |
+| 2 | First the cross-process pool slots (`flock`) taken by every executor path, `cx-wsl` included (they replace the Phase 1 agy lock); then adapters, `cx-run`, `cx-job`, ledger; optionally a `conductor:cx-runner` agent with a fail-closed gate and an `opus-pools` workflow | specified |
 | 3 | `cx-gate`, conductor commit, `cx-fanout`, integration queue | specified |
 | 4 | Windows end to end, review lane, GitHub | specified |
 | v1.1 | Docker lanes | specified |

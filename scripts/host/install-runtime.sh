@@ -19,11 +19,16 @@
 # Exit codes: 0 installed or already current; 1 usage error (bad --from, no version);
 # 2 FAILED (copy failed, flock missing or the lock timed out after 60 s); 44 CRLF_CORRUPT.
 
+# The script's own path, taken at file scope: under bash -s the top-level BASH_SOURCE is empty,
+# while inside a function BASH_SOURCE[0] is the literal "main", so a file named main in the
+# cwd (the WSL home) would otherwise switch bootstrap mode off.
+CX_IR_SELF="${BASH_SOURCE[0]:-}"
+
 main() {
   set -uo pipefail
   unset CDPATH
   CX_PROG=install-runtime
-  local src="" self="${BASH_SOURCE[0]:-}" bootstrap=0 here=""
+  local src="" self="$CX_IR_SELF" bootstrap=0 here=""
   if [ -n "$self" ] && [ -f "$self" ]; then
     here="$(cd -- "$(dirname -- "$self")" && pwd)"
   fi

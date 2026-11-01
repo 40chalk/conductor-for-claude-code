@@ -6,25 +6,73 @@
 #        detect.sh -h|--help | --version
 #
 #   --shell        (default) KEY=value lines (printf %q) for CX_HOST CX_HOSTKEY CX_DISTRO
-#                  CX_OS_ID CX_OS_VERSION CX_WSL_VERSION CX_ARCH CX_KERNEL
+#                  CX_OS_ID CX_OS_VERSION CX_WSL_VERSION CX_ARCH CX_KERNEL CX_SESSION CX_ATTENDED
 #   --field NAME   one value; NAME is a key above, with or without the CX_ prefix, any case
 #   --json         the values as one JSON object on stdout (needs python3)
 #   --emit         a CX_HOST line on stderr (needs python3)
 #
-# CX_HOST is one of wsl, linux, gitbash, docker, macos, cygwin, unknown. Sourced, the file
-# defines cx_detect, which sets the variables above. Inputs: uname -s/-r/-m/-n (through PATH),
-# the variables WSL_DISTRO_NAME, MSYSTEM, container, COMPOSE_PROJECT_NAME, HOSTNAME, and files
+# CX_HOST is one of wsl, linux, gitbash, docker, macos, cygwin, unknown. CX_SESSION is the
+# Claude Code session kind, decided before the host (DESIGN section 7.1): local, bridge (a
+# Remote Control child such as a Work locally project thread: local behaviour), cloud
+# (CLAUDE_CODE_REMOTE truthy and no CLAUDE_CODE_ENVIRONMENT_KIND) or byoc (truthy with any
+# other kind); CX_ATTENDED is 1, 0 (CLAUDE_CODE_SESSION_ATTENDED=0, never for a bridge child) or
+# empty. Sourced, the file defines cx_detect (which also calls cx_session and cx_attended), and
+# those two functions. Inputs: uname -s/-r/-m/-n (through PATH), the variables CLAUDE_CODE_REMOTE,
+# CLAUDE_CODE_ENVIRONMENT_KIND, CLAUDE_CODE_SESSION_ATTENDED, WSL_DISTRO_NAME, MSYSTEM,
+# container, COMPOSE_PROJECT_NAME, HOSTNAME, and files
 # under ${CX_DETECT_ROOT:-} (empty in production): /.dockerenv, /run/.containerenv,
-# /proc/1/cgroup, /proc/sys/fs/binfmt_misc/WSLInterop[-late], /etc/os-release, /etc/wsl.conf.
+# /proc/1/cgroup, /proc/sys/fs/binfmt_misc/WSLInterop[-late], /etc/os-release, /etc/wsl.conf;
+# on WSL without WSL_DISTRO_NAME also wslpath -w / (the registered distribution name).
 # Pure bash: it also runs under Git Bash.
 #
 # Exit codes: 0 ok; 1 usage error; 2 --json/--emit without python3 (always so on Git Bash).
 
-# shellcheck disable=SC2034  # CX_WSL_INTEROP is read by cx-doctor
+# shellcheck disable=SC2034  # CX_WSL_INTEROP and CX_DISTRO_SOURCE are read by cx-doctor
+# cx_session: sets CX_SESSION (local|bridge|cloud|byoc) from the environment (pure bash), never
+# cloud or byoc on Git Bash or WSL (uname -s/-r, WSL_DISTRO_NAME, WSLInterop under
+# CX_DETECT_ROOT). "Truthy" is 1, true, yes or on, any case, spaces ignored. Change together
+# with the cloud lines of hooks/policy.sh (DESIGN section 10.2 row 4).
+cx_session() {
+  local r="${CLAUDE_CODE_REMOTE:-}" k="${CLAUDE_CODE_ENVIRONMENT_KIND:-}" w
+  r="${r//[[:space:]]/}"
+  case "${r,,}" in
+    1|true|yes|on)
+      case "$k" in "") CX_SESSION=cloud ;; bridge) CX_SESSION=bridge ;; *) CX_SESSION=byoc ;; esac ;;
+    *)
+      case "$k" in bridge) CX_SESSION=bridge ;; *) CX_SESSION=local ;; esac ;;
+  esac
+  # Never cloud or BYOC on the user's computer: Anthropic's cloud containers are plain Linux,
+  # so a Git Bash or WSL host is local whatever the variables say (a false cloud verdict would
+  # switch the conductor off on its own executor host).
+  case "$CX_SESSION" in
+    cloud|byoc)
+      case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*) CX_SESSION=local; return 0 ;; esac
+      [ -n "${WSL_DISTRO_NAME:-}" ] && { CX_SESSION=local; return 0; }
+      for w in "${CX_DETECT_ROOT:-}"/proc/sys/fs/binfmt_misc/WSLInterop*; do
+        [ -e "$w" ] && { CX_SESSION=local; return 0; }
+      done
+      case "$(uname -r 2>/dev/null)" in *[Mm]icrosoft*) CX_SESSION=local ;; esac ;;
+  esac
+  return 0
+}
+# cx_attended: sets CX_ATTENDED (1|0|"") from CLAUDE_CODE_SESSION_ATTENDED; a bridge child is
+# never 0 (it has a claude.ai UI even when Claude Code marks it unattended; [unverified]).
+cx_attended() {
+  case "${CLAUDE_CODE_SESSION_ATTENDED:-}" in
+    1) CX_ATTENDED=1 ;;
+    0) if [ "${CX_SESSION:-}" = bridge ]; then CX_ATTENDED=; else CX_ATTENDED=0; fi ;;
+    *) CX_ATTENDED= ;;
+  esac
+  return 0
+}
+
 # cx_detect: sets CX_HOST CX_HOSTKEY CX_DISTRO CX_OS_ID CX_OS_VERSION CX_WSL_VERSION CX_ARCH
-# CX_KERNEL (and CX_WSL_INTEROP=1|0 on WSL).
+# CX_KERNEL CX_SESSION CX_ATTENDED (and on WSL CX_WSL_INTEROP=1|0 and
+# CX_DISTRO_SOURCE=env|wslpath|os-release).
 cx_detect() {
-  local s r m n root="${CX_DETECT_ROOT:-}" line key val cg="" name
+  local s r m n root="${CX_DETECT_ROOT:-}" line key val cg="" name w
+  cx_session
+  cx_attended
   s="$(uname -s 2>/dev/null)" || s=""
   r="$(uname -r 2>/dev/null)" || r=""
   m="$(uname -m 2>/dev/null)" || m=""
@@ -38,6 +86,7 @@ cx_detect() {
   CX_OS_VERSION=""
   CX_WSL_VERSION=""
   CX_WSL_INTEROP=""
+  CX_DISTRO_SOURCE=""
 
   # os-release ID / VERSION_ID, quotes stripped (Linux only).
   if [ "$s" = Linux ]; then
@@ -96,7 +145,25 @@ cx_detect() {
     elif [[ $r == *-Microsoft* ]]; then
       CX_WSL_VERSION=1
     fi
-    CX_DISTRO="${WSL_DISTRO_NAME:-$CX_OS_ID}"
+    # The registered name, as forwarded (wsl.exe-launched) calls see it in WSL_DISTRO_NAME.
+    # Shells that lack the variable (ssh, su -, cron, systemd units) take it from wslpath -w /
+    # (\\wsl.localhost\<Name>\ or the legacy \\wsl$\<Name>\), and only then from os-release.
+    CX_DISTRO="${WSL_DISTRO_NAME:-}"
+    CX_DISTRO_SOURCE="env"
+    if [ -z "$CX_DISTRO" ]; then
+      CX_DISTRO_SOURCE=os-release
+      if command -v wslpath >/dev/null 2>&1; then
+        w="$(wslpath -w / 2>/dev/null </dev/null)" || w=""
+        w="${w//\\//}"
+        case "${w,,}" in
+          //wsl.localhost/?*|//wsl\$/?*)
+            w="${w#//*/}"
+            w="${w%%/*}"
+            [[ $w =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] && { CX_DISTRO="$w"; CX_DISTRO_SOURCE=wslpath; } ;;
+        esac
+      fi
+      [ -n "$CX_DISTRO" ] || CX_DISTRO="$CX_OS_ID"
+    fi
   else
     CX_DISTRO="$CX_OS_ID"
     [ "$CX_HOST" = gitbash ] && CX_DISTRO=""
@@ -130,7 +197,8 @@ _cx_detect_main() {
     esac
   fi
   cx_detect
-  local -a keys=(CX_HOST CX_HOSTKEY CX_DISTRO CX_OS_ID CX_OS_VERSION CX_WSL_VERSION CX_ARCH CX_KERNEL)
+  local -a keys=(CX_HOST CX_HOSTKEY CX_DISTRO CX_OS_ID CX_OS_VERSION CX_WSL_VERSION CX_ARCH CX_KERNEL
+                 CX_SESSION CX_ATTENDED)
   case "$mode" in
     --shell)
       for k in "${keys[@]}"; do printf '%s=%q\n' "$k" "${!k}"; done ;;
@@ -151,7 +219,8 @@ _cx_detect_main() {
       if [ -n "$CX_OS_ID" ]; then args+=(os_id "$CX_OS_ID"); else args+=(os_id:null ""); fi
       if [ -n "$CX_OS_VERSION" ]; then args+=(os_version "$CX_OS_VERSION"); else args+=(os_version:null ""); fi
       if [ -n "$CX_WSL_VERSION" ]; then args+=(wsl_version:int "$CX_WSL_VERSION"); else args+=(wsl_version:null ""); fi
-      args+=(arch "$CX_ARCH" kernel "$CX_KERNEL")
+      args+=(arch "$CX_ARCH" kernel "$CX_KERNEL" session "$CX_SESSION")
+      if [ -n "$CX_ATTENDED" ]; then args+=(attended:int "$CX_ATTENDED"); else args+=(attended:null ""); fi
       if [ "$mode" = --json ]; then
         cx_py json "${args[@]}" || cx_signal FAILED 2 "cxlib.py json failed"
       else

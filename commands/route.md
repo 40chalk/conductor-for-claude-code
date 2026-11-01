@@ -21,7 +21,8 @@ Classify the task against the routing table (if it spans several task types, spl
 route each part), then answer with these headings:
 
 1. **Lane and why**: the lane id (`claude`, `agy-opus`, `copilot-opus`, `copilot-fusion`,
-   `copilot-gpt`, `copilot-github`, `grok`, `agy-gemini`, `agy-media`) and the routing-table
+   `copilot-gpt`, `copilot-github`, `grok`, `agy-gemini`; never `agy-media` or
+   `/antigravity:research`, which always pass `--yolo`) and the routing-table
    row that decides it. Say so plainly when the task is small (under about 200 lines) or
    judgement-heavy and Claude should just do it: delegating below the break-even is a
    measured loss.
@@ -35,7 +36,8 @@ route each part), then answer with these headings:
    this session runs in Git Bash (the Windows desktop app; the session-start policy then says
    `CONDUCTOR POLICY, WINDOWS`), give the `cx-wsl` form instead: single commands as
    `cx-wsl TOOL ARGS`, shell steps written to a file and run as `cx-wsl bash -s < FILE`, with
-   WSL paths only.
+   WSL paths only; for the Claude lane, the worktree's `\\wsl.localhost\<distro>\…` path for
+   file tools and `cx-wsl bash -c 'cd "<WSL path>" && …'` for commands.
 4. **Fallback**: the next lane if this one is drained, refused or fails its gate, and what
    to reset before failing over.
 5. **Gate**: what Claude checks before accepting the result (tests rerun on a clean

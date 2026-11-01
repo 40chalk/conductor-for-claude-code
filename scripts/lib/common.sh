@@ -44,21 +44,22 @@ CX_SHIPPED_FILES=(
   scripts/host/detect.sh scripts/host/pathmap.sh scripts/host/forward-wsl.sh
   scripts/host/wsl-entry.sh scripts/host/install-runtime.sh
   hooks/hooks.json hooks/policy.sh hooks/policy-context.json
-  hooks/policy-context-gitbash.json hooks/policy-context-crlf.json
+  hooks/policy-context-gitbash.json hooks/policy-context-crlf.json hooks/policy-context-cloud.json
+  hooks/subagent.sh hooks/subagent-context.json hooks/subagent-context-compact.json
   worker-shims/claude worker-shims/copilot worker-shims/grok worker-shims/agy
   worker-shims/codex worker-shims/gemini worker-shims/cursor-agent worker-shims/agent
   templates/repo-bundle/AGENTS.md templates/repo-bundle/routes.json
-  templates/repo-bundle/copilot-instructions.md
+  templates/repo-bundle/copilot-instructions.md templates/projects-instructions.md
   skills/conductor/SKILL.md
   commands/doctor.md commands/init.md commands/route.md
 )
-# The executable subset (bin/*, scripts/*.sh, scripts/host/*.sh, hooks/policy.sh, worker-shims/*).
+# The executable subset (bin/*, scripts/*.sh, scripts/host/*.sh, hooks/*.sh, worker-shims/*).
 CX_SHIPPED_EXEC=(
   bin/cx-doctor bin/cx-init bin/cx-wsl
   scripts/cx-doctor.sh scripts/cx-init.sh scripts/cx-wsl.sh
   scripts/host/detect.sh scripts/host/pathmap.sh scripts/host/forward-wsl.sh
   scripts/host/wsl-entry.sh scripts/host/install-runtime.sh
-  hooks/policy.sh
+  hooks/policy.sh hooks/subagent.sh
   worker-shims/claude worker-shims/copilot worker-shims/grok worker-shims/agy
   worker-shims/codex worker-shims/gemini worker-shims/cursor-agent worker-shims/agent
 )
@@ -117,7 +118,7 @@ declare -gA CX_STATUS_RETRY=(
   [CHECKS_FAILED]="fix the checks marked with a cross, then run cx-doctor again"
   [EXISTS]="cx-init --force (rewrites only the conductor block or routes.json)"
   [AUTH_REQUIRED]="cx-doctor --login-help"
-  [CLI_MISSING]="cx-doctor (run it from a WSL terminal first)"
+  [CLI_MISSING]="cx-doctor (from a Claude Code session; in a WSL terminal, where cx-doctor is not on PATH: ~/.conductor/runtime/current/bin/cx-doctor, created once by cx-doctor --install-runtime)"
   [SANDBOX_BLOCKED]="rerun this Bash call outside the sandbox"
   [VERSION_MISMATCH]="cx-doctor"
   [FORWARD_FAILED]="cx-doctor --windows"
@@ -184,6 +185,14 @@ cx_help_version() {
 }
 
 # cx_trim VALUE: prints VALUE without leading and trailing whitespace.
+# cx_shell_words WORD...: the words shell-quoted (printf %q) and joined by single spaces, for a
+# fix line meant to be copied into a shell as printed (a path with a space stays one word).
+cx_shell_words() {
+  local w
+  printf -v w '%q ' "$@"
+  printf '%s' "${w% }"
+}
+
 cx_trim() {
   local v="${1-}"
   v="${v#"${v%%[![:space:]]*}"}"
@@ -383,11 +392,45 @@ cx_host_path() {
   printf '%s\n' "$CX_PATHMAP_OUT"
 }
 
-# cx_forward_if_needed CMD ARGS...: DESIGN section 7.3 step 0. Returns on hosts that run
-# locally; on Git Bash it execs the forwarder (it never returns there).
+# _cx_exec_host_raw: option exec_host as step 0 sees it (lowercased, spaces removed): the
+# environment (even empty = auto), else on Git Bash the lite reader, else the loaded options.
+_cx_exec_host_raw() {
+  local eh=""
+  if [ -n "${CLAUDE_PLUGIN_OPTION_EXEC_HOST+x}" ]; then
+    eh="${CLAUDE_PLUGIN_OPTION_EXEC_HOST:-auto}"
+  elif cx_is_windows_shell; then
+    declare -F cx_opt_lite >/dev/null 2>&1 && eh="$(cx_opt_lite exec_host "$(cx_win_settings_file)")"
+  elif declare -F cx_opt >/dev/null 2>&1; then
+    [ -n "${CX_OPTIONS_LOADED:-}" ] || cx_load_options
+    eh="$(cx_opt exec_host 2>/dev/null)"
+  fi
+  eh="${eh:-auto}"
+  eh="${eh//[[:space:]]/}"
+  printf '%s\n' "${eh,,}"
+}
+
+# cx_cloud_gate: DESIGN section 7.3 step 0a, after --help and --version and before any probe.
+# In an Anthropic cloud session, or a BYOC/self-hosted runner without option exec_host=local,
+# the executors and their logins are out of reach: one note, CX_SIGNAL HOST_UNSUPPORTED, exit
+# 43. Nothing is probed, installed or forwarded. Returns 0 everywhere else (local and bridge).
+cx_cloud_gate() {
+  _cx_source_detect
+  cx_session
+  case "$CX_SESSION" in
+    cloud) ;;
+    byoc) [ "$(_cx_exec_host_raw)" = local ] && return 0 ;;
+    *) return 0 ;;
+  esac
+  cx_note "cloud session ($CX_SESSION): the executors and their logins are in WSL on your computer; run this in a local desktop session, a Work locally project thread or a Claude Code session in WSL"
+  cx_signal HOST_UNSUPPORTED 43 ""
+}
+
+# cx_forward_if_needed CMD ARGS...: DESIGN section 7.3 step 0 (0a: cx_cloud_gate first).
+# Returns on hosts that run locally; on Git Bash it execs the forwarder (it never returns there).
 cx_forward_if_needed() {
   local cmd="$1" eh
   shift
+  cx_cloud_gate
   _cx_source_detect
   cx_detect
   case "$CX_HOST" in

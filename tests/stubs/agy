@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/stubs/agy: --version -> ${STUB_AGY_VERSION:-1.4.12}; models [--output-format json] ->
-# fixtures (empty when STUB_AGY_AUTH=0; sleeps 60 s when STUB_AGY_HANG=1); -p /usage|/model|/config
+# fixtures (empty when STUB_AGY_AUTH=0; a {"status": "ERROR", ...} envelope or a "not signed in"
+# line, rc 0, when STUB_AGY_AUTH=envelope; sleeps 60 s when STUB_AGY_HANG=1); -p /usage|/model|/config
 # -> fixture JSON; every other prompt is billable.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
@@ -15,10 +16,12 @@ case "${1-}" in
     [ "${STUB_AGY_HANG:-}" = 1 ] && exec sleep 60
     if [ $# -eq 1 ]; then
       [ "${STUB_AGY_AUTH:-1}" = 0 ] && exit 0
+      [ "${STUB_AGY_AUTH:-1}" = envelope ] && { printf 'You are not signed in. Run agy to sign in.\n'; exit 0; }
       cat "$STUB_FIX/agy-models.txt"; exit 0
     fi
     if [ $# -eq 3 ] && [ "$2" = --output-format ] && [ "$3" = json ]; then
       [ "${STUB_AGY_AUTH:-1}" = 0 ] && { printf '[]\n'; exit 0; }
+      [ "${STUB_AGY_AUTH:-1}" = envelope ] && { printf '{"status": "ERROR", "message": "You are not signed in. Run agy to sign in."}\n'; exit 0; }
       cat "$STUB_FIX/agy-models.json"; exit 0
     fi
     stub_billable agy "$@" ;;

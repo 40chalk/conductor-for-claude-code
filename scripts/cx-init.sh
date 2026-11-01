@@ -33,7 +33,8 @@
 # Exit codes: 0 ok; 1 usage error (not inside a git work tree, bad argument); 2 FAILED (no
 # python3 or git, unexpected error); 5 EXISTS (a selected file differs; nothing written);
 # 40 FORWARD_FAILED and 41 RUNTIME_MISSING (Git Bash forwarding); 42 PATH_UNMAPPABLE (--dir or
-# the forwarded cwd has no WSL path); 43 HOST_UNSUPPORTED (Cygwin, exec_host=local on Git Bash).
+# the forwarded cwd has no WSL path); 43 HOST_UNSUPPORTED (a cloud session, Cygwin,
+# exec_host=local on Git Bash).
 
 set -uo pipefail
 unset CDPATH

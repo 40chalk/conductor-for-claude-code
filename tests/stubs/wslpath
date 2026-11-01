@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # tests/stubs/wslpath (WSL side): -u 'X:\rest' -> $CX_MNT_ROOT<x>/rest; -w /p ->
-# \\wsl.localhost\$WSL_DISTRO_NAME\p; STUB_WSLPATH_ROOT overrides the mount root (mismatch test).
+# \\wsl.localhost\<D>\p with D = STUB_WSLPATH_DISTRO if set (empty: "Invalid argument", exit 1),
+# else $WSL_DISTRO_NAME, else Ubuntu; STUB_WSLPATH_LEGACY=1 prints \\wsl$\ instead;
+# STUB_WSLPATH_ROOT overrides the mount root (mismatch test).
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_log wslpath -- "$@"
@@ -19,7 +21,10 @@ case "${1-}" in
     printf 'wslpath: %s: Invalid argument\n' "${2-}" >&2; exit 1 ;;
   -w)
     p="${2-}"
-    printf '\\\\wsl.localhost\\%s%s\n' "${WSL_DISTRO_NAME:-Ubuntu}" "${p//\//\\}"
+    d="${STUB_WSLPATH_DISTRO-${WSL_DISTRO_NAME:-Ubuntu}}"
+    [ -n "$d" ] || { printf 'wslpath: %s: Invalid argument\n' "$p" >&2; exit 1; }
+    h=wsl.localhost; [ "${STUB_WSLPATH_LEGACY:-}" = 1 ] && h='wsl$'
+    printf '\\\\%s\\%s%s\n' "$h" "$d" "${p//\//\\}"
     exit 0 ;;
 esac
 printf 'wslpath stub: unsupported %s\n' "$*" >&2

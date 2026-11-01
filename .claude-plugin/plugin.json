@@ -1,7 +1,7 @@
 {
   "name": "conductor",
   "version": "0.1.0",
-  "description": "Claude Code conducts; the subscriptions you already pay for execute. The conductor routes each piece of work to the executor best suited to it: GitHub Copilot CLI through the ghcp plugin, Grok Build through the raw grok CLI, and Antigravity through the raw agy CLI for Opus plus the antigravity plugin's wrappers for Gemini, media and research. It sends Opus 5.5 fan-out to the included pools (Antigravity claude-opus-5-5-high, then Copilot claude-opus-5.5 at high effort, then Claude's own subagents) and keeps Claude the judge of quality: Claude owns the spec, the gates and the merge. Free health checks (cx-doctor), a repo bundle writer (cx-init), Windows Git Bash to WSL forwarding (cx-wsl) and one session-start routing policy.",
+  "description": "Claude Code conducts; the subscriptions you already pay for execute. The conductor routes each piece of work to the executor best suited to it: GitHub Copilot CLI through the ghcp plugin, Grok Build through the raw grok CLI, and Antigravity through the raw agy CLI for Opus plus the antigravity plugin's wrappers for Gemini. It sends Opus 5.5 fan-out to the included pools (Antigravity claude-opus-5-5-high, then Copilot claude-opus-5.5 at high effort, then Claude's own subagents) and keeps Claude the judge of quality: Claude owns the spec, the gates and the merge. Free health checks (cx-doctor), a repo bundle writer (cx-init), Windows Git Bash to WSL forwarding (cx-wsl) and one session-start routing policy.",
   "author": {
     "name": "40chalk",
     "url": "https://github.com/40chalk"
@@ -23,13 +23,13 @@
     "policy": {
       "type": "string",
       "title": "Inject the conductor routing policy",
-      "description": "When on, a SessionStart hook adds the conductor's routing policy (what Claude keeps, which executor gets which task, the Opus 5.5 pool order, the gates) to the session context at startup, after /clear and after compaction. Set to off/false/0/no/disabled to suppress. With it on, turn off the ghcp and antigravity policies and nudges (their coding_policy and delegation_nudge options); cx-doctor checks this.",
+      "description": "When on, a SessionStart hook adds the conductor's routing policy (what Claude keeps, which executor gets which task, the Opus 5.5 pool order, the gates) to the session context at startup, after /clear and after compaction, and a SubagentStart hook gives workflow and general-purpose subagents the rule that only the main session runs executors. Set to off/false/0/no/disabled to suppress both. With it on, turn off the ghcp and antigravity policies and nudges (their coding_policy and delegation_nudge options); cx-doctor checks this.",
       "default": "on"
     },
     "exec_host": {
       "type": "string",
       "title": "Executor host",
-      "description": "Where executors run. auto (default): from Git Bash (the Windows desktop app) every cx-* command forwards into WSL; every other host runs locally. wsl: always forward into WSL. local: run on this host (refused on Git Bash with exit 43). docker arrives in v1.1.",
+      "description": "Where executors run. auto (default): from Git Bash (the Windows desktop app) every cx-* command forwards into WSL; every other host runs locally. wsl: always forward into WSL. local: run on this host (refused on Git Bash with exit 43; on a BYOC or self-hosted cloud runner it marks the runner as the executor host, which cloud sessions otherwise never are). docker arrives in v1.1.",
       "default": "auto"
     },
     "wsl_distro": {

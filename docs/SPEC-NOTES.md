@@ -150,7 +150,138 @@ into DESIGN.md and delete them here.
 35. **A forwarded login failure is a warning when the record says "direct: logged in"** (§8.3,
     the keyring comparison), so P16's forwarded "cx-doctor 4" case uses a version failure.
 36. **Speed.** The static, cx-init and doctor sections run in the background and doctor and Git
-    Bash runs go through a pool of 4: about 45 s on 4 cores (about 80 s sequentially), under
-    §14.1's 60 s.
+    Bash runs go through a pool of 4: about 50 s on 4 cores (about 80 s sequentially). The
+    wall time is printed as an `INFO` line; only `CX_TEST_STRICT_TIME=1` makes a run of 60 s or
+    more a FAIL (§14.1), so a slow or loaded machine never turns a functionally green run red.
 37. `README.md`, `CLAUDE.md` and `CHANGELOG.md` (§13.2) were written so P2 and P43 can check
     them; `.gitattributes` got its two fixture lines (§2.2).
+
+## Phase 1 review (2026-11-01, 28 findings): choices where a finding offered alternatives
+
+38. **wsl-entry.sh terminal test (§7.4 step 8).** "Terminal mode" is decided by `/proc/$$/stat`
+    fields 5 and 8 (`pgrp` = `tpgid`), not by `[ -t 0 ]` or opening `/dev/tty`: a process with a
+    controlling terminal that is not in its foreground group (a developer running the suite in
+    the background of a terminal) keeps the `set -m` launch, so P16's cancellation case still
+    sees a separate group. In terminal mode the target runs in the foreground (not a background
+    job without job control, which would ignore SIGINT), and the watchdog, a member of the group,
+    ignores TERM only once it has started its own TERM/KILL sequence.
+39. **Media and research lanes (§0.3, option a of the finding).** Dropped until the v1.1 Docker
+    lane instead of documenting a G10 exception: an exception would need the user's consent (U2
+    covers spending, not skipping permissions). Research goes to Claude's WebSearch and grok.
+40. **`cx-doctor --json` on a Git Bash forwarding failure (§8.1, §8.7).** stdout stays empty
+    and the W report goes to stderr before the forwarder's lines, instead of a constant JSON
+    object chosen by exit code: the only hand-built JSON stays `cx_signal`'s fallback, and the
+    `CX_SIGNAL` remains the last stderr line because the forwarder's stderr is held back in
+    JSON mode. `--windows --json` is a usage error (no python on Git Bash to encode the report).
+41. **CRLF steps through `cx-wsl bash -s` (§7.7).** Stripped with a note rather than refused
+    with exit 44: the Windows-side Write tool may produce CRLF for every step, and a CR before LF
+    has no meaning in a bash step.
+42. **Forwarded git environment (§8.3 D5).** Folded into D5 rather than a new D29, so the check
+    ids stay D1–D28; wsl-entry.sh keeps an `SSH_AUTH_SOCK` that names a live socket but starts no
+    agent and guesses no socket path.
+43. **D25 rules (§8.3).** Rules are written as the literal leading text of the skill's simple
+    commands (`$VAR` text and `"${G_ENV[@]}"` included), the same assumption the earlier
+    prefixed rules made; how 2.1.316 matches them stays [unverified] (§20 item 36). Step 5 uses
+    `gh … -R "$REPO"` so no `gh`/`git push` runs inside a `(cd … && …)` subshell, which P43
+    rejects. `REPO` is parsed from the origin URL in Step 1 (no network call).
+44. **WRONG_TREE snapshot (§12.2 step 2a).** Every other worktree of the repo is compared, so a
+    second lane writing in the same repo during an agy run also trips it; the skill therefore runs
+    agy lanes while no other lane of the repo writes (in the A/B, agy first). `$WT` is excluded
+    by its given and its physical path (`pwd -P`).
+45. **Windows-side binaries (§7.6).** The automount-root skip in `abs_cmd` applies on WSL hosts
+    only; `cxlib.py wsl-resolve` always refuses a path under its `--mnt-root` (cx-wsl passes the
+    pathmap root) or `/mnt/`.
+46. **The WSL-terminal doctor command.** Messages name `~/.conductor/runtime/current/bin/cx-doctor`
+    (present once any call was forwarded) and `/conductor:doctor`; a plain WSL terminal has no
+    plugin `bin/` on its PATH.
+
+## Projects (beta) and ultracode, Phase 1 parts (DESIGN Appendix A.3)
+
+These choices were made while folding the Projects + ultracode addendum into DESIGN.md, adjusted
+for the user's 2026-11-01 decisions (U7: every Project thread runs locally; U8: ultracode is
+normally off). DESIGN.md already states each of them; they are listed so a reviewer can find what
+departs from the addendum.
+
+47. **`subagent.sh` reads stdin (§10.7).** The addendum said it never reads stdin. It reads at
+    most 256 KiB with a 2-second timeout, like `policy.sh`, and stays silent when the payload
+    names an `agent_type` other than `workflow-subagent` or `general-purpose`: if the matcher
+    were not applied as alternation (§20 item 49), the guard must never reach another plugin's
+    agent (`ghcp:ghcp-delegate` has to keep calling ghcp).
+48. **Guard text (§10.7).** Adds "no other cx-* command than cx-wsl bash or cx-wsl git for your
+    own task", so the guard names every executor surface (`cx-*`, `ghcp-*`, `agy*`, `grok`,
+    `copilot`) while a Windows claude-pool agent can still run its tests through `cx-wsl bash`.
+    764 of 800 characters.
+49. **Workflows line (§10.3, §10.4).** Ends with "Pool slots are not shared yet: one agy run at a
+    time on this computer, across all sessions and threads" (U7: concurrent Work locally threads
+    are the normal case). The rendered texts are 2,662 and 2,664 of 2,800 characters.
+50. **Projects instructions (§9.6).** Rewritten for local-only threads instead of the addendum's
+    "run everything else as cloud threads" and "at most one Work locally conductor thread"; the
+    Phase 1 agy rule is phrased for the coordinator ("give agy work to one thread at a time") and
+    for a thread ("waits for it or uses the next Opus pool"), since no Phase 1 mechanism lets a
+    thread see another thread's agy run.
+51. **Doctor layout (§8.2).** D30, D31 and D32 go into a new first section, Session, instead of
+    the first lines of Host (D31 needs D8's version, which is probed later; a section keeps them
+    together). D32 does not run on a forwarded call: it describes the machine where Claude Code
+    runs, which W11 covers for Git Bash. W11 takes the CPU count from `NUMBER_OF_PROCESSORS`
+    (no `nproc` on the §3.1 list).
+52. **The desktop WSL-session warning (D30).** Detected heuristically on a WSL host in a
+    `local` session whose entrypoint starts with `claude-desktop` or that has
+    `CLAUDE_CODE_DESKTOP_APP_VERSION` (the H8 entrypoint is [unverified]); W10 always carries the
+    note on the Windows side, and W3's drive case became info without `\\wsl.localhost` advice.
+53. **Cloud doctor (§7.3 step 0a).** Renders the header, ✗ D30 and the summary with the pure-bash
+    renderer (no python, no probes, no host record) on every host, on stderr with `--json`.
+54. **`.claude/worktrees` exclusion (§12.2, P60).** Implemented in Phase 1 (the addendum's P60)
+    because concurrent Work locally threads with the folder card's Worktree option are the normal
+    case: `trees` skips worktrees under `$TOP/.claude/worktrees/` and excludes that directory from
+    every status and untracked-file list.
+55. **§20 numbering.** The addendum's items 37–58 collided with items 37–39 already in DESIGN; they
+    are 40–61 there, with `claude remote-control` inside WSL first (item 40, live check L11).
+
+## Final Phase 1 review (2026-11-01, 18 findings; DESIGN Appendix A.4)
+
+56. **No agy job form.** The lock, the registration and both `trees` snapshots must span the
+    whole agy run, and a lock held by one Bash call cannot outlive it without relying on
+    `agy-job`'s fd handling; so agy runs only as step 2a's single background call (the hybrid
+    recipe included) and the policy names only `ghcp-job start` as a job form.
+57. **`running` marks instead of serializing the fan-out.** Each dispatch writes `$OUT/running`
+    (the worktree's path and its `pwd -P` form); agy steps delete their own task's mark first (a
+    finished agy task's worktree is agy's likely last project root and must stay in later
+    snapshots); step 3 deletes it for every lane. `trees` drops marked worktrees, so Copilot jobs
+    and the claude pool keep running in parallel with agy, also across threads. Residual false
+    alarms (a worktree added or removed during the run) are documented; the remedy never
+    restores a tree the task did not create.
+58. **`trees` lives in `vars.sh`.** Defined once in step 1 (a quoted heredoc), so the snapshot is
+    the same in every step that sources `vars.sh`; P60's count is now one per file. The
+    `.claude/worktrees` exclusion keys on the main checkout (the first `worktree list` entry, not
+    `git-common-dir`, which is wrong for submodules), and `$TOP` itself stays in.
+59. **The agy lock.** `exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9` (80 minutes, so the
+    wait plus registration plus agy-delegate's guard stays under the 2-hour background limit);
+    `$HOME`, not `$CX_HOME`, like every other path in the steps; exit 28 `NO_CAPACITY` with
+    `AGY_BUSY`. No D25 rule for `flock` (`flock FILE CMD` would allow any command).
+60. **Session hardening.** `cx_session` and `policy.sh` treat Git Bash (`MINGW*`, `MSYS*`) and WSL
+    (`WSL_DISTRO_NAME`, a `WSLInterop*` file under `CX_DETECT_ROOT`, `uname -r` with
+    `microsoft`) as the user's computer for both `cloud` and `byoc`. The suite pins
+    `STUB_UNAME_R` to a plain kernel when it runs on a real WSL kernel, so its cloud cases stay
+    cloud there.
+61. **`REPO`.** `gh repo view --json url` in step 1 (run from inside the repo, which step 1 already
+    requires), with the URL parse (`:port` stripped) as the fallback when gh is not logged in;
+    `Bash(gh repo view:*)` joins D25 and the P43 checker covers `gh repo`.
+62. **CI fix hand-back.** Appending `BASE=<cx/id head>` to `vars.sh` (rather than a new task id)
+    keeps the PR branch: step 3 then commits the fix on top of the pushed commit and step 4
+    reviews only the fix.
+63. **Copilot cloud agent in Phase 1.** A hand recipe in step 5 (`ghcp-cloud create -R "$REPO" -`
+    with the contract on stdin, its Forbidden list without "committing, pushing or branching"),
+    gated on a gate checkout of `pull/<N>/head`; the Phase 2 item becomes the adapter. Grok
+    remote sessions stay the user's (grok 1.0.70 only resumes them).
+64. **Token route.** Only the `ghcp-*` arm of `cx-wsl` exports `COPILOT_GITHUB_TOKEN`, and only
+    from a regular, non-symlink, user-owned 0600 file, so a `bash -s` step (which also runs grok
+    and agy) never carries the secret; the skill tells Windows users with the token file to run
+    Copilot lanes as direct `cx-wsl ghcp-*` calls.
+65. **Lite readers.** `IFS='"' read -d '' -a` splits the text at quotes once and only the parts
+    outside strings are scanned for brackets; `_cx_lite_obj` finds keys with `${x%%"KEY"*}`
+    (bash scans longest-suffix matches linearly, while `${x#*"KEY"}` is quadratic). On an 80 KB
+    file `cx_opt_lite` went from 3.8 s to 0.09 s and `cx_lite_top` to 0.07 s (the review measured
+    10 s per parse of a 66 KB file before).
+66. **Forwarded report note.** One header line ("Fixes run inside WSL, in a WSL terminal …")
+    rather than a prefix on every fix; D13's fix also gets an explicit `in a WSL terminal:` when
+    forwarded, and TOKEN_FIX always starts with it.

@@ -123,10 +123,11 @@ _cx_pm_to_wsl() {
   # T3, T4
   if [ "${s:0:4}" = "//?/" ]; then
     rest="${s:4}"
-    if [[ ${rest,,} == unc/* ]] || [ "${rest,,}" = unc ]; then
+    if [[ ${rest,,} == unc/wsl.localhost || ${rest,,} == unc/wsl.localhost/* || ${rest,,} == 'unc/wsl$' || ${rest,,} == 'unc/wsl$/'* ]]; then
+      s="//${rest:4}"   # the extended-length form of a T6 path: continue at T6
+    elif [[ ${rest,,} == unc/* ]] || [ "${rest,,}" = unc ]; then
       _cx_pm_refuse "network share (\\\\?\\UNC\\...)"; return
-    fi
-    if [[ $rest =~ ^[A-Za-z]:(/|$) ]]; then
+    elif [[ $rest =~ ^[A-Za-z]:(/|$) ]]; then
       p="${p:4}"
       s="$rest"
     else

@@ -27,6 +27,8 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   wsl-resolve ...              cx-wsl: a tool's absolute path, PATH and copilot from the host record (7.7)
   doctor-siblings ...          D13, D20-D26 as doctor TSV records
   doctor-pools ...             section 8.4 as doctor TSV records plus the CX_POOLS payload
+  claude-settings ...          the Claude Code settings layers D31/D32 read, as JSON (section 8.3)
+  doctor-session ...           D31 and D32 as doctor TSV records (section 8.3)
   doctor-render ...            renders the doctor report (sections 8.2, 8.7); exit 0 or 4
   init-detect DIR              detection JSON (section 9.3)
   init-plan ...                detection plus cx-init's overrides -> plan JSON
@@ -396,6 +398,9 @@ def cmd_toml_table(a):
 
 
 def cmd_const(a):
+    if a.name in ("D25_HOST_RULES", "D25_WIN_RULES"):
+        out(json.dumps(globals()[a.name]) + "\n")
+        return 0
     if a.name not in CONSTANTS:
         return 1
     out(CONSTANTS[a.name] + "\n")
@@ -679,6 +684,14 @@ def cmd_plugins(a):
 
 # --------------------------------------------------------------------------- models
 
+AGY_STATUS_KEYS = {"error", "errors", "status", "message", "code", "detail", "reason"}
+
+
+def _agy_slug_like(s):
+    """A model slug such as claude-opus-5-5-high or gemini-3.8-flash-high: one token, with a digit."""
+    return isinstance(s, str) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", s)) and any(c.isdigit() for c in s)
+
+
 def parse_models(cli, text):
     ids = []
     authenticated = None
@@ -737,7 +750,15 @@ def parse_models(cli, text):
                     items = obj[k]
                     break
             else:
-                items = [{"id": k, "label": v} for k, v in obj.items() if isinstance(v, str)]
+                # A {"<slug>": "<label>"} map, accepted only when every string-valued key looks
+                # like a model slug and the object carries no status field: an error or status
+                # envelope ({"status": "ERROR", "message": "You are not signed in"}, rc 0) is not
+                # a model list.
+                keys = [k for k, v in obj.items() if isinstance(v, str)]
+                if keys and not (AGY_STATUS_KEYS & {str(k).lower() for k in obj}) and all(_agy_slug_like(k) for k in keys):
+                    items = [{"id": k, "label": obj[k]} for k in keys]
+                else:
+                    items = None
         if isinstance(items, list):
             shape = "json"
             for it in items:
@@ -758,13 +779,13 @@ def parse_models(cli, text):
                 continue
             parts = s.split("\t")
             slug = parts[0].strip()
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", slug):
+            if _agy_slug_like(slug):
                 ids.append(slug)
                 if len(parts) > 1:
                     labels[slug] = parts[1].strip()
         if ids:
             shape = "text"
-    if ids:
+    if any(_agy_slug_like(i) for i in ids):
         authenticated = True
     return {"ids": ids, "authenticated": authenticated, "shape": shape, "labels": labels}
 
@@ -923,12 +944,40 @@ def cmd_agy_grant(a):
 
 
 GHCP_ID, AGY_ID, GROKB_ID = SIBLINGS[0], SIBLINGS[1], SIBLINGS[2]
+# Marketplace sources for D13's install fix (claude plugin install NAME --marketplace SOURCE adds
+# the marketplace and installs in one step; measured with claude plugin install --help on 2.1.316).
+SIBLING_SOURCES = {GHCP_ID: "40chalk/ghcp-for-claude-code", AGY_ID: "yuting0624/antigravity-for-claude-code"}
 GHCP_WRAPPERS = ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models", "ghcp-cloud")
 AGY_WRAPPERS = ("agy-delegate", "agy-handoff", "agy-job", "agy-media")
 GHCP_PREFIX = ("env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL "
                "CX_WORKER=1 COPILOT_AUTO_UPDATE=false")
 AGY_PREFIX = "env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true"
 SANDBOX_EXCLUDES = ("ghcp-*", "agy-*", "agy", "grok", "gh", "git", "copilot", "cx-*")
+AGY_REG_PREFIX = "env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true"
+GROK_PREFIX = 'env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}"'
+# D25 (U2): allow rules for the Phase 1 command forms exactly as the skill writes them (section
+# 12.2), one per leading form of a simple command: the vars.sh line that starts every step, each
+# prefixed executor call, the raw agy and grok calls, and the GitHub steps. The suite checks every
+# executor and GitHub command in the skill's code blocks against this list. agy-media is not
+# here: it always passes --yolo and is not a Phase 1 lane (section 0.3).
+D25_HOST_RULES = (
+    ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-wsl:*)"]
+    + ["Bash(%s:*)" % n for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug", "ghcp-models",
+                                  "ghcp-cloud", "agy-delegate", "agy-job")]
+    + ["Bash(%s %s:*)" % (GHCP_PREFIX, n) for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug",
+                                                    "ghcp-cloud")]
+    + ["Bash(%s %s:*)" % (AGY_PREFIX, n) for n in ("agy-delegate", "agy-job")]
+    + ["Bash(%s timeout -k 5 60 agy --new-project:*)" % AGY_REG_PREFIX,
+       "Bash(%s timeout -k 15s 35m agy:*)" % AGY_PREFIX,
+       "Bash(%s grok:*)" % GROK_PREFIX,
+       'Bash(. "$HOME/.conductor/out/:*)',
+       'Bash(git -C "$WT" push:*)', "Bash(git push:*)", "Bash(gh pr:*)", "Bash(gh repo view:*)"])
+# Bash(cx-wsl:*) also covers cx-wsl bash -c/-s, i.e. every command in WSL: D25 says so.
+D25_CXWSL_SCOPE = ("scope: Bash(cx-wsl:*) also allows cx-wsl bash -c and -s, i.e. any command in WSL, without a prompt "
+                   "(U2 grants spend, pushes, PRs and @copilot reviews, not every shell command); to keep cx-wsl bash "
+                   "prompted, allow only the tool forms instead, e.g. Bash(cx-wsl ghcp-job:*), Bash(cx-wsl ghcp-delegate:*), "
+                   "Bash(cx-wsl gh pr:*), and approve the shell steps one by one")
+D25_WIN_RULES = ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-wsl:*)"]
 
 
 def _opt_off(opts, key, default="on"):
@@ -958,7 +1007,8 @@ def cmd_doctor_siblings(a):
         short = pid.split("@", 1)[0]
         if not info["installed"]:
             lines.append(rec_line("fail", "D13", sec, "%s plugin is not installed on this host" % short,
-                                  "claude plugin install %s" % pid))
+                                  "%sclaude plugin install %s --marketplace %s"
+                                  % ("in a WSL terminal: " if a.forwarded else "", short, SIBLING_SOURCES[pid])))
             for n in names:
                 wrappers[n.replace("-", "_")] = ""
             continue
@@ -1044,6 +1094,8 @@ def cmd_doctor_siblings(a):
             lines.append(rec_line("warn", "D24", sec, "subagent %s is not denied (Task(...) rule syntax unverified on 2.1.316)" % agent,
                                   "add to permissions.deny in %s: %s" % (os.path.join(a.config_dir, "settings.json"),
                                                                         json.dumps({"permissions": {"deny": ["Task(%s)" % agent]}}))))
+    if P[AGY_ID]["installed"] or P[GROKB_ID]["installed"]:
+        lines.append(rec_line("info", "D24", sec, "the same deny rules also refuse those agents as a workflow agent() agentType"))
     # D25 autonomy allow rules and D26 sandbox, from the settings of the host where Claude Code runs.
     if a.forwarded and a.win_settings:
         sfile = a.win_settings
@@ -1052,7 +1104,7 @@ def cmd_doctor_siblings(a):
         perms = s.get("permissions") if isinstance(s.get("permissions"), dict) else {}
         allow = [x for x in perms.get("allow", []) if isinstance(x, str)] if isinstance(perms.get("allow"), list) else []
         sandbox = s.get("sandbox") if isinstance(s.get("sandbox"), dict) else None
-        want = ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-wsl:*)"]
+        want = list(D25_WIN_RULES)
         where = "the Windows-side settings"
     elif a.forwarded:
         sfile, allow, sandbox, want, where = None, [], None, [], None
@@ -1060,11 +1112,7 @@ def cmd_doctor_siblings(a):
         sfile = os.path.join(a.config_dir, "settings.json")
         allow = rep["permissions"]["allow"]
         sandbox = rep["sandbox"]
-        want = ["Bash(cx-doctor:*)", "Bash(cx-init:*)", "Bash(cx-wsl:*)", "Bash(ghcp-delegate:*)", "Bash(ghcp-job:*)",
-                "Bash(ghcp-handoff:*)", "Bash(ghcp-ci-debug:*)", "Bash(ghcp-models:*)", "Bash(agy-delegate:*)",
-                "Bash(agy-job:*)", "Bash(agy-media:*)", "Bash(gh pr:*)", "Bash(git push:*)"]
-        want += ["Bash(%s %s:*)" % (GHCP_PREFIX, n) for n in ("ghcp-delegate", "ghcp-job", "ghcp-handoff", "ghcp-ci-debug")]
-        want += ["Bash(%s %s:*)" % (AGY_PREFIX, n) for n in ("agy-delegate", "agy-job", "agy-media")]
+        want = list(D25_HOST_RULES)
         where = "this host's settings"
     if sfile is None:
         lines.append(rec_line("info", "D25", sec, "Windows-side settings not found: allow rules not checked"))
@@ -1074,9 +1122,11 @@ def cmd_doctor_siblings(a):
             lines.append(rec_line("info", "D25", sec, "%d autonomy allow rule(s) missing in %s (%s); without them Claude Code prompts before each delegation (U2):"
                                   % (len(missing), where, sfile)))
             lines.append(rec_line("info", "D25", sec, json.dumps({"permissions": {"allow": missing}})))
-            lines.append(rec_line("info", "D25", sec, "how 2.1.316 matches rules that start with an env -u prefix is unverified; the doctor never writes settings"))
+            lines.append(rec_line("info", "D25", sec, "the rules match the skill's commands as written (prefixes and $VAR text included); how 2.1.316 matches env -u prefixes and multi-line steps is unverified; the doctor never writes settings"))
         else:
             lines.append(rec_line("ok", "D25", sec, "autonomy allow rules present in %s" % where))
+        if "Bash(cx-wsl:*)" in want:
+            lines.append(rec_line("info", "D25", sec, D25_CXWSL_SCOPE))
         if isinstance(sandbox, dict) and sandbox.get("enabled") is True:
             exc = sandbox.get("excludedCommands")
             exc = [x for x in exc if isinstance(x, str)] if isinstance(exc, list) else []
@@ -1091,8 +1141,8 @@ def cmd_doctor_siblings(a):
 
 CX_WSL_KEYS = {"ghcp-delegate": "ghcp_delegate", "ghcp-job": "ghcp_job", "ghcp-handoff": "ghcp_handoff",
                "ghcp-ci-debug": "ghcp_ci_debug", "ghcp-models": "ghcp_models", "agy-delegate": "agy_delegate",
-               "agy-job": "agy_job", "agy-media": "agy_media", "agy": "agy", "grok": "grok", "gh": "gh", "git": "git",
-               "bash": None}
+               "ghcp-cloud": "ghcp_cloud", "agy-job": "agy_job", "agy": "agy", "grok": "grok", "gh": "gh",
+               "git": "git", "bash": None}
 
 
 def cmd_wsl_resolve(a):
@@ -1108,8 +1158,17 @@ def cmd_wsl_resolve(a):
     if not isinstance(rec, dict):
         return 3
 
+    mnt = a.mnt_root if a.mnt_root.endswith("/") else a.mnt_root + "/"
+
+    drive = re.compile("(%s|/mnt/)[A-Za-z]/" % re.escape(mnt))
+
     def runnable(p):
-        return isinstance(p, str) and p.startswith("/") and os.path.isfile(p) and os.access(p, os.X_OK)
+        # Never a Windows-side binary (an npm shim in a drive directory of the automount root,
+        # section 7.6), even from an old record. Only <root><letter>/: with [automount] root = /
+        # every path starts with the root, and /mnt/data or /mnt/wsl are Linux mounts.
+        if not (isinstance(p, str) and p.startswith("/")) or drive.match(p):
+            return False
+        return os.path.isfile(p) and os.access(p, os.X_OK)
 
     bins = dict(rec.get("bin")) if isinstance(rec.get("bin"), dict) else {}
     key = CX_WSL_KEYS[a.tool]
@@ -1312,7 +1371,175 @@ def _ledger_month(path):
     return round(total, 3)
 
 
-SECTIONS = ["Host", "Runtime", "Options", "CLIs", "Version pins", "Logins (free probes)",
+# --------------------------------------------------------------------------- session, Work locally
+# readiness and workflows (DESIGN section 8.3 D31, D32)
+
+# The settings keys D32 reads, and the environment variables that override them (section 8.3).
+WORKFLOW_KEYS = ("ultracode", "disableWorkflows", "enableWorkflows", "workflowKeywordTriggerEnabled",
+                 "workflowSizeGuideline", "disableRemoteControl")
+MODEL_ENV = ("CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "CLAUDE_CODE_SUBAGENT_MODEL",
+             "CLAUDE_CODE_SUBAGENT_EFFORT")
+# Remote Control (and so Work locally threads) is off while one of these is set (section 8.3 D31).
+# Change together with W10 in cx-doctor.sh.
+RC_BLOCK_ENV = ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_GROWTHBOOK")
+ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com"
+MIN_REMOTE_CONTROL = "2.1.280"
+
+
+def _truthy(v):
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _falsy(v):
+    return str(v).strip().lower() in ("0", "false", "no", "off")
+
+
+def settings_layers(config_dir, repo, root):
+    """The settings files Claude Code merges, highest precedence first: managed (drop-ins, the
+    managed file, remote settings), local, project, user. --settings flags are invisible."""
+    layers = []
+    mdir = os.path.join(root or "/", "etc", "claude-code")
+    drop = os.path.join(mdir, "managed-settings.d")
+    try:
+        names = sorted((n for n in os.listdir(drop) if n.endswith(".json")), reverse=True)
+    except OSError:
+        names = []
+    for n in names:
+        layers.append(("managed", os.path.join(drop, n)))
+    layers.append(("managed", os.path.join(mdir, "managed-settings.json")))
+    layers.append(("managed", os.path.join(config_dir, "remote-settings.json")))
+    if repo:
+        layers.append(("local", os.path.join(repo, ".claude", "settings.local.json")))
+        layers.append(("project", os.path.join(repo, ".claude", "settings.json")))
+    layers.append(("user", os.path.join(config_dir, "settings.json")))
+    return layers
+
+
+def claude_settings(config_dir, repo, root):
+    """{"files": [...], "effective": {key: {value, layer, file}}, "env": {NAME: {value, layer, file}},
+    "workflow_allow": [rules]} over the layers of settings_layers()."""
+    eff, env, allow, files = {}, {}, [], []
+    for layer, path in settings_layers(config_dir, repo, root):
+        if not os.path.isfile(path):
+            continue
+        d = load_json_file(path)
+        files.append({"layer": layer, "file": path, "ok": isinstance(d, dict)})
+        if not isinstance(d, dict):
+            continue
+        for k in WORKFLOW_KEYS:
+            if k in d and k not in eff:
+                eff[k] = {"value": d[k], "layer": layer, "file": path}
+        e = d.get("env")
+        if isinstance(e, dict):
+            for k, v in e.items():
+                if isinstance(k, str) and k not in env and isinstance(v, (str, int, float, bool)):
+                    env[k] = {"value": v if isinstance(v, str) else json.dumps(v), "layer": layer, "file": path}
+        perms = d.get("permissions")
+        if isinstance(perms, dict) and isinstance(perms.get("allow"), list):
+            for r in perms["allow"]:
+                if isinstance(r, str) and (r == "Workflow" or r.startswith("Workflow(")) and r not in allow:
+                    allow.append(r)
+    return {"files": files, "effective": eff, "env": env, "workflow_allow": allow}
+
+
+def cmd_claude_settings(a):
+    out(json.dumps(claude_settings(a.config_dir, a.repo, a.root), ensure_ascii=False, indent=1) + "\n")
+    return 0
+
+
+def _where(e):
+    return "%s settings, %s" % (e["layer"], e["file"])
+
+
+def cmd_doctor_session(a):
+    """D31 (Work locally readiness) and D32 (workflows and ultracode) as doctor TSV records; all
+    info (section 8.3)."""
+    sec = "Session"
+    env = os.environ
+    st = claude_settings(a.config_dir, a.repo, a.root)
+    eff = st["effective"]
+    lines = []
+    # D31: one info line per blocker of Remote Control (Work locally threads), never ! or cross.
+    blockers = []
+    for v in RC_BLOCK_ENV:
+        if env.get(v, "") != "":
+            blockers.append("%s is set (environment)" % v)
+        elif v in st["env"]:
+            blockers.append("%s is set (%s)" % (v, _where(st["env"][v])))
+    burl, bsrc = env.get("ANTHROPIC_BASE_URL", ""), "environment"
+    if not burl and "ANTHROPIC_BASE_URL" in st["env"]:
+        burl, bsrc = st["env"]["ANTHROPIC_BASE_URL"]["value"], _where(st["env"]["ANTHROPIC_BASE_URL"])
+    if burl and burl.strip().rstrip("/") != ANTHROPIC_DEFAULT_URL:
+        blockers.append("ANTHROPIC_BASE_URL=%s (%s): a gateway, not a claude.ai login" % (burl, bsrc))
+    if "disableRemoteControl" in eff and _truthy(eff["disableRemoteControl"]["value"]):
+        blockers.append("disableRemoteControl is true (%s)" % _where(eff["disableRemoteControl"]))
+    if a.claude_version and vercmp(a.claude_version, MIN_REMOTE_CONTROL) < 0:
+        blockers.append("claude %s is older than %s" % (a.claude_version, MIN_REMOTE_CONTROL))
+    if env.get("ANTHROPIC_API_KEY", "") != "":
+        blockers.append("ANTHROPIC_API_KEY is set: Work locally threads need a claude.ai login, not an API key")
+    for b in blockers:
+        lines.append(rec_line("info", "D31", sec, "Remote Control, and so Work locally threads on this machine, is off while: " + b))
+    if not blockers:
+        tail = ""
+        if a.host == "wsl":
+            tail = "; in WSL, claude remote-control started in the repo folder serves Work locally threads with this WSL install's plugins (unverified until live check L11)"
+        lines.append(rec_line("info", "D31", sec, "Work locally prerequisites met here; a thread also needs the desktop app with 'Use this computer from your phone and claude.ai' on (folder added) or claude remote-control running in the folder, and Require trusted devices off" + tail))
+    if a.forwarded:
+        sys.stdout.write("".join(lines))
+        return 0
+    # D32 (1) workflows available
+    off = None
+    if _truthy(env.get("CLAUDE_CODE_DISABLE_WORKFLOWS", "")):
+        off = "CLAUDE_CODE_DISABLE_WORKFLOWS is set"
+    elif _falsy(env.get("CLAUDE_CODE_WORKFLOWS", "x")):
+        off = "CLAUDE_CODE_WORKFLOWS=%s" % env.get("CLAUDE_CODE_WORKFLOWS")
+    elif "disableWorkflows" in eff and eff["disableWorkflows"]["value"] is True:
+        off = "disableWorkflows in %s" % _where(eff["disableWorkflows"])
+    elif "enableWorkflows" in eff and eff["enableWorkflows"]["value"] is False:
+        off = "enableWorkflows false in %s" % _where(eff["enableWorkflows"])
+    if off:
+        lines.append(rec_line("info", "D32", sec, "workflows off (%s): ultracode is unavailable; conductor fan-out uses the main-turn recipe" % off))
+    else:
+        lines.append(rec_line("info", "D32", sec, "workflows available (not disabled by the environment or the settings files; on Pro they default off: turn on Dynamic workflows in /config)"))
+    # (2) ultracode
+    u = eff.get("ultracode")
+    if u is not None and u["value"] is True:
+        if off:
+            lines.append(rec_line("info", "D32", sec, "ultracode is set (%s) but workflows are off, so it has no effect" % _where(u)))
+        else:
+            lines.append(rec_line("info", "D32", sec, "ultracode on for new sessions (%s): workflow agents get the conductor's subagent rules and never run executors (Phase 1)" % _where(u)))
+    else:
+        lines.append(rec_line("info", "D32", sec, "ultracode not set in the settings files; a session can still turn it on (/effort ultracode, --effort ultracode, --settings, the keyword); the doctor cannot see session toggles"))
+    # (3) keyword trigger, (4) size guideline
+    k = eff.get("workflowKeywordTriggerEnabled")
+    if k is not None and k["value"] is False:
+        lines.append(rec_line("info", "D32", sec, "the ultracode keyword trigger is off (%s)" % _where(k)))
+    g = eff.get("workflowSizeGuideline")
+    if g is not None:
+        lines.append(rec_line("info", "D32", sec, "workflow size guideline %s (%s; advisory only)" % (json.dumps(g["value"]), _where(g))))
+    # (5) model and effort overrides
+    for v in MODEL_ENV:
+        if env.get(v, "") != "":
+            what = "effort" if v.endswith("EFFORT") else "model"
+            lines.append(rec_line("info", "D32", sec, "%s=%s overrides the %s of workflow and subagent stages" % (v, env[v], what)))
+    # (6) concurrency per workflow
+    mc = env.get("CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS", "").strip()
+    if re.fullmatch(r"[0-9]+", mc) and 1 <= int(mc) <= 256:
+        lines.append(rec_line("info", "D32", sec, "workflow concurrency %s agents per workflow (CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS)" % int(mc)))
+    else:
+        try:
+            n = int(a.nproc)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            lines.append(rec_line("info", "D32", sec, "workflow concurrency %d agents per workflow (min(16, max(2, %d CPUs - 2)); CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS overrides it)" % (min(16, max(2, n - 2)), n)))
+    if st["workflow_allow"]:
+        lines.append(rec_line("info", "D32", sec, "Workflow allow rules: " + ", ".join(st["workflow_allow"])))
+    sys.stdout.write("".join(lines))
+    return 0
+
+
+SECTIONS = ["Session", "Host", "Runtime", "Options", "CLIs", "Version pins", "Logins (free probes)",
             "Sibling plugins", "Windows (Git Bash)", "Pools"]
 GLYPH = {"ok": "✓", "warn": "!", "fail": "✗"}
 
@@ -1336,6 +1563,10 @@ def read_checks(path):
     return checks
 
 
+def _attended(v):
+    return int(v) if v in ("0", "1") else None
+
+
 def cmd_doctor_render(a):
     checks = read_checks(a.checks) + read_checks(a.extra)
     counts = {"ok": 0, "warn": 0, "fail": 0}
@@ -1350,7 +1581,8 @@ def cmd_doctor_render(a):
     if a.pools:
         pools = load_json_file(a.pools, sig=False)
     if a.json:
-        doc = {"version": 1, "plugin_version": VERSION, "host": host, "caller": a.caller,
+        doc = {"version": 1, "plugin_version": VERSION, "host": host, "caller": a.caller, "session": a.session,
+               "attended": _attended(a.attended),
                "checks": [{"id": c["id"], "section": c["section"], "status": c["status"], "text": c["text"],
                            "fix": "\n".join(c["fixes"]) if c["fixes"] else None} for c in checks],
                "pools": pools, "record": a.record or None, "summary": counts}
@@ -1362,7 +1594,11 @@ def cmd_doctor_render(a):
             bits = " ".join(x for x in (host.get("distro"), host.get("os_version")) if x)
             if host.get("wsl_version"):
                 bits = (bits + ", " if bits else "") + "WSL%s" % host["wsl_version"]
-            buf.append("conductor doctor %s: host %s%s, caller %s\n" % (VERSION, h, " (%s)" % bits if bits else "", a.caller))
+            buf.append("conductor doctor %s: host %s%s, caller %s, session %s\n" % (VERSION, h, " (%s)" % bits if bits else "", a.caller, a.session))
+            if a.caller == "gitbash" and h != "gitbash":
+                # A forwarded report: its fixes act on WSL, and pasted into Git Bash they would act
+                # on the Windows side (~/.profile, claude plugin ..., ~/.gemini).
+                buf.append("Fixes run inside WSL, in a WSL terminal (wsl.exe), never in Git Bash; only the Windows section's fixes run on Windows.\n")
         order = SECTIONS + sorted({c["section"] for c in checks if c["section"] not in SECTIONS})
         for sec in order:
             items = [c for c in checks if c["section"] == sec]
@@ -1384,6 +1620,7 @@ def cmd_doctor_render(a):
         sys.stdout.flush()
         err("CX_DOCTOR %s\n" % dumps_line({"ok": counts["ok"], "warn": counts["warn"], "fail": counts["fail"],
                                             "host": host.get("host", "unknown"), "caller": a.caller,
+                                            "session": a.session, "attended": _attended(a.attended),
                                             "record": a.record or None, "pools": bool(a.pools)}))
     return 4 if counts["fail"] else 0
 
@@ -1671,6 +1908,49 @@ def find_block(text):
     return (parts, i, j)
 
 
+def path_hazard(repo, rel):
+    """A reason why cx-init must not write REL under REPO, or None. Every component between the
+    repo root and the file must be a real directory (not a symlink, not a file), so that a
+    committed `.cx` or `.github` symlink can never redirect a write outside the repository, and
+    a non-directory `.cx` is a conflict before anything at all is written (section 9.2)."""
+    cur = repo
+    parts = [x for x in rel.split("/") if x][:-1]
+    for i, comp in enumerate(parts):
+        cur = os.path.join(cur, comp)
+        shown = "/".join(parts[:i + 1])
+        if os.path.islink(cur):
+            return "%s is a symlink; cx-init does not write through symlinks" % shown
+        if os.path.lexists(cur) and not os.path.isdir(cur):
+            return "%s exists and is not a directory" % shown
+        if not os.path.lexists(cur):
+            break
+    base = os.path.realpath(repo)
+    anc = os.path.dirname(os.path.join(repo, rel))
+    while not os.path.lexists(anc) and anc != os.path.dirname(anc):
+        anc = os.path.dirname(anc)
+    real = os.path.realpath(anc)
+    if real != base and not real.startswith(base.rstrip("/") + "/"):
+        return "resolves outside the repository (%s)" % real
+    return None
+
+
+def write_nofollow(repo, rel, data):
+    """Creates the missing directories of REL one by one and writes DATA, never following a
+    symlink (each directory is checked again just before use; O_NOFOLLOW on the file)."""
+    cur = repo
+    for comp in [x for x in rel.split("/") if x][:-1]:
+        cur = os.path.join(cur, comp)
+        if os.path.islink(cur):
+            raise OSError("%s is a symlink" % cur)
+        if not os.path.lexists(cur):
+            os.mkdir(cur)
+        elif not os.path.isdir(cur):
+            raise OSError("%s is not a directory" % cur)
+    fd = os.open(os.path.join(repo, rel), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o666)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
 def classify_block_file(path, block, force):
     """-> (action, reason, new_bytes or None)."""
     if os.path.islink(path):
@@ -1737,6 +2017,11 @@ def cmd_init_apply(a):
             results.append({"path": rel, "action": "skipped", "reason": None})
             continue
         tpath = os.path.join(a.templates, tpl)
+        hazard = path_hazard(repo, rel)
+        if hazard:
+            conflict = True
+            results.append({"path": rel, "action": "conflict", "reason": hazard})
+            continue
         try:
             if key == "routes":
                 obj = load_json_file(tpath)
@@ -1759,7 +2044,7 @@ def cmd_init_apply(a):
             conflict = True
         results.append({"path": rel, "action": action, "reason": reason})
         if data is not None:
-            writes.append((path, data))
+            writes.append((rel, data))
     exclude = plan.get("exclude_file")
     excluded = False
     ex_lines = []
@@ -1768,13 +2053,11 @@ def cmd_init_apply(a):
         excluded = "/.conductor/" in ex_lines
     written = []
     if not conflict and not a.dry_run:
-        for path, data in writes:
+        for rel, data in writes:
             try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "wb") as fh:
-                    fh.write(data)
+                write_nofollow(repo, rel, data)
             except OSError as e:
-                err("cxlib: init-apply: cannot write %s: %s\n" % (path, e))
+                err("cxlib: init-apply: cannot write %s: %s\n" % (os.path.join(repo, rel), e))
                 return 2
         if exclude and not excluded:
             try:
@@ -1906,6 +2189,7 @@ def main(argv):
     s.add_argument("--tool", required=True)
     s.add_argument("--config-dir", required=True)
     s.add_argument("--conductor-bin", default="")
+    s.add_argument("--mnt-root", default="/mnt/")
     s.set_defaults(fn=cmd_wsl_resolve)
     s = sub.add_parser("doctor-pools")
     for opt in ("--agy-ids", "--copilot-catalog", "--catalog-age", "--grok-ids", "--agy-usage", "--pools-file",
@@ -1922,6 +2206,20 @@ def main(argv):
     s.add_argument("--floor-pct", default="0")
     s.add_argument("--bulk-model", default="grok-4.7")
     s.set_defaults(fn=cmd_doctor_pools)
+    s = sub.add_parser("claude-settings")
+    s.add_argument("--config-dir", required=True)
+    s.add_argument("--repo", default="")
+    s.add_argument("--root", default="")
+    s.set_defaults(fn=cmd_claude_settings)
+    s = sub.add_parser("doctor-session")
+    s.add_argument("--config-dir", required=True)
+    s.add_argument("--repo", default="")
+    s.add_argument("--root", default="")
+    s.add_argument("--claude-version", default="")
+    s.add_argument("--nproc", default="")
+    s.add_argument("--host", default="")
+    s.add_argument("--forwarded", type=int, default=0)
+    s.set_defaults(fn=cmd_doctor_session)
     s = sub.add_parser("doctor-render")
     s.add_argument("--checks", required=True)
     s.add_argument("--extra")
@@ -1932,6 +2230,8 @@ def main(argv):
     s.add_argument("--record", default="")
     s.add_argument("--bare", action="store_true")
     s.add_argument("--emit-doctor", action="store_true")
+    s.add_argument("--session", default="local")
+    s.add_argument("--attended", default="")
     s.set_defaults(fn=cmd_doctor_render)
     s = sub.add_parser("init-detect")
     s.add_argument("dir")

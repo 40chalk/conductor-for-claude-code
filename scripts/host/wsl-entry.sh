@@ -10,15 +10,18 @@
 # keyring variables, PATH from the host record, the auto-update pins, the allow-listed
 # variables from the transport, CX_FORWARDED=1 CX_CALLER=gitbash CX_CALLER_CWD_WIN
 # CX_WIN_SETTINGS), maps the caller's cwd, emits CX_FORWARD (not for cx-wsl) and runs
-# scripts/<cmd>.sh from this runtime copy in its own process group, writing its pid to "pgid"
-# so the Git Bash side can stop it. A watchdog stops the target when wsl.exe goes away.
+# scripts/<cmd>.sh from this runtime copy, writing its process group to "pgid" so the Git Bash
+# side can stop it: its own group (a background job) without a terminal, wsl-entry's group (in
+# the foreground) when wsl-entry leads the terminal's foreground group, so tty reads and Ctrl-C
+# work. A watchdog stops the target when wsl.exe goes away.
 #
 # Exit codes: the target's status (it prints its own CX_* lines); 40 (no CX_SIGNAL: the
 # transport directory is unusable, the Git Bash side owns that signal); 2 FAILED (meta names a
 # command outside the forwarder's list); 13 CLI_MISSING (the command is not in this runtime);
 # 41 RUNTIME_MISSING (meta version mismatch); 42 PATH_UNMAPPABLE (cwd unmappable for cx-init,
 # cx-run, cx-fanout, cx-gate, cx-wsl). On INT/TERM/HUP it forwards TERM to the target's process
-# group and exits with the target's status.
+# group (a terminal delivers its signals to the whole foreground group) and exits with the
+# target's status.
 
 set -uo pipefail
 unset CDPATH
@@ -87,6 +90,9 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS+x}" ] && [ -n "$uid" ] && [ -S "/run/user/$u
   KEEP+=("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus")
 fi
 [ -n "${LANG+x}" ] || KEEP+=("LANG=C.UTF-8")
+# An ssh-agent socket wsl.exe happened to pass on (a systemd user agent, an exported WSLENV
+# entry) is kept when it is a live socket; shell rc files never run here (section 7.4).
+[ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] && KEEP+=("SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
 
 # PATH: the host record's .path line, else the fallback list; never a /mnt/ entry.
 CXH="${HOME:-}/.conductor"
@@ -143,7 +149,7 @@ if [ -z "$CWD" ]; then
       cd -- "${HOME:-/}" || cd /
       KEEP+=("CX_CALLER_CWD_UNMAPPED=1") ;;
     *)
-      cx_note "the current directory '$CWD_WIN' has no WSL equivalent (${CX_PATHMAP_ERR:-not a directory in WSL}); open the project from \\\\wsl.localhost\\<distro>\\... or a drive path"
+      cx_note "the current directory '$CWD_WIN' has no WSL equivalent (${CX_PATHMAP_ERR:-not a directory in WSL}); open the project from a drive path (C:\\...), or work on a repo that lives in WSL from a WSL terminal (claude, or claude remote-control there): a desktop session opened on \\\\wsl.localhost runs inside WSL without plugins"
       cx_signal PATH_UNMAPPABLE 42 "cwd has no WSL equivalent" ;;
   esac
 fi
@@ -162,42 +168,67 @@ if [ "$CMD" != cx-wsl ]; then
     cwd_win "$CWD_WIN" runtime "$CX_VERSION" installed:bool "$INST"
 fi
 
-# Step 8: run the target in its own process group and stay its parent.
+# Step 8: run the target and stay its parent. Without a terminal (the Claude Bash tool) it runs
+# as a background job in its own process group (set -m), so a cancel can stop the whole group.
+# When wsl-entry's process group is the foreground group of a controlling terminal (wsl.exe
+# attached to a console gives the Linux side a pty), a separate group would be a background
+# group of that terminal: a tty read or ioctl stops it with SIGTTIN/SIGTTOU and the wait never
+# ends. Then the target runs in the foreground of wsl-entry's own group, which is written to
+# "pgid", so the terminal's Ctrl-C and the Git Bash side's group TERM reach it directly.
 PPID0="$PPID"
+ME=$$
 tpid=""
+PG="" TPG=""
+st="$(cat "/proc/$$/stat" 2>/dev/null)" && { st="${st##*) }"; read -r _ _ PG _ _ TPG _ <<< "$st"; }
+TTYFG=0
+case "$PG" in ""|*[!0-9]*) ;; *) [ "$TPG" = "$PG" ] && TTYFG=1 ;; esac
 # shellcheck disable=SC2329  # invoked by the trap below
 forward_term() {
   [ -n "$tpid" ] && kill -TERM -- "-$tpid" 2>/dev/null
   return 0
 }
+ppid_now() {
+  local s
+  s="$(cat "/proc/$ME/stat" 2>/dev/null)" || return 1
+  s="${s##*) }"
+  read -r _ p _ <<< "$s"
+  printf '%s' "$p"
+}
+# watchdog GROUP: TERM, then KILL 5 s later, to GROUP once wsl-entry's parent changed (the
+# wsl.exe relay is gone); it ends with wsl-entry (or, for a background job, with the job).
+watchdog() {
+  local g="$1" p
+  trap - INT TERM HUP
+  while kill -0 "$ME" 2>/dev/null && { [ -z "$tpid" ] || kill -0 "$tpid" 2>/dev/null; }; do
+    sleep 2
+    p="$(ppid_now)" || continue
+    if [ -n "$p" ] && [ "$p" != "$PPID0" ]; then
+      trap '' TERM   # it may be in GROUP itself: survive the TERM to send the KILL
+      kill -TERM -- "-$g" 2>/dev/null
+      sleep 5
+      kill -KILL -- "-$g" 2>/dev/null
+      exit 0
+    fi
+  done
+}
 trap forward_term INT TERM HUP
+if [ "$TTYFG" = 1 ]; then
+  printf '%s\n' "$PG" > "$FWD/pgid.tmp" && mv -f "$FWD/pgid.tmp" "$FWD/pgid"
+  watchdog "$PG" </dev/null >/dev/null 2>&1 &
+  wdpid=$!
+  env -i "${KEEP[@]}" /bin/bash "$RT/scripts/$CMD.sh" "${ARGV[@]+"${ARGV[@]}"}"
+  rc=$?
+  kill "$wdpid" 2>/dev/null
+  wait "$wdpid" 2>/dev/null
+  exit "$rc"
+fi
 exec 3<&0
 set -m
 env -i "${KEEP[@]}" /bin/bash "$RT/scripts/$CMD.sh" "${ARGV[@]+"${ARGV[@]}"}" <&3 &
 tpid=$!
 set +m
 printf '%s\n' "$tpid" > "$FWD/pgid.tmp" && mv -f "$FWD/pgid.tmp" "$FWD/pgid"
-
-ppid_now() {
-  local s
-  s="$(cat "/proc/$$/stat" 2>/dev/null)" || return 1
-  s="${s##*) }"
-  read -r _ p _ <<< "$s"
-  printf '%s' "$p"
-}
-(
-  trap - INT TERM HUP
-  while kill -0 "$tpid" 2>/dev/null; do
-    sleep 2
-    p="$(ppid_now)" || continue
-    if [ -n "$p" ] && [ "$p" != "$PPID0" ]; then
-      kill -TERM -- "-$tpid" 2>/dev/null
-      sleep 5
-      kill -KILL -- "-$tpid" 2>/dev/null
-      exit 0
-    fi
-  done
-) </dev/null >/dev/null 2>&1 &
+watchdog "$tpid" </dev/null >/dev/null 2>&1 &
 wdpid=$!
 
 while :; do

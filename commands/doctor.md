@@ -17,7 +17,7 @@ Every probe is free: `--version`, model listings, `claude auth status`, `gh auth
 `gh pr edit --help`, and ghcp's invalid-model catalog probe (only on the pinned Copilot 1.0.105,
 from the empty directory `~/.conductor/probe`). No model is called and no credit or quota is
 spent. `agy -p /usage` runs only with `--pools --agy-usage`. From Git Bash (the Windows app)
-the doctor runs its Windows checks (W1–W7) and then forwards itself into WSL; `--windows`
+the doctor runs its Windows checks (W1–W7, W10, W11) and then forwards itself into WSL; `--windows`
 runs the Windows checks only, and `--login-help [cli]` prints the fresh-login commands
 without probing anything.
 
@@ -25,8 +25,14 @@ Read the report (`✓` ok, `!` worth knowing, `✗` broken; each `[ID]` is a che
 `docs/DESIGN.md` section 8, and `fix:` lines carry the exact command), then tell the user, in
 a few lines per section:
 
-- The host and caller (WSL, Linux or Git Bash), and whether the host record was written.
-- Each `✗`, then each `!`: what it means and its `fix:` command, copied verbatim. Typical
+- The host, caller and session (the header's `session local`, `bridge` for a Work locally
+  project thread, or `cloud`, where the doctor only reports ✗ D30 and exits 43: the executors
+  are on the user's computer), and whether the host record was written. D30, D31 and D32 (W10,
+  W11 from Git Bash) are info: the session, Work locally readiness, and what the settings say
+  about workflows and ultracode.
+- Each `✗`, then each `!`: what it means and its `fix:` command, copied verbatim (in a report
+  forwarded from the Windows app, every fix outside the Windows section runs in a WSL terminal,
+  never in Git Bash: say so). Typical
   ones: a CLI off its version pin (Copilot 1.0.105 and grok 1.0.70 exactly; Claude Code
   2.1.316 or newer; agy 1.1.12 or newer) and the auto-update exports in `~/.profile`; a CLI
   not logged in (point to `cx-doctor --login-help <cli>`; logins are interactive, so the user
@@ -56,4 +62,4 @@ Rules:
   means the call ran inside the sandbox (re-run it outside); 40 `FORWARD_FAILED` and
   41 `RUNTIME_MISSING` come from Git Bash to WSL forwarding (wsl.exe missing or failing, or
   the WSL-side runtime copy could not be installed: try `cx-doctor --install-runtime`);
-  43 `HOST_UNSUPPORTED` (for example `--host docker` before v1.1).
+  43 `HOST_UNSUPPORTED` (a cloud session, or for example `--host docker` before v1.1).

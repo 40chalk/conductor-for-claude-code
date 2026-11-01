@@ -51,6 +51,8 @@ are specified enough to build against and say what Phase 0/1 evidence they still
 | U4 | No data restrictions. | Every pool is enabled for every repo: `.cx/routes.json` `pools` defaults to all `true`, `docker_only` to `false`. |
 | U5 | Cursor is out of v1 (X Subscription: no included Opus). | No Cursor options, adapters or doctor checks. The worker shims still block `cursor-agent` and `agent` (§11). §19 keeps a v2 note. |
 | U6 | Windows + WSL. Today Claude Code runs inside WSL; within days a Windows box runs the Claude desktop app (Bash tool = Git Bash) that also uses WSL. | WSL is the canonical executor host. From Git Bash every `cx-*` bin forwards into WSL through `wsl.exe` (§7.3). Docker (`/home/user/coding-agents-docker`) is v1.1 (§18). |
+| U7 | Claude Code Projects (beta) threads always run locally, as **Work locally** threads (Remote Control children on the user's computer); executors may still use their own clouds from such a thread (the Copilot cloud agent through `ghcp-cloud`, Grok remote sessions), which is welcome. | Session kinds are decided before the host (§7.1): `bridge` (a Work locally thread) behaves as a local session; `cloud` and `byoc` are only a never-fail safety net (§10.6, §7.3 step 0a). The Projects instructions template says to run every thread locally (§9.6). Several local threads at once are the normal case, so the cross-process pool slots are the first Phase 2 item (§15.3) and Phase 1 runs agy one job at a time across threads, enforced by a machine-wide lock in the skill's agy steps (§12.2 step 2a). The Copilot cloud agent has a Phase 1 recipe with a gate (§12.2 step 5); Grok remote sessions are the user's to start (grok 1.0.70 can only resume one). A Git Bash or WSL host is never classified cloud (§7.1). |
+| U8 | Ultracode is normally off; the conductor only has to behave correctly when it is on, and the Phase 2 runner agent is optional. | Phase 1 rule: workflow and Agent-tool subagents never run executors; the main turn dispatches executor lanes between workflows (§10.7, §12.1). The runner agent, its gate and the `opus-pools` workflow are optional Phase 2 items (§15.9–§15.11). |
 
 Deviations from the plan that this spec makes on its own authority, each for a stated reason:
 - The plan's `nudge` option is not declared: v1 has no UserPromptSubmit hook, and an option
@@ -58,6 +60,13 @@ Deviations from the plan that this spec makes on its own authority, each for a s
 - `agy-handoff` is not used for conductor write lanes outside Docker: it always passes `--yolo`
   (`--dangerously-skip-permissions`, machine-wide; `agy-handoff.sh:143`), which §6.5 G10
   forbids. Phase 1 agy writes use `agy-delegate` plus a static grant (§12.2).
+- For the same reason the plan's media and research lanes wait for the v1.1 Docker lane:
+  `agy-media` always passes `--yolo` (`agy-media.sh:184`; its own warning says this approves
+  every agy tool across the machine), and `/antigravity:research` runs `agy-delegate --yolo`
+  (`commands/research.md:18`; headless web search has no narrower grant). Phase 1 names them
+  only to forbid them (policy, skill), leaves `agy-media` out of `cx-wsl` and of D25's rules,
+  and routes research to Claude's own WebSearch and grok. Lifting this needs the user's consent:
+  U2 covers spending, not skipping permissions.
 - Host records are per host key (`$CX_HOME/hosts/<hostkey>.json`), not one `hosts.json`,
   because v1.1 bind-mounts `~/.conductor` into the container and two hosts would overwrite one
   file (§7.6).
@@ -83,7 +92,7 @@ Deviations from the plan that this spec makes on its own authority, each for a s
 | Phase | Deliverable | § |
 |---|---|---|
 | 0 (outside the repo, already run or run by hand) | Free checks and tiny paid checks of plan §13.2–13.3; raw outputs sanitized (§14.2) and saved under `tests/fixtures/real/<cli>/` when they land | §20 |
-| **1 Skeleton + host layer** | `plugin.json`, `marketplace.json`, `scripts/lib` (options, common, `cxlib.py`), `scripts/host` (detect, pathmap, forward-wsl, wsl-entry, install-runtime), `cx-doctor`, `cx-init` + `templates/repo-bundle/`, `cx-wsl` passthrough, SessionStart policy hook (WSL, Git Bash and CRLF variants), worker shims, skill + 3 commands, tests + stubs, README, CLAUDE.md, CHANGELOG. In parallel (live, paid, by hand): the blinded Opus A/B (§6.7) and the Windows job-survival check (§14.4) | §2–§14 |
+| **1 Skeleton + host layer** | `plugin.json`, `marketplace.json`, `scripts/lib` (options, common, `cxlib.py`), `scripts/host` (detect, pathmap, forward-wsl, wsl-entry, install-runtime), `cx-doctor`, `cx-init` + `templates/repo-bundle/`, `cx-wsl` passthrough, session kinds and the cloud refusal (§7.1, §7.3 step 0a), SessionStart policy hook (WSL, Git Bash, CRLF and cloud variants) and SubagentStart guard (§10), the Projects instructions template (§9.6), worker shims, skill + 3 commands, tests + stubs, README, CLAUDE.md, CHANGELOG. In parallel (live, paid, by hand): the blinded Opus A/B (§6.7) and the Windows job-survival check (§14.4) | §2–§14 |
 | 2 Adapters + run + jobs + ledger | `scripts/adapters/{copilot,grok,agy,claude}.sh`, `cx-run`, `cx-job`, normalizer, ledger, locks, wrapper worker shims, `cx-init --user-grants` | §15 |
 | 3 Gates + fan-out + integration | `cx-gate` (incl. verdict parser), conductor commit step, `cx-fanout`, integration queue | §16 |
 | 4 Live cross-environment + review + GitHub | Windows end to end, review lane, PR + `@copilot` review with ledger accounting, `ghcp-ci-debug` passthrough | §17 |
@@ -114,7 +123,12 @@ Deviations from the plan that this spec makes on its own authority, each for a s
 - The Bash tool kills a foreground call at its timeout (default 2 minutes, maximum 10) and
   every call starts a fresh shell: variables and functions do not persist between calls
   [measured 2026-11-01: Bash tool description]. Long work therefore runs as one background
-  Bash call (`run_in_background`), which notifies on exit (§12.2). ghcp forwards TERM to
+  Bash call (`run_in_background`), which notifies on exit (§12.2). A background call is also
+  stopped at its `timeout`, whose default is 1,800,000 ms (30 minutes) and maximum 7,200,000 ms
+  (2 hours) [verified: the Bash tool description in the build harness and the 2.1.316 binary
+  text]: shorter than a 30-minute executor run plus registration, the raw agy arm's 35-minute
+  bound or `ghcp-handoff`'s delegation, tests and fix-up. Every background executor or wait call
+  therefore passes `timeout: 7200000`, and each lane's own wall clock stays below it. ghcp forwards TERM to
   Copilot on a kill (billed tokens, exit 130); agy ignores TERM and is orphaned (antigravity
   `SKILL.md:319-325`).
 - `claude -p` worker flags: `--model`, `--effort low|medium|high|xhigh|max`,
@@ -264,6 +278,13 @@ From the captured `grok --help` (GH) unless tagged:
   exist, exit 9009 and only open the Microsoft Store, and a real Windows Python prints CRLF. A
   PATH with `C:\Windows\System32` first resolves `timeout` to the unrelated `timeout.exe`.
   Therefore every Git Bash code path is pure bash plus the tools of §3.1, and never python.
+- The desktop app's WSL sessions (the WSL environment, or a `\\wsl.localhost\…` folder chosen
+  in the folder picker, which "reopens inside that distribution") run Claude Code inside WSL,
+  and "plugins aren't available in WSL sessions" [docs-only, `desktop-wsl.md`; §20 item 45]: the
+  conductor is absent there. Conductor work on a repo that lives in WSL therefore runs in a
+  desktop session on a Windows folder (it forwards into WSL), in a WSL terminal, or behind
+  `claude remote-control` in WSL (§20 item 40); W3, D30 and `wsl-entry.sh`'s cwd note never send
+  the user to a picker-opened WSL session.
 - Unverified (§20): whether the desktop app opens `\\wsl.localhost` projects and what `$PWD`
   then looks like; which shell runs hook commands on Windows; whether WSL's idle shutdown kills
   detached jobs after the last `wsl.exe` exits; whether wsl.exe relays stdin and Ctrl-C.
@@ -275,6 +296,60 @@ From the captured `grok --help` (GH) unless tagged:
 | `ghcp@ghcp-for-claude-code` 0.1.0 (user's own) | SessionStart policy (`coding_policy`, on) and UserPromptSubmit nudge (`delegation_nudge`, on); PreToolUse(Bash) gate fails closed on malformed payloads; options read from user settings only | Recommend both options off (§8.3 D21); call its bins by absolute path; parse its `GHCP_*` lines |
 | `antigravity@antigravity-for-claude-code` 0.30.2 | Same two options (on); policy on startup and compact; `antigravity-delegate` agent has no working gate; `timeout` default 5m returns PARTIAL (exit 12) | Recommend both options off and `timeout` 30m (§8.3 D22); deny the agent (D24) |
 | `grok-build@xai-grok-build` 0.2.1 | SessionStart/SessionEnd hooks (node, no matcher); SessionEnd also fires on `/clear` and kills and erases session-tagged bridge jobs in the hook's cwd workspace; `grok-build:grok-delegate` (Sonnet, writes by default, ungated); bridge caps effort at low/medium/high, writes unsandboxed with `--always-approve`, fails on prompts over 128 KiB, calls the missing `grok import` | Never used by the conductor; doctor warns (D23) and recommends denying the agent (D24) |
+
+### 1.7 Projects, cloud sessions, hooks and workflows (Claude Code 2.1.316)
+
+Tags as in §0.2; "[docs-only, binary]" marks a string read from the 2.1.316 executable with
+`grep -a`, never run.
+
+- **Code-tab Projects (public beta).** A project is one coordinator conversation that starts
+  threads; each thread is a full Claude Code session, in the cloud by default or on the user's
+  computer as a **Work locally** thread: a Remote Control child in a folder on that machine,
+  which uses the machine's settings, hooks, permission rules and plugins, runs in auto mode and
+  gets the Projects instructions (Project settings > Memory, up to 16,000 characters) but not
+  project memory [docs-only]. It needs Claude Code ≥ 2.1.280, the desktop app's "Use this
+  computer from your phone and claude.ai" with the folder added (or `claude remote-control`
+  running in the folder), a claude.ai login (not an API key, `ANTHROPIC_BASE_URL` gateway,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` or `DISABLE_GROWTHBOOK`), and "Require trusted
+  devices" off [docs-only]. The user runs every thread locally (U7). Cloud threads load only the
+  repo's root `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/`, the Projects instructions,
+  project memory, account skills and plugins added in Project settings; claude.ai refuses a
+  plugin with a top-level `bin/` [docs-only], so the conductor never runs there.
+- **Session signals** (inherited by hooks and the Bash tool): `CLAUDE_CODE_REMOTE` truthy and no
+  `CLAUDE_CODE_ENVIRONMENT_KIND` = Anthropic cloud [docs-only, binary; measured `true` in the
+  build container, a desktop cloud session with `CLAUDE_CODE_ENTRYPOINT=remote_desktop`];
+  kind `byoc` = a BYOC or self-hosted runner; kind `bridge` = a Remote Control child, always on
+  the user's computer [docs-only, binary]; because that tag is unverified, a Git Bash or WSL host
+  is never classified cloud whatever the variables say (§7.1). `CLAUDE_CODE_SESSION_ATTENDED` is `0` in headless,
+  scheduled and background sessions [docs-only, binary]. The entrypoint is never used for routing
+  (a bridge child inherits it), `CLAUDE_CODE_VERSION` is wrong (measured 2.1.42 against a 2.1.316
+  binary) and `CLAUDE_PROJECT_DIR` is unset for the Bash tool (measured).
+- **Hooks.** `claude plugin validate` checks a plugin's `hooks/hooks.json`: it accepts
+  `SubagentStart` and `"onFailure": "continue"` and reports any other `onFailure` value as an
+  invalid command hook [measured 2026-11-01]. SubagentStart fires for every workflow `agent()`
+  and Agent-tool subagent with `agent_type` set (`workflow-subagent` by default,
+  `general-purpose`, or a plugin's `<plugin>:<name>`), and its `additionalContext` is injected
+  into that agent [docs-only, binary; §20 item 49]. SessionStart `compact` also fires when a
+  subagent compacts, with that agent's context (`agent_id`, `agent_type`) [docs-only, binary;
+  §20 item 60].
+- **Workflows and ultracode.** Ultracode is a session setting (the `ultracode` settings key,
+  `--effort ultracode`, `/effort ultracode`, or the word typed in a prompt; not from `-p`); no
+  environment variable exposes it and a plugin's settings honour only `agent` and
+  `subagentStatusLine`, so the conductor can neither detect nor force it [docs-only, binary].
+  Its reminders ("use the Workflow tool on every substantive task") reach only the main loop.
+  Every workflow `agent()` is an in-process Claude subagent with the parent's plugins, hooks,
+  CLAUDE.md and skills; nothing replaces it with an external CLI. Workflows are off with
+  `CLAUDE_CODE_DISABLE_WORKFLOWS`, `CLAUDE_CODE_WORKFLOWS=false`, `disableWorkflows: true` or
+  `enableWorkflows: false`, and by default on Pro. Concurrency per workflow is
+  min(16, max(2, CPUs − 2)) unless `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS` (1–256) sets it;
+  `isolation: 'remote'` throws in workflows and `isolation: 'worktree'` fences an agent inside
+  `<repo>/.claude/worktrees/`; `budget` counts Claude output tokens only. In auto mode a
+  workflow agent's prompt gets no user-intent credit [docs-only]. Five statements of the earlier
+  design note are corrected here: the concurrency floor of 2, `isolation: 'remote'` throwing,
+  repo `enabledPlugins` not reaching the cloud, SubagentStart firing for workflow agents, and
+  `--effort` in `--help` listing only low–max (ultracode is a hidden alias).
+- **Tool serving** (`_host`, attached computer folders) is refused from Windows and from WSL
+  [docs-only, binary; §20 item 57]; v1 never routes through it.
 
 ## 2. Architecture and component inventory
 
@@ -330,10 +405,13 @@ All paths are relative to the plugin root. "Host" says where the file runs: W = 
 | `scripts/lib/{normalize.py,ledger.py,worktree.sh,taskfile.sh,locks.sh}` | 2 | W | Result normalizer, ledger, worktrees, task rendering, pool locks | §15 |
 | `scripts/cx-gate.sh`, `scripts/lib/verdict.py` | 3 | W | Gate + test-verdict parser | §16 |
 | `scripts/cx-fanout.sh` | 3 | W | N tasks, failover, integration queue | §16 |
-| `hooks/hooks.json`, `hooks/policy.sh`, `hooks/policy-context.json`, `hooks/policy-context-gitbash.json`, `hooks/policy-context-crlf.json` | 1 | B | SessionStart policy (WSL/Linux, Git Bash and CRLF-corruption variants) | §10 |
+| `hooks/hooks.json`, `hooks/policy.sh`, `hooks/policy-context.json`, `hooks/policy-context-gitbash.json`, `hooks/policy-context-crlf.json`, `hooks/policy-context-cloud.json` | 1 | B | SessionStart policy (WSL/Linux, Git Bash, CRLF-corruption and cloud variants) | §10 |
+| `hooks/subagent.sh`, `hooks/subagent-context.json`, `hooks/subagent-context-compact.json` | 1 | B | SubagentStart guard (and its compaction copy): subagents never run executors | §10.7 |
+| `agents/cx-runner.md`, `hooks/gate.sh`, `workflows/opus-pools.js` | 2 (optional) | — | Workflow stage runner, its fail-closed PreToolUse gate, the shipped Opus fan-out workflow | §15.9–§15.11 |
 | `worker-shims/{claude,copilot,grok,agy,codex,gemini,cursor-agent,agent}` | 1 | W | Block agent CLIs inside workers | §11 |
 | `worker-shims/{ghcp-*,agy-*,cx-*}` | 2 | W | Block sibling wrappers and conductor bins inside workers | §11, §15.6 |
 | `templates/repo-bundle/{AGENTS.md,routes.json,copilot-instructions.md}` | 1 | W | Bundle templates | §9.5 |
+| `templates/projects-instructions.md` | 1 | — | Text the user pastes into Project settings > Memory | §9.6 |
 | `templates/task.md`, `templates/cx-worker.json`, `templates/grok-sandbox.toml` | 2 | W | Task contract, Claude worker settings, grok profile | §6.4, §15 |
 | `skills/conductor/SKILL.md` | 1 | — | Routing, effort, commands, guardrails, hazards | §12.1 |
 | `commands/{doctor,init,route}.md` | 1 | — | `/conductor:doctor`, `:init`, `:route` | §12.3 |
@@ -486,7 +564,7 @@ deliberately equal ghcp's (and agy-delegate's) codes, so adapters pass them thro
 | 21 | `MODEL_MISMATCH` | `model_mismatch` | cx-run | Served model ≠ requested (incl. `GHCP_FALLBACK` on a Fusion lane, agy `init.model`) |
 | 22 | `WRONG_TREE` | `wrong_tree` | cx-run (agy) | Files changed outside the task's worktree |
 | 23 | `SPEC_TAMPERED` | `spec_tampered` | cx-run, cx-gate | `.conductor/task.md` hash mismatch |
-| 24 | `TAMPERED` | `tampered` | cx-gate | Protected path changed (tests, lockfiles, CI, routes.json, agent config, …) |
+| 24 | `TAMPERED` | `tampered` | cx-gate | Protected path changed (tests, lockfiles, CI, routes.json, agent config, …), or the executor left the task branch (`BRANCH_TAMPERED`, §12.2 step 3) |
 | 25 | `ENV_FAILED` | `env_failed` | cx-run, cx-gate | The repo's `setup` command failed (not charged to the executor) |
 | 26 | `VERSION_MISMATCH` | `version_mismatch` | cx-run | CLI version ≠ pin; lane refused before running |
 | 27 | `PARTIAL` | `partial` | cx-run (agy) | Partial output (agy print-timeout expired with rc 0) |
@@ -494,7 +572,7 @@ deliberately equal ghcp's (and agy-delegate's) codes, so adapters pass them thro
 | 40 | `FORWARD_FAILED` | — | forward-wsl.sh (also for a `wsl-entry.sh` step-1 failure) | `wsl.exe` missing, distro missing, wsl.exe failed before the command started, or wsl.exe died after it started (VM terminated) |
 | 41 | `RUNTIME_MISSING` | — | forward-wsl.sh, wsl-entry.sh | No runtime copy in WSL and auto-install is off or failed; or the runtime's version/meta mismatch |
 | 42 | `PATH_UNMAPPABLE` | — | pathmap.sh, wsl-entry.sh, any path option | A path has no equivalent on the other side |
-| 43 | `HOST_UNSUPPORTED` | — | all | This host cannot do this (Cygwin, `exec_host=local` on Git Bash, `--host docker` before v1.1, `--windows` merge without Git Bash) |
+| 43 | `HOST_UNSUPPORTED` | — | all | This host cannot do this (a cloud session or a BYOC runner without `exec_host=local`, §7.3 step 0a; Cygwin, `exec_host=local` on Git Bash, `--host docker` before v1.1, `--windows` merge without Git Bash) |
 | 44 | `CRLF_CORRUPT` | — | install-runtime.sh | A runtime file still contains CR after stripping |
 | 75 | `RUNNING` | — | cx-job result/wait | Job still running |
 | 126 | — (no `CX_SIGNAL`) | — | worker shims | `blocked: CX_WORKER` (§11) |
@@ -526,10 +604,10 @@ preceding plain `<prog>: …` note.
 | Line | Payload keys | Emitted by, when |
 |---|---|---|
 | `CX_SIGNAL` | `status` str, `exit` int, `reason` str, `retry` str\|null, `cmd` str | Any exit ∉ {0,1,126}; always last |
-| `CX_HOST` | `host` (`wsl\|linux\|gitbash\|docker\|macos\|cygwin\|unknown`), `hostkey` str, `distro` str\|null, `os_id` str\|null, `os_version` str\|null, `wsl_version` int\|null, `arch` str, `kernel` str | `detect.sh --emit`; `cx-doctor` (once) |
+| `CX_HOST` | `host` (`wsl\|linux\|gitbash\|docker\|macos\|cygwin\|unknown`), `hostkey` str, `distro` str\|null, `os_id` str\|null, `os_version` str\|null, `wsl_version` int\|null, `arch` str, `kernel` str, `session` (`local\|bridge\|cloud\|byoc`, §7.1; the caller's in a forwarded doctor), `attended` int\|null | `detect.sh --emit`; `cx-doctor` (once) |
 | `CX_FORWARD` | `caller` (`gitbash`), `host` (`wsl`), `distro` str (`WSL_DISTRO_NAME`, also when `wsl_distro=auto`), `cmd` str, `cwd` str\|null (WSL path), `cwd_win` str, `runtime` str (version), `installed` bool | `wsl-entry.sh`, once, before it starts the target |
 | `CX_RUNTIME` | `version` str, `path` str, `changed` bool, `stripped_cr` int (files) | `install-runtime.sh` |
-| `CX_DOCTOR` | `ok` int, `warn` int, `fail` int, `host` str, `caller` str, `record` str\|null (host record path), `pools` bool | `cx-doctor`, last line before any `CX_SIGNAL` |
+| `CX_DOCTOR` | `ok` int, `warn` int, `fail` int, `host` str, `caller` str, `session` str, `attended` int\|null, `record` str\|null (host record path), `pools` bool | `cx-doctor`, last line before any `CX_SIGNAL` |
 | `CX_POOLS` | `agy` {`opus_slugs` [str], `usage` obj\|null}, `copilot` {`opus_id_enabled` bool, `review_ids` [str], `mtd_credits` num\|null, `mtd_age_days` num\|null, `ledger_month_credits` num\|null, `reserve_pct` int}, `grok` {`bulk_model_listed` bool, `claude_ids` [str]} | `cx-doctor --pools` |
 | `CX_INIT` | `repo` str, `dry_run` bool, `written` [str], `unchanged` [str], `conflicts` [str], `excluded` bool, `detected` obj (§9.3) | `cx-init` |
 | `CX_RESULT` | the result.json summary (§15.4) plus `path`, `host_path` | `cx-run`, `cx-job wait/result` (Phase 2) |
@@ -562,6 +640,7 @@ them, `CX_SIGNAL` last.
 | `cx_forward_if_needed CMD ARGS…` | §7.3 step 0 |
 | `cx_decode_wsl` | stdin→stdout: if the first two bytes are `FF FE` or the second byte is `00`, decode UTF-16LE (`iconv -f UTF-16LE -t UTF-8` when present, else `tr -d '\000'`), drop a BOM; always `tr -d '\r'` |
 | `cx_status_for_exit N` | §4.1 mapping |
+| `cx_shell_words WORD…` | The words shell-quoted with `printf %q` and joined by single spaces: every path list in a printed `fix:` line (D3, W6), so the line runs as printed whatever the paths hold |
 
 `scripts/lib/cxlib.py` (executor host only) subcommands, all printing to stdout unless noted:
 
@@ -575,7 +654,8 @@ them, `CX_SIGNAL` last.
 | `toml-get FILE SECTION KEY` | `tomllib` when available, else a line scanner for `[section]` / `key = value`; prints the raw value |
 | `options-check` | Reads the effective `CLAUDE_PLUGIN_OPTION_*` env; prints JSON `[{"name","value","default","valid","note"}]` per §5.3 |
 | `plugins --config-dir DIR` | Sibling-plugin report (§8.3 D20–D26) as JSON |
-| `parse-models --cli copilot\|grok\|agy FILE` | Model ids per CLI (§8.3 D16–D18); never fails, returns `{"ids": [...], "authenticated": bool\|null, "shape": "..."}` |
+| `parse-models --cli copilot\|grok\|agy FILE` | Model ids per CLI (§8.3 D16–D18); never fails, returns `{"ids": [...], "authenticated": bool\|null, "shape": "..."}`; for agy, `authenticated` is `true` only when an id looks like a model slug (one token with a digit), and an object is read as a `{slug: label}` map only when it has no status key (D18) |
+| `wsl-resolve --record F --tool T --config-dir D [--conductor-bin B] [--mnt-root R]` | cx-wsl (§7.7): the tool's absolute path, its PATH and the recorded copilot; never a path under `R` or `/mnt/` |
 | `host-record --out-dir DIR --hostkey K` | Reads a JSON description on stdin and writes `K.json` and `K.path` atomically (§7.6) |
 | `doctor-render --checks TSV [--extra TSV] [--json] [--pools JSON]` | Renders the doctor report (§8.2, §8.7); exit 0, or 4 when any check failed |
 | `init-detect DIR` | Detection JSON (§9.3) |
@@ -592,8 +672,8 @@ pins them equal (P2). An empty value means "use the default" for every option.
 
 | Option | Default | Meaning (plugin.json description, condensed) | Valid values | Read by |
 |---|---|---|---|---|
-| `policy` | `on` | Inject the conductor routing policy at SessionStart (startup, clear, compact). off/false/0/no/disabled suppress it. | boolean words | `hooks/policy.sh`, `cx-doctor` D21–D22 |
-| `exec_host` | `auto` | Where executors run. `auto`: Git Bash forwards into WSL, every other host runs locally. `wsl`: always WSL. `local`: run here (refused on Git Bash). `docker` arrives in v1.1. | `auto\|wsl\|local` (v1.1: `\|docker`) | `common.sh` forwarding step 0 (every `cx-*`; lite reader on Git Bash), `cx-doctor`, `cx-run` |
+| `policy` | `on` | Inject the conductor routing policy at SessionStart (startup, clear, compact) and the subagent guard at SubagentStart. off/false/0/no/disabled suppress both. | boolean words | `hooks/policy.sh`, `hooks/subagent.sh`, `cx-doctor` D21–D22 |
+| `exec_host` | `auto` | Where executors run. `auto`: Git Bash forwards into WSL, every other host runs locally. `wsl`: always WSL. `local`: run here (refused on Git Bash; on a BYOC or self-hosted runner it marks the runner as the executor host, §7.3 step 0a). `docker` arrives in v1.1. | `auto\|wsl\|local` (v1.1: `\|docker`) | `common.sh` forwarding step 0 (every `cx-*`; lite reader on Git Bash), `hooks/policy.sh` (byoc only), `cx-doctor`, `cx-run` |
 | `wsl_distro` | `auto` | WSL distribution used by forwarding and by `\\wsl.localhost\<distro>` path mapping. `auto`: wsl.exe's default distribution (no `-d`); WSL-side mappings use `WSL_DISTRO_NAME`. | `auto` or `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` | `forward-wsl.sh` (lite), `common.sh` (`cx_host_path` passes an explicit value as `--distro` when `WSL_DISTRO_NAME` is unset), `cx-doctor` W2/W4 (with `auto`, Git Bash takes the name from the `*` row of `wsl.exe -l -v`) |
 | `docker_compose_file` | `` | v1.1: absolute WSL path of coding-agents-docker's `compose.yaml`. Empty = Docker lanes off. | absolute path | v1.1 `forward-docker.sh`, `cx-doctor --host docker` |
 | `docker_service` | `agents` | v1.1: compose service that runs the agents. | compose service name | v1.1 |
@@ -649,7 +729,8 @@ forwarded call carries from Git Bash) > Windows-side `settings.json` (forwarded 
 the executor host's `settings.json` > the default. Hooks get `CLAUDE_PLUGIN_OPTION_*` from Claude
 Code itself and do not re-read files (§10.2). Only `cx-doctor.sh`, `cx-init.sh`, `cx-run.sh`,
 `cx-job.sh`, `cx-fanout.sh`, `cx-gate.sh`, `forward-wsl.sh` and `common.sh`'s forwarding step
-(lite reader) and `hooks/policy.sh` (env) load options; adapters receive them from `cx-run`.
+(lite reader), `hooks/policy.sh` and `hooks/subagent.sh` (env) load options; adapters receive
+them from `cx-run`.
 
 ### 5.3 Validation
 
@@ -686,10 +767,10 @@ and, from Phase 2, `cx-run --explain`.
 | `copilot-opus` | ghcp, `claude-opus-5.5 --effort high` | Copilot credits | yes | `ghcp-delegate --model claude-opus-5.5 --effort high --write …` | `cx-run --exec copilot` |
 | `copilot-fusion` | ghcp Fusion Standard/Max | Copilot credits | yes | `ghcp-delegate --fusion standard\|max`, `ghcp-handoff --tier pro` | `cx-run --exec copilot --fusion …` |
 | `copilot-gpt` | ghcp, `gpt-6.1-sol` (`gpt-6-astra` critique, `gpt-6-luna` text) | Copilot credits | no | `ghcp-delegate --model gpt-6.1-sol --effort high --digest` | `cx-run --mode review --family gpt` |
-| `copilot-github` | Copilot code review, `/pr fix`, ghcp `--github`, ghcp-ci-debug | Copilot credits | via PR | `gh pr edit N --add-reviewer @copilot`; `ghcp-ci-debug` without `--apply` (§12.2 step 5) | §17 |
+| `copilot-github` | Copilot code review, `/pr fix`, ghcp-ci-debug; ghcp `--github` only for a task meant to act on GitHub (it adds every GitHub MCP tool, acting as the user) | Copilot credits | via PR; `--github` writes on GitHub as the user | `gh pr edit cx/<id> -R "$REPO" --add-reviewer @copilot`; `ghcp-ci-debug` without `--apply`; triage = `gh` fetch + read-only `copilot-gpt` digest (§12.2 step 5) | §17 |
 | `grok` | grok 1.0.70, `-m grok-4.7` | xAI weekly first-party pool | yes (acceptEdits + allow-list) | raw `grok` (§12.2) | `cx-run --exec grok` |
 | `agy-gemini` | agy-delegate, `Gemini 4 Argon (High)` / `gemini-3.8-flash-high` | Ultra Gemini quota (not the Claude/GPT bucket) | no | `agy-delegate --model '<label>' --digest` | `cx-run --mode review --family gemini` |
-| `agy-media` | agy-media, `/antigravity:research` | Ultra Gemini quota | no | as named | unchanged |
+| `agy-media` | agy-media, `/antigravity:research` | Ultra Gemini quota | machine-wide: both always pass `--yolo` (§0.3) | none: not used outside Docker | the v1.1 Docker lane (§18) |
 
 ### 6.2 Routing table
 
@@ -715,12 +796,12 @@ conductor's commit, then the integrated gate at merge.
 | Security review | `claude` + `copilot-gpt` (`gpt-6.1-sol` high) + CodeQL/secret scanning; never Grok alone | `agy-gemini` Argon | Claude adjudicates every finding at file:line |
 | Second opinion on Opus-written code | `agy-gemini` Argon High; `copilot-gpt` also on `high_risk` paths | `grok` xhigh | Never count Opus reviewing Opus as independent (`same_family_as_conductor`) |
 | Second opinion on Grok/Gemini-written code | `claude`, depth scaled by risk | — | — |
-| PR / issue / CI triage | `copilot-github` (`ghcp-ci-debug`, `ghcp-delegate --github --digest`) | `grok` digest of `gh run view <id> --log-failed` | Fixes go through the same gates |
+| PR / issue / CI triage | `copilot-github` (`ghcp-ci-debug`); issues and PRs fetched with `gh` first, then a read-only `copilot-gpt` digest (never `--github` for triage: it acts as the user) | `grok` digest of `gh run view <id> --log-failed` | Fixes go through the same gates |
 | Commit messages, PR text, changelogs | `grok` low/medium, read-only, diff in a prompt file | `copilot-gpt` (`gpt-6-luna`) | Claude edits; nothing not in the diff |
 | Merge conflicts / integration fixes | `claude` | — | Integrated gate |
 | UI / frontend code | `claude` designs; Opus lanes make 2–3 parallel variants (one worktree each) | `claude` subagent | Screenshots (setup [unverified]), a11y lint; Claude picks and says why |
-| Media understanding | `agy-media` | — | Claude checks timestamps it relies on |
-| Web-grounded research | `agy-gemini` flash high (`/antigravity:research`), Argon for synthesis | `grok` (real time, X); Claude WebSearch | Claude re-fetches load-bearing citations; ≥2 sources per claim |
+| Media understanding | v1.1 Docker lane (`agy-media` always passes `--yolo`); Phase 1: Claude reads what it can (images, transcripts) | — | Claude checks timestamps it relies on |
+| Web-grounded research | Claude WebSearch / WebFetch; `grok` (real time, X) | `agy-gemini` flash on text Claude fetched (headless agy web search needs `--yolo`; `/antigravity:research` waits for Docker) | Claude re-fetches load-bearing citations; ≥2 sources per claim |
 | Long-file / codebase digest | `agy-gemini` Argon High above ~200k tokens, flash below (register the dir) | `grok`; `copilot` long-context | Claude spot-checks 3–5 file:line references |
 | Docs | `grok` medium for reference docs; `claude` for narrative/architecture | `agy-gemini` flash; `copilot-fusion` | Examples and doctests run; Claude edits |
 | Images (v2 lane) | agy `image-generator`, interactive until headless is confirmed | — | Claude opens each file |
@@ -801,7 +882,8 @@ issues. No full file contents, no raw logs. End with exactly one line: DIGEST: <
 |---|---|---|
 | grok-build SessionEnd kills and erases bridge jobs on `/clear` | Never use the bridge for conductor work; conductor jobs live in `$CX_HOME/jobs` | D23 warning |
 | grok-build bridge: effort capped, unsandboxed `--always-approve` writes, prompt re-tokenizing, 128 KiB E2BIG, missing `grok import` | Call raw `grok` with `--prompt-file`, explicit `-m`/`--effort`, `--sandbox` profile | §12.2, adapters |
-| Ungated proactive subagents `grok-build:grok-delegate`, `antigravity:antigravity-delegate` | User-level deny rules (`Task(...)` syntax [unverified] on 2.1.316) | D24; policy says don't use them |
+| Ungated proactive subagents `grok-build:grok-delegate`, `antigravity:antigravity-delegate` | User-level deny rules (`Task(...)` syntax [unverified] on 2.1.316) | D24; the policy names both and forbids them (P20) |
+| Wrappers that hard-code `--yolo`: `agy-handoff`, `agy-media`, `/antigravity:research` | Not Phase 1 lanes (§0.3); named only to forbid them; not on the `cx-wsl` allowlist; no D25 rule | P20, P43, P45 |
 | Two sibling SessionStart policies (~4.4k chars) and two nudges | Turn `coding_policy`/`delegation_nudge` off for ghcp and antigravity at user level; the conductor injects one policy | D21–D22 |
 | Both siblings read `CLAUDE_PLUGIN_OPTION_{TIER_PRO,TIMEOUT,…}` | Never export those globally; prefix single commands only | skill |
 | ghcp's PreToolUse gate fails closed on malformed payloads | The conductor's hook never emits malformed JSON | §10 |
@@ -816,8 +898,8 @@ issues. No full file contents, no raw logs. End with exactly one line: DIGEST: <
 | Fusion refusal → billed re-run on plain auto | `GHCP_FALLBACK` on a Fusion lane = `model_mismatch` | Phase 2 copilot adapter |
 | `grok worker` registers the machine with Cursor | Never run it; warn when a `grok worker` process runs (leader processes are normal grok leader mode) | D27 |
 | Executors cannot run in Claude Code's Bash sandbox: Copilot writes `~/.copilot` (exit 16), agy `~/.gemini` and `~/.antigravity` (no exit 16: shows as 2/11 or a hang), grok `~/.grok`; worktrees under `worktree_root` and `~/.conductor` writes fail too | Executor calls, `gh`, `git push` and worktree setup use the unsandboxed Bash mode; exit 16 is reported, never retried silently; agy/grok permission or EROFS text inside the sandbox → rerun unsandboxed | policy, skill, D26 |
-| The Bash tool kills foreground calls at 2–10 minutes (ghcp: billed tokens, exit 130; agy: orphaned) | Every call that may exceed 9 minutes is one background Bash call, or a `ghcp-job`/`agy-job` start waited for inside one background call | §12.2, policy |
-| `agy-job status` prints the job's task text, so a bare `grep running` can match it | Wait with `grep -qx '  state=running'` | §12.2 |
+| The Bash tool kills foreground calls at 2–10 minutes (ghcp: billed tokens, exit 130; agy: orphaned) | Every call that may exceed 9 minutes is one background Bash call, or a `ghcp-job` start waited for inside one background call (agy has no job form: its lock and snapshots span the run) | §12.2, policy |
+| `agy-job status` prints the job's task text, so a bare `grep running` can match it | No Phase 1 form waits on `agy-job`; anyone who does matches `grep -qx '  state=running'` | skill hazards |
 | Billing switches in the environment: `XAI_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `COPILOT_ALLOW_ALL`, `COPILOT_PROVIDER_BASE_URL`, `COPILOT_AUTO_TIER`, `COPILOT_MODEL` | Per-command `env -u …` prefixes in every Phase 1 command; D28 warns | §12.2, D28 |
 | `AGENTS.md` imported into `CLAUDE.md` (`@AGENTS.md`) would bind the conductor and the Copilot coding agent to worker rules | Worker-only rules are conditional on `.conductor/task.md` existing | §9.5 |
 | A git-based CRLF fix run on a plugin cache copy resolves the enclosing repo (`reset --hard` there loses work) | No fix text uses `git reset`; git fixes only on a verified marketplace clone | D3, P29 |
@@ -858,7 +940,7 @@ detect.sh [--shell | --json | --emit | --field NAME]
 ```
 
 Sourced, `cx_detect` sets `CX_HOST CX_HOSTKEY CX_DISTRO CX_OS_ID CX_OS_VERSION CX_WSL_VERSION
-CX_ARCH CX_KERNEL`. `--shell` prints `KEY=value` lines (`printf '%s=%q\n'`, pure bash);
+CX_ARCH CX_KERNEL CX_SESSION CX_ATTENDED` (the last two from `cx_session` and `cx_attended`, below). `--shell` prints `KEY=value` lines (`printf '%s=%q\n'`, pure bash);
 `--field NAME` prints one value; `--json` / `--emit` (a `CX_HOST` line) need `cx_py_ok` (exit 2
 with a note otherwise, which is always the case on Git Bash, §3.1).
 
@@ -881,10 +963,76 @@ Decision order (first match wins):
 | 7 | Linux and `uname -r` matches `[Mm]icrosoft` | `wsl` (interop disabled; noted by the doctor) |
 | 8 | otherwise | `linux` |
 
-`CX_DISTRO`: `$WSL_DISTRO_NAME` on WSL, else `ID` from os-release. `CX_OS_ID`/`CX_OS_VERSION`:
+`CX_DISTRO`: `$WSL_DISTRO_NAME` on WSL; when that is empty (ssh into WSL, `su -`, cron,
+systemd units) the registered name from `wslpath -w /` (`\\wsl.localhost\<Name>\` or the
+legacy `\\wsl$\<Name>\`; whether wslpath names the distribution in such shells is
+[unverified]); else `ID` from os-release. `CX_DISTRO_SOURCE` (`env`, `wslpath`, `os-release`;
+not printed) tells the doctor which one won (D1). Elsewhere `ID` from os-release. `CX_OS_ID`/`CX_OS_VERSION`:
 os-release `ID`/`VERSION_ID` (quotes stripped, pure bash). `CX_HOSTKEY`: `wsl-<distro>`,
 `linux-<hostname>`, `docker-<COMPOSE_PROJECT_NAME or hostname>`, `macos-<hostname>`,
 `gitbash-<hostname>`, with every character outside `[A-Za-z0-9._-]` replaced by `_`.
+
+**Session kind first.** The conductor decides by session kind before the shell host and the
+attended flag (§1.7). `cx_session` and `cx_attended` are pure bash, read the environment (and,
+for the user's-computer override, `uname` and the `WSLInterop` files under `CX_DETECT_ROOT`),
+and are also defined standalone (step 0a calls `cx_session` before host detection). A Git Bash
+or WSL host is never `cloud` or `byoc`: Anthropic's cloud containers are plain Linux, the
+cloud branch is only a safety net (U7), and a false cloud verdict would turn the policy off and
+make every `cx-*` exit 43 on the user's own executor host. `CLAUDE_CODE_ENVIRONMENT_KIND=bridge`
+stays the primary Work locally signal (§1.7; it is [docs-only, binary]):
+
+```bash
+cx_session() {
+  local r="${CLAUDE_CODE_REMOTE:-}" k="${CLAUDE_CODE_ENVIRONMENT_KIND:-}" w
+  r="${r//[[:space:]]/}"
+  case "${r,,}" in
+    1|true|yes|on)
+      case "$k" in "") CX_SESSION=cloud ;; bridge) CX_SESSION=bridge ;; *) CX_SESSION=byoc ;; esac ;;
+    *)
+      case "$k" in bridge) CX_SESSION=bridge ;; *) CX_SESSION=local ;; esac ;;
+  esac
+  # Never cloud or BYOC on the user's computer: Anthropic's cloud containers are plain Linux,
+  # so a Git Bash or WSL host is local whatever the variables say (a false cloud verdict would
+  # switch the conductor off on its own executor host).
+  case "$CX_SESSION" in
+    cloud|byoc)
+      case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*) CX_SESSION=local; return 0 ;; esac
+      [ -n "${WSL_DISTRO_NAME:-}" ] && { CX_SESSION=local; return 0; }
+      for w in "${CX_DETECT_ROOT:-}"/proc/sys/fs/binfmt_misc/WSLInterop*; do
+        [ -e "$w" ] && { CX_SESSION=local; return 0; }
+      done
+      case "$(uname -r 2>/dev/null)" in *[Mm]icrosoft*) CX_SESSION=local ;; esac ;;
+  esac
+  return 0
+}
+cx_attended() {
+  case "${CLAUDE_CODE_SESSION_ATTENDED:-}" in
+    1) CX_ATTENDED=1 ;;
+    0) if [ "${CX_SESSION:-}" = bridge ]; then CX_ATTENDED=; else CX_ATTENDED=0; fi ;;
+    *) CX_ATTENDED= ;;
+  esac
+  return 0
+}
+```
+
+| `CX_SESSION` | Arises as | Behaviour |
+|---|---|---|
+| `local` | a terminal, VS Code, a desktop session on a Windows folder, `claude -p` | as before: WSL policy, or Git Bash forwarding |
+| `bridge` | a Remote Control child: a **Work locally** project thread (U7) or a session driven from claude.ai, from the desktop app (Git Bash) or `claude remote-control` (WSL) | exactly `local`; Phase 1 adds the cross-thread rule that agy runs one job at a time (no shared pool slots yet, §15.3) |
+| `cloud` | an Anthropic cloud session, cloud thread or coordinator | never fails: the cloud notice (§10.6), every `cx-*` exits 43 at step 0a (§7.3) |
+| `byoc` | a BYOC or self-hosted runner (`CLAUDE_CODE_ENVIRONMENT_KIND=byoc`, `self_hosted`, or any other kind but `bridge`) | as `cloud`, unless option `exec_host=local` says the runner is the executor host; then as `local` (the policy too, §10.2 row 4) |
+
+`CX_ATTENDED` is `0` only when `CLAUDE_CODE_SESSION_ATTENDED=0` and the session is not a bridge
+child (a Work locally thread has a claude.ai UI even when Claude Code marks it unattended,
+§20 item 51); the policy then adds its unattended sentence (§10.2 `{ATTN}`) and D30 an info line.
+`--shell`, `--field session|attended` and `--json`/`--emit` expose both. Forwarded calls drop
+the `CLAUDE_CODE_*` variables (the §7.3 env allowlist), so the WSL side always sees `local`;
+the Git Bash side reports the caller's values (W10, the doctor header). Rules: never route on
+the entrypoint alone (a bridge child inherits it); never read `CLAUDE_CODE_VERSION` (wrong, §1.7)
+or `CLAUDE_PROJECT_DIR` in Bash-tool code paths (unset there); ignore
+`CLAUDE_CODE_HOSTED_DESKTOP`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ATTRIBUTION_PROJECT`,
+prompt markers and MCP server names. `cx_session` and `policy.sh`'s case line (§10.2 row 4)
+change together.
 
 ### 7.2 `pathmap.sh`
 
@@ -911,7 +1059,7 @@ else `/mnt/` (always normalized to end in `/`); `--caller` = `wsl` unless `CX_CA
 |---|---|---|
 | T1 | empty, or contains NUL, CR or LF | refuse |
 | T2 | `wsl:<abs posix>` | the posix path unchanged (relative → refuse) |
-| T3 | `\\?\UNC\…` or `//?/UNC/…` | refuse (network share) |
+| T3 | `\\?\UNC\…` or `//?/UNC/…` | `\\?\UNC\wsl.localhost\…` and `\\?\UNC\wsl$\…` (host case-insensitive; the extended-length form `cygpath -w` may print for a path over `MAX_PATH` [unverified]) → `\\wsl.localhost\…` / `\\wsl$\…`, continue at T6; any other host → refuse (network share) |
 | T4 | `\\?\X:\…` or `//?/X:/…` | strip the prefix, continue at T7 |
 | T5 | `\\.\…` or `//./…` | refuse (device path) |
 | T6 | `\\wsl.localhost\<D>\rest`, `\\wsl$\<D>\rest`, same with `/` separators (host case-insensitive) | `<D>` must equal the distro (case-insensitive) else refuse; result `/rest` with `\` → `/`; no rest → `/` |
@@ -960,6 +1108,10 @@ Examples (`--distro Ubuntu`, mount root `/mnt/`); the suite checks every row (P1
 | to-wsl, caller win | `\\wsl.localhost\Debian\home\me` | refuse (distro Debian, executor Ubuntu) |
 | to-wsl, caller win | `\\server\share\x` | refuse (network share) |
 | to-wsl, caller win | `\\?\UNC\server\share` | refuse (network share) |
+| to-wsl, caller win | `\\?\UNC\wsl.localhost\Ubuntu\home\me\proj` | `/home/me/proj` |
+| to-wsl, caller win | `\\?\UNC\wsl$\Ubuntu\home\me` | `/home/me` |
+| to-wsl, caller gitbash | `//?/UNC/WSL.LOCALHOST/ubuntu/tmp` | `/tmp` |
+| to-wsl, caller win | `\\?\UNC\wsl.localhost\Debian\x` | refuse (distro Debian, executor Ubuntu) |
 | to-wsl, caller win | `\\.\pipe\x` | refuse (device) |
 | to-wsl, caller win | `C:relative` | refuse (drive-relative) |
 | to-wsl, caller win | `/home/me` | refuse (POSIX path from a Windows caller) |
@@ -992,6 +1144,16 @@ field in machine output has a `host_path` sibling when the caller is Git Bash (`
 
 **Step 0, in every `cx-*` script** (`cx_forward_if_needed CMD "$@"`, after `--help` and
 `--version` were answered locally):
+
+0a. `cx_cloud_gate` (before host detection, and in `cx-doctor` after `--login-help` too):
+   `cx_session` is `cloud`, or `byoc` without option `exec_host=local` (environment, else the
+   lite reader on Git Bash, else the loaded options) → the note `<prog>: cloud session (<kind>):
+   the executors and their logins are in WSL on your computer; run this in a local desktop
+   session, a WSL terminal or a Work locally project thread`, one `CX_SIGNAL HOST_UNSUPPORTED`
+   (the constant reason; the detail stays in the note, §4.2) and exit 43. Nothing is probed,
+   installed or forwarded and `wsl.exe` is never tried. `cx-doctor` prints its header, ✗ D30 and
+   the summary first (on stderr with `--json`, so stdout stays empty). A Phase 2 workflow treats
+   43 like a pool failure and runs the task in the Claude pool.
 1. `cx_detect` first. Host `wsl`, `linux`, `macos`, `docker` → return (run locally); with
    `exec_host=wsl` on a non-WSL Linux → exit 43. Host `cygwin` or `unknown` → exit 43.
 2. Host `gitbash` always continues at step 3, whatever `CX_FORWARDED` holds: a value leaked
@@ -1111,7 +1273,9 @@ signals; a wsl.exe-internal failure (e.g. `-1` → 255) without `started` become
      reached; without them those CLIs look logged out only when forwarded. When
      `XDG_RUNTIME_DIR` is unset and `/run/user/$(id -u)` is a directory, it is exported; when
      `DBUS_SESSION_BUS_ADDRESS` is unset and `/run/user/$(id -u)/bus` is a socket, it is exported
-     as `unix:path=/run/user/<uid>/bus`;
+     as `unix:path=/run/user/<uid>/bus`; an `SSH_AUTH_SOCK` that wsl.exe passed on is kept when it
+     names a live socket (rc files that start an agent never run here, so D5 warns about SSH
+     remotes);
    - `PATH` = the one line in `$CX_HOME/hosts/<hostkey>.path` when it exists, else
      `$HOME/.local/bin:$HOME/.npm-global/bin:<newest $HOME/.nvm/versions/node/*/bin>:$HOME/.bun/bin:$HOME/.cargo/bin:/home/linuxbrew/.linuxbrew/bin:/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
      in both cases every entry under `/mnt/` is dropped (WSL appends the Windows PATH, which
@@ -1123,29 +1287,48 @@ signals; a wsl.exe-internal failure (e.g. `-1` → 255) without `started` become
      `CX_WIN_SETTINGS=<win_settings mapped to-wsl, or empty>`. `CX_FWD_WIN` and `WSLENV` are not
      passed on.
 5. cwd: map `cwd_win` (`to-wsl --caller win`). A directory → `cd` there. Otherwise, for
-   `cx-init cx-run cx-fanout cx-gate cx-wsl` → note + `CX_SIGNAL PATH_UNMAPPABLE`, exit 42
+   `cx-init cx-run cx-fanout cx-gate cx-wsl` → note (open the project from a drive path, or work
+   on a repo that lives in WSL from a WSL terminal; never a picker-opened `\\wsl.localhost`
+   desktop session, which runs without plugins, §1.5) + `CX_SIGNAL PATH_UNMAPPABLE`, exit 42
    (`cx-wsl` must never run git or a shell step in `$HOME` by accident); for `cx-doctor cx-job`
    → `cd "$HOME"`, export `CX_CALLER_CWD_UNMAPPED=1`.
 6. `mapfile -d '' -t ARGV < "$FWD/argv"` (bash ≥ 4.4; empty records preserved).
 7. Emit `CX_FORWARD` (§4.3; `distro` = `WSL_DISTRO_NAME`; a note instead when python3 is
    missing).
-8. Run the target in its own process group and stay its parent (not `exec`):
+8. Run the target and stay its parent (not `exec`). Which process group it gets depends on the
+   terminal: field 5 (`pgrp`) and field 8 (`tpgid`, the foreground group of the controlling
+   terminal, `-1` without one) of `/proc/$$/stat`.
+   - No controlling terminal, or wsl-entry.sh is not in its foreground group (the Claude Bash
+     tool, a background call): the target leads its own process group, so a cancel stops
+     everything it started:
 
-   ```bash
-   exec 3<&0
-   set -m
-   env -i "${KEEP[@]}" /bin/bash "$RT/scripts/$CMD.sh" "${ARGV[@]+"${ARGV[@]}"}" <&3 & tpid=$!
-   set +m
-   printf '%s\n' "$tpid" > "$FWD/pgid.tmp" && mv -f "$FWD/pgid.tmp" "$FWD/pgid"
-   ```
+     ```bash
+     exec 3<&0
+     set -m
+     env -i "${KEEP[@]}" /bin/bash "$RT/scripts/$CMD.sh" "${ARGV[@]+"${ARGV[@]}"}" <&3 & tpid=$!
+     set +m
+     printf '%s\n' "$tpid" > "$FWD/pgid.tmp" && mv -f "$FWD/pgid.tmp" "$FWD/pgid"
+     ```
 
-   With `set -m` the background job leads its own process group (pgid = `tpid`) and its stdin
-   is the explicit `<&3`, not `/dev/null` [measured 2026-11-01: bash 5 without a tty]. A
-   watchdog subshell polls every 2 s: when wsl-entry.sh's parent changed (field 4 of
-   `/proc/$$/stat` ≠ the `$PPID` recorded at start, i.e. the wsl.exe relay is gone) it sends
-   TERM to `-$tpid` and KILL 5 s later; it exits as soon as `tpid` is gone. wsl-entry.sh traps
-   INT/TERM/HUP and forwards TERM to `-$tpid`. It then waits for `tpid` (retrying while
-   interrupted, as in §7.3 step 6), stops the watchdog and exits with the target's status.
+     With `set -m` the background job leads its own process group (pgid = `tpid`) and its stdin
+     is the explicit `<&3`, not `/dev/null` [measured 2026-11-01: bash 5 without a tty].
+     wsl-entry.sh traps INT/TERM/HUP and forwards TERM to `-$tpid`, then waits for `tpid`
+     (retrying while interrupted, as in §7.3 step 6).
+   - `tpgid` = `pgrp` (wsl.exe attached to a console gives the Linux side a pty, and wsl-entry.sh
+     leads its foreground group [unverified through wsl.exe, §20 item 39]): a separate group would be a background group of that
+     terminal, and a target that reads the tty or changes its settings (`gh auth login`, a
+     credential prompt, `less`, `cx-wsl bash`) would stop on SIGTTIN/SIGTTOU while wsl-entry.sh
+     waits forever [measured 2026-11-01 under a pty]. The target therefore runs in the
+     FOREGROUND of wsl-entry.sh's own group, with the inherited stdin, and `pgid` holds that
+     group (`pgrp`): the terminal's Ctrl-C reaches the target directly, and the Git Bash side's
+     group TERM (§7.3 step 7) reaches it together with wsl-entry.sh.
+
+   In both cases a watchdog subshell polls every 2 s: when wsl-entry.sh's parent changed (field 4
+   of `/proc/$$/stat` ≠ the `$PPID` recorded at start, i.e. the wsl.exe relay is gone) it sends
+   TERM to the recorded group and KILL 5 s later (ignoring TERM itself in between, since in the
+   terminal case it is a member of that group); it exits when wsl-entry.sh (or the background
+   target) is gone. wsl-entry.sh then stops the watchdog and exits with the target's status.
+   The suite runs a forwarded `cx-wsl bash -c 'read -r x; echo "got:$x"'` under a pty (P16).
 
 ### 7.5 Runtime copy (`install-runtime.sh`)
 
@@ -1156,6 +1339,10 @@ bash -s < install-runtime.sh             # bootstrap mode: needs CX_STAGE_WIN
 
 - Source: `--from DIR`, default the plugin root that contains the script; in bootstrap mode
   `wslpath -u "$CX_STAGE_WIN"` (fallback: `X:\rest` → `/mnt/x/rest`).
+  Bootstrap mode is recognized by an empty `BASH_SOURCE[0]` captured at FILE scope (under
+  `bash -s` the top-level array is empty, while inside a function `BASH_SOURCE[0]` is the literal
+  `main`, so a file named `main` in the WSL home would otherwise look like the script) [measured
+  2026-11-01].
 - Version: the `CX_VERSION=` line of `<src>/scripts/lib/common.sh`, which must match
   `^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$`. Destination
   `${CX_HOME:-$HOME/.conductor}/runtime/<version>`.
@@ -1218,9 +1405,16 @@ atomically (tmp + `mv`), through `cxlib.py host-record`:
 ```
 
 - Every `bin` value is an absolute path or `null`. CLIs resolve as: copilot =
-  `GHCP_COPILOT_BIN` (only if it is an executable file), else `command -v copilot`, else
-  `${XDG_DATA_HOME:-$HOME/.local/share}/gh/copilot/copilot` (ghcp's order); the others =
-  `command -v`. Sibling wrappers come only from `installed_plugins.json`
+  `GHCP_COPILOT_BIN` (only if it is an executable file), else the first `copilot` on PATH, else
+  `${XDG_DATA_HOME:-$HOME/.local/share}/gh/copilot/copilot` (ghcp's order); the others = the
+  first executable of that name on PATH. On WSL the walk skips every PATH entry in a drive
+  directory of the automount root (`<root><letter>/`, and `/mnt/<letter>/`), never the whole
+  root: with `[automount] root = /` (for `/c/...` paths) every Linux path starts with the root,
+  and `/mnt/data` or `/mnt/wsl` are Linux mounts. WSL appends the Windows PATH, and Windows npm installs leave
+  extensionless POSIX shims (`%APPDATA%\npm\copilot`, `claude`) that are executable on DrvFs.
+  A CLI found only there resolves to `null` and its D8–D12 line names the Windows-side path
+  ("install it in WSL"); a `GHCP_COPILOT_BIN` there is ignored with a D9 warning; and
+  `cxlib.py wsl-resolve` (§7.7) refuses such a path even from an old record. Sibling wrappers come only from `installed_plugins.json`
   (`<installPath>/bin/<name>`), never from PATH: the entry with `"scope": "user"` first (a
   project-scoped install may belong to another project), else the first entry. Every reader
   checks `-x` at use time; on a miss (a sibling update moves `installPath`) it re-resolves from
@@ -1235,8 +1429,10 @@ atomically (tmp + `mv`), through `cxlib.py host-record`:
   forwarded run (`CX_FORWARDED=1`, whose PATH is §7.4's fallback) did. A forwarded run never
   replaces an `interactive` `path` or a `bin` entry an interactive run recorded; it only fills
   missing values. With no record, or `path_source: forwarded`, a forwarded doctor adds to D2 the
-  note "run cx-doctor once from a WSL terminal or a WSL Claude session so the record captures
-  your interactive PATH".
+  note "run ~/.conductor/runtime/current/bin/cx-doctor once in a WSL terminal (or /conductor:doctor in a WSL Claude Code
+  session) so the record captures your interactive PATH". The runtime copy's doctor is named
+  because a plain WSL terminal has no plugin `bin/` on its PATH (Claude Code adds it only to its
+  own Bash tool), and the runtime exists once any call was forwarded.
 - `logins`: per CLI (`claude copilot grok agy gh`), `direct` is the last non-forwarded login
   result and `forwarded` the last forwarded one (`true`, `false` or `null` = not probed), with
   timestamps; each doctor run updates only its own side. D15–D19 compare them (§8.3).
@@ -1264,27 +1460,44 @@ stdin passthrough, exit propagation and cancellation of §7.3–§7.4. On WSL or
 locally, which is equivalent to calling the tool with its §12.2 prefix.
 
 - TOOL allowlist, each resolved to an absolute path from the host record `bin` (§7.6; no PATH
-  lookup): `ghcp-delegate ghcp-job ghcp-handoff ghcp-ci-debug ghcp-models` → `bin.ghcp_*`;
-  `agy-delegate agy-job agy-media` → `bin.agy_*`; `agy grok gh git` → `bin.<name>`; `bash` →
-  `/bin/bash` (for the shell steps of §12.2, run as `cx-wsl bash -s < FILE`). Anything else →
-  exit 1 (`cx-wsl: not allowed: <tool>`). Left out on purpose: `copilot` (always through ghcp),
-  `claude`, `agy-handoff` (always `--yolo`, §0.3), `ghcp-cloud`, and `cx-*` (call them
-  directly; they forward themselves).
+  lookup): `ghcp-delegate ghcp-job ghcp-handoff ghcp-ci-debug ghcp-models ghcp-cloud` →
+  `bin.ghcp_*` (`ghcp-cloud` is the Copilot cloud agent through `gh agent-task`, U7: an
+  executor's own cloud, reached from a local session, §12.2 step 5);
+  `agy-delegate agy-job` → `bin.agy_*`; `agy grok gh git` → `bin.<name>`; `bash` →
+  `/bin/bash` (for the shell steps of §12.2, run as `cx-wsl bash -s < FILE`, and one-line
+  commands as `cx-wsl bash -c '…'`). Anything else → exit 1 (`cx-wsl: not allowed: <tool>`).
+  Left out on purpose: `copilot` (always through ghcp), `claude`, `agy-handoff` and `agy-media`
+  (both always pass `--yolo`, §0.3), and `cx-*` (call them directly; they forward themselves).
 - No host record, or the entry is `null` or not executable after the §7.6 re-resolve →
-  `CX_SIGNAL CLI_MISSING`, exit 13, `retry`: `cx-doctor` (run it from a WSL terminal first,
-  §7.6).
+  `CX_SIGNAL CLI_MISSING`, exit 13, `retry`: `cx-doctor (from a Claude Code session; in a WSL
+  terminal, where cx-doctor is not on PATH: ~/.conductor/runtime/current/bin/cx-doctor,
+  created once by cx-doctor --install-runtime)`; the note names `/conductor:doctor` in a Claude
+  Code session in WSL and the runtime copy (a WSL-only user has none until
+  `/conductor:doctor --install-runtime` or a first forwarded call; a forwarded doctor also
+  writes a record, from its fallback PATH, §7.6).
 - Environment: `PATH` = the directories of the resolved sibling wrappers, then the conductor's
   own `bin/` (`$RT/bin` when forwarded, else the plugin root's), then the record's `path` (so a `cx-wsl bash -s` step sees the same commands as a Bash tool in a WSL
   Claude Code session). Per-tool prefixes, identical to §12.2: `ghcp-*` → unset `COPILOT_MODEL
   COPILOT_ALLOW_ALL COPILOT_AUTO_TIER COPILOT_PROVIDER_BASE_URL`, set `CX_WORKER=1
-  COPILOT_AUTO_UPDATE=false`; `agy-*`, `agy` → unset `GEMINI_API_KEY GOOGLE_API_KEY`, set
+  COPILOT_AUTO_UPDATE=false` (plus `GHCP_COPILOT_BIN`, when unset, from the record; and
+  `COPILOT_GITHUB_TOKEN`, when unset, from `$CX_HOME/secrets/copilot-token` if that is a
+  regular file, not a symlink, owned by the user with mode 0600: the keyring route of §8.5 for
+  Copilot logins that `wsl.exe` cannot reach; any other file → a note and no export; never for
+  `bash` or another tool, so a shell step through `cx-wsl bash -s` does not get it [the variable
+  is docs-only, §20 item 62]); `agy-*`, `agy` → unset `GEMINI_API_KEY GOOGLE_API_KEY`, set
   `CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true`; `grok` → unset `XAI_API_KEY GROK_SANDBOX`,
   set `CX_WORKER=1 GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false`;
   `gh`, `git`, `bash`: unchanged (a shell step carries its own prefixes).
 - Run: `exec env <prefix> "<abs tool>" "$@"`. The tool's stdout, stderr and exit status are the
   result; `cx-wsl` adds no `CX_*` line to them (§4.1 exception). Its own failures: 1 (usage,
-  not allowed), 13 (tool missing), and from forwarding 40–42 (an unmappable cwd is 42, §7.4
-  step 5).
+  not allowed), 2 (a `bash -s` step could not be buffered), 13 (tool missing), and from
+  forwarding 40–42 (an unmappable cwd is 42, §7.4 step 5).
+- `bash -s` with a step on stdin that is not a terminal: the step is buffered in a temporary
+  file (unlinked once opened), a CR before each LF is stripped, and when anything was stripped
+  one `cx-wsl:` note says so on stderr (the only text cx-wsl ever adds). A step written on the
+  Windows side may come out CRLF; with the CRs, `. "$HOME/.conductor/out/t1/vars.sh"` would
+  fail, `WT`, `TOP` and `BASE` would stay empty and `git -C "$WT" …` would run in the cwd, the
+  user's main checkout. A terminal on stdin is passed through untouched.
 - No argument rewriting: arguments arrive byte for byte. Paths in them must be WSL paths
   (`/home/me/…`); a `C:\…` or `/c/…` argument reaches the tool unchanged and is the caller's
   error (`wsl:` is a `cx-*` path-option convention, §7.2 T2, not stripped here). Git Bash does
@@ -1310,14 +1523,14 @@ cx-doctor -h|--help | --version
 
 | Flag | Behaviour |
 |---|---|
-| (none) | On the executor host: every D check, writes the host record. On Git Bash: W1–W7 locally, then forwards `cx-doctor <same flags> --windows-report <win path of the W results>` into WSL, which merges the W lines under a "Windows (Git Bash)" heading. If forwarding fails, Git Bash prints its W lines in plain text (no python), adds ✗ W8, and exits 40/41 |
+| (none) | On the executor host: every D check, writes the host record. On Git Bash: W1–W7, W10 and W11 locally, then forwards `cx-doctor <same flags> --windows-report <win path of the W results>` into WSL, which merges the W lines under a "Windows (Git Bash)" heading. If forwarding fails, Git Bash prints its W lines in plain text (no python), adds ✗ W8, and exits 40/41 |
 | `--pools` | Adds §8.4 and the `CX_POOLS` line |
 | `--agy-usage` | With `--pools`: also run `agy -p /usage` (documented as zero-quota but [docs-only]; opt-in until §20 item 5 is settled) |
-| `--json` | The report as one JSON document on stdout (§8.7) instead of text |
+| `--json` | The report as one JSON document on stdout (§8.7) instead of text. On Git Bash the forwarder's stderr is held back while the WSL side runs; when forwarding fails (40/41) no document exists, so stdout stays EMPTY, the W lines and ✗ W8 go to stderr in plain text, then the forwarder's notes and its `CX_SIGNAL` (still the last line). Not with `--windows` (exit 1: that report is plain text, and Git Bash runs no python to encode it) |
 | `--no-record` | Do not write the host record |
 | `--host wsl` | Git Bash: forward without running W checks. WSL: run locally. Other hosts: exit 43 |
 | `--host docker` | v1: exit 43 ("Docker host arrives in v1.1"); v1.1: §18.5 |
-| `--windows` | Git Bash: W1–W9 only (W8 = forwarder smoke, W9 = forwarded login probes). Elsewhere: prints `! --windows checks only run from Git Bash` and exits 0 |
+| `--windows` | Git Bash: W1–W11 only (W8 = forwarder smoke, W9 = forwarded login probes). Elsewhere: prints `! --windows checks only run from Git Bash` and exits 0 |
 | `--windows-report FILE` | Internal (set by the Git Bash side; mapped with `cx_path_in`) |
 | `--logins-only` | Internal (W9): D15–D19 only, with the forwarded comparison of §8.3; never writes `path` or `bin` into the host record, only its `logins.forwarded` values |
 | `--login-help [cli]` | Prints §8.5 for one or every CLI; no probes; runs locally on any host (pure bash), exit 0 |
@@ -1325,14 +1538,20 @@ cx-doctor -h|--help | --version
 | `--record-only` | Resolution and `--version` probes only, writes the host record, prints nothing on success (exit 0, or 2) |
 | `--set-copilot-mtd N` | Records the month-to-date Copilot credits you read on GitHub's billing page, with the current time, in `$CX_HOME/pools.json`; implies `--pools` |
 
-Exit: 0 (no ✗), 4 `CHECKS_FAILED`, 1 usage, 40/41 forwarding, 43 host. The doctor writes
+Exit: 0 (no ✗), 4 `CHECKS_FAILED`, 1 usage, 40/41 forwarding, 43 host (a cloud session
+included: header, ✗ D30, summary, exit 43 before any probe, §7.3 step 0a). The doctor writes
 nothing except the host record, `pools.json` (`--set-copilot-mtd`), the runtime copy
 (`--install-runtime`), the empty probe directory `$CX_HOME/probe` and temp files.
 
 ### 8.2 Output
 
 Text on stdout: a header `conductor doctor <version>: host <host> (<distro> <os_version>,
-WSL<n>), caller <caller>`, then sections Host, Runtime, Options, CLIs, Version pins, Logins (free
+WSL<n>), caller <caller>, session <kind>` (a forwarded run shows the Git Bash caller's session,
+which the Windows report carries as a `meta session` record); a report with caller `gitbash`
+from the WSL side adds the line `Fixes run inside WSL, in a WSL terminal (wsl.exe), never in
+Git Bash; only the Windows section's fixes run on Windows.` (pasted into Git Bash, a `~/.profile` export
+or `claude plugin …` would act on the Windows side); then sections Session, Host,
+Runtime, Options, CLIs, Version pins, Logins (free
 probes), Sibling plugins, Windows (Git Bash), Pools; one line per check, `  ✓ <text> [<ID>]`,
 `  ! <text> [<ID>]`, `  ✗ <text> [<ID>]`, followed by `      fix: <command>` lines for ✗/! that
 have a fix, and 6-space-indented info lines; then `Summary: <n> ✓, <n> !, <n> ✗`. Checks are
@@ -1342,8 +1561,12 @@ replaced by spaces) and rendered once by `cxlib.py doctor-render`. stderr: `CX_H
 
 Every probe runs under `cx_timeout` with stdin from `/dev/null` and with cwd `$CX_HOME/probe`, a
 directory the doctor creates and keeps empty (never a repo, so no CLI loads repo-level config or
-MCP servers from the user's cwd). Without `timeout`, D2 fails and the agy probes are skipped with
-`!` (they can hang). The doctor must run outside Claude Code's Bash sandbox (the Copilot probe
+MCP servers from the user's cwd). Every agy probe (D11, D18, `-p /usage`) carries the §12.2 agy
+prefix `env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true` and every grok
+probe (D10, D17) `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1`: an exported API
+key would make a probe sign in (and list models) through the API account the real commands never
+use, and an unpinned CLI could update itself mid-check. Without `timeout`, D2 fails and the agy
+probes are skipped with `!` (they can hang). The doctor must run outside Claude Code's Bash sandbox (the Copilot probe
 fails with exit 16, agy and grok probes with permission errors); `commands/doctor.md` says so
 and D16 explains exit 16.
 
@@ -1351,48 +1574,61 @@ and D16 explains exit 16.
 
 | ID | Check | Free probe (exact) | Expected → status |
 |---|---|---|---|
-| D1 | Host | `scripts/host/detect.sh` | `wsl`, `linux` ✓; `docker` ! (plain Linux host in v1); `macos` ! (untested); `cygwin`/`unknown` ✗ |
-| D2 | Prerequisites | `BASH_VERSINFO`; `python3 -I -V`; `command -v timeout setsid flock sha256sum git`; `git --version` | bash ≥ 4.4, `Python 3.x` ≥ 3.8, each tool present, git ≥ 2.31 (`rev-parse --path-format`) → ✓ each; else ✗; forwarded (`CX_FORWARDED=1`) with no host record or `path_source: forwarded` → info "run cx-doctor once from a WSL terminal or a WSL Claude session so the record captures your interactive PATH" (§7.6) |
+| D1 | Host | `scripts/host/detect.sh` | `wsl`, `linux` ✓; `docker` ! (plain Linux host in v1); `macos` ! (untested); `cygwin`/`unknown` ✗. On WSL: the distribution name from `wslpath -w /` → info; from os-release (no `WSL_DISTRO_NAME`, no wslpath name) → ! (the record's hostkey differs from the one forwarded calls use); a non-forwarded run with `CX_HOME` set to anything but `$HOME/.conductor` → ! (forwarded calls ignore `CX_HOME`, §7.5) |
+| D2 | Prerequisites | `BASH_VERSINFO`; `python3 -I -V`; `command -v timeout setsid flock sha256sum git`; `git --version` | bash ≥ 4.4, `Python 3.x` ≥ 3.8, each tool present, git ≥ 2.31 (`rev-parse --path-format`) → ✓ each; else ✗; forwarded (`CX_FORWARDED=1`) with no host record or `path_source: forwarded` → info "run ~/.conductor/runtime/current/bin/cx-doctor once in a WSL terminal (or /conductor:doctor in a WSL Claude Code session) so the record captures your interactive PATH" (§7.6) |
 | D3 | Plugin files | The INSTALLED plugin copy on this host: `CLAUDE_PLUGIN_ROOT` when set, else the conductor's `installPath` from `installed_plugins.json` (the `scope: "user"` entry first, §7.6); never `cx_root` when it lies under `$CX_HOME/runtime/` (a forwarded doctor runs from the runtime copy, which lacks `skills/` and `commands/`). Presence + exec bits of the shipped list (§13.4); `grep -l $'\r'` over it | all present, executables executable, no CR → ✓; no installed copy on this host (a Windows-only install whose runtime came from Git Bash) → info "plugin files are checked on Windows by W6". CR found → ✗ `CRLF line endings in: <files>` with the fixes below |
 | D4 | Runtime copy | `$CX_HOME/runtime/<CX_VERSION>/RUNTIME_STAMP`; the top-level entries of that directory | present with this version ✓; missing ! (`cx-doctor --install-runtime`; the forwarder installs it on first use); entries other than exactly `.claude-plugin bin scripts hooks worker-shims templates` plus `RUNTIME_STAMP` (the §13.4 subset of §7.5) → ! (`cx-doctor --install-runtime`) |
-| D5 | Repo location | `git rev-parse --show-toplevel` in cwd | under `/mnt/<letter>/` → ! (slow; keep repos on the WSL filesystem); else no line |
+| D5 | Repo location and forwarded git | `git rev-parse --show-toplevel` in cwd; `git config --get remote.origin.url`, `commit.gpgsign` there | under `/mnt/<letter>/` → ! (slow; keep repos on the WSL filesystem), but forwarded from Git Bash → info with W3's wording (slow `/mnt` access; for a repo that lives in WSL use a WSL terminal or `claude remote-control` there, never a desktop session opened on `\\wsl.localhost`, which loads no plugins, H8): from the Windows app a Windows folder is the supported place. Forwarded calls rebuild the environment (§7.4: no shell rc files, so no ssh-agent and no tty for a passphrase): an SSH origin (`git@…:`, `ssh://`) → forwarded without a live `SSH_AUTH_SOCK` ! (pushing `cx/*` fails with `Permission denied (publickey)`; fixes `gh auth setup-git` with an HTTPS remote, or `IdentityAgent`/`IdentityFile` in `~/.ssh/config`), not forwarded on WSL → info; `commit.gpgsign=true` → forwarded ! (Step 3's commit cannot prompt; fix: `commit.gpgsign false` for that repo or a cached passphrase), not forwarded on WSL → info; else no line |
 | D6 | Path mapping (WSL) | `wslpath -u 'C:\'` vs `pathmap.sh to-wsl --caller win 'C:\'`; `wslpath -w /` | equal ✓ else ✗ (automount root differs: set `CX_MNT_ROOT` or fix `/etc/wsl.conf`); the `\\wsl.localhost\` vs `\\wsl$\` prefix → info |
 | D7 | Options | `cxlib.py options-check` | invalid value or unknown key → ! each; non-default values → info |
 | D8 | claude | `timeout -k 5 15 claude --version </dev/null` | `^(\d+\.\d+\.\d+) \(Claude Code\)` ≥ 2.1.316 ✓; lower !; missing ! (only `claude -p` workers need it on this host) |
 | D9 | copilot | `COPILOT_AUTO_UPDATE=false NO_COLOR=1 timeout -k 5 15 <copilot> --version </dev/null` | first semver = `1.0.105` ✓; other ✗ (Copilot lanes refuse with exit 26), fix `npm install -g @github/copilot@1.0.105`; missing ✗ |
-| D10 | grok | `GROK_DISABLE_AUTOUPDATER=1 timeout -k 5 15 grok --version </dev/null` | `grok 1.0.70 (<hash>)` ✓; other ✗, fix `grok update --version 1.0.70`; missing ✗ |
-| D11 | agy | `timeout -k 5 10 agy --version </dev/null` | first-line semver ≥ 1.1.12 ✓; 1.1.10–1.1.11 !; < 1.1.10 ✗ (ignores `--model` headless); killed ! (hang); missing ✗ |
+| D10 | grok | `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1 timeout -k 5 15 grok --version </dev/null` | `grok 1.0.70 (<hash>)` ✓; other ✗, fix `grok update --version 1.0.70`; missing ✗ |
+| D11 | agy | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 10 agy --version </dev/null` | first-line semver ≥ 1.1.12 ✓; 1.1.10–1.1.11 !; < 1.1.10 ✗ (ignores `--model` headless); killed ! (hang); missing ✗ |
 | D12 | gh | `timeout -k 5 10 gh --version </dev/null`; `timeout -k 5 10 gh pr edit --help </dev/null` (offline, free) | `gh version X.Y.Z` ✓; missing ✗ (PRs, Copilot review and ghcp-ci-debug need it). The help text mentions `@copilot` → ✓ "can request @copilot reviews"; else ! "gh <X.Y.Z> cannot request @copilot reviews (measured on ≥ `CX_MIN_GH_COPILOT_REVIEW` = 2.89.0); upgrade gh or use the skill's REST fallback" |
-| D13 | Sibling wrappers | `installed_plugins.json` → `<installPath>/bin/<name>` (the `scope: "user"` entry first, §7.6) | ghcp: `ghcp-delegate ghcp-job ghcp-handoff ghcp-ci-debug ghcp-models ghcp-cloud`; antigravity: `agy-delegate agy-handoff agy-job agy-media`; all executable ✓; plugin missing ✗ (`claude plugin install ghcp@ghcp-for-claude-code` / `antigravity@antigravity-for-claude-code`) |
+| D13 | Sibling wrappers | `installed_plugins.json` → `<installPath>/bin/<name>` (the `scope: "user"` entry first, §7.6) | ghcp: `ghcp-delegate ghcp-job ghcp-handoff ghcp-ci-debug ghcp-models ghcp-cloud`; antigravity: `agy-delegate agy-handoff agy-job agy-media`; all executable ✓; plugin missing ✗ (`claude plugin install ghcp --marketplace 40chalk/ghcp-for-claude-code` / `claude plugin install antigravity --marketplace yuting0624/antigravity-for-claude-code`: the one-step form adds the marketplace too, §13.2; forwarded, the fix starts with `in a WSL terminal:`) |
 | D14 | Auto-update pins | Not forwarded: env `COPILOT_AUTO_UPDATE`, `GROK_DISABLE_AUTOUPDATER`, `AGY_CLI_DISABLE_AUTO_UPDATE`. Forwarded (`CX_FORWARDED=1`, where wsl-entry.sh sets all three itself, §7.4): grep `~/.profile`, `~/.bashrc` and `/etc/environment` for the three export lines instead. Both: `cxlib.py toml-get ~/.grok/config.toml cli auto_update` | `false`, `1`, `true`, `false` → ✓ each, else ! with fix `printf '%s\n' 'export COPILOT_AUTO_UPDATE=false' 'export GROK_DISABLE_AUTOUPDATER=1' 'export AGY_CLI_DISABLE_AUTO_UPDATE=true' >> ~/.profile` and `[cli]` / `auto_update = false` in `~/.grok/config.toml` (the agy variable is [unverified]) |
 | D15 | claude login | `timeout -k 5 15 claude auth status --json </dev/null` | `"loggedIn": true` ✓; `false` or missing → ! (`claude auth login`; only `claude -p` workers need it, so it never turns the doctor red); unparseable ! |
 | D16 | copilot login | Only when D9 reported exactly `CX_PIN_COPILOT`; see "D16 details" below | rc 0 ✓ (catalog kept for `--pools`); 11 ✗ (`copilot login`, unless a rule below applies); 16 ✗ (re-run this Bash call outside Claude Code's sandbox); 12 ! (timed out); 13 ✗; 2 ! (catalog unparseable); other ✗. Raw probe: stderr `from --model flag is not available` ✓; `AUTH_RE` ✗; `SANDBOX_RE` ✗; else !. D9 not exactly the pin → ! "login not probed: the free probe is only verified on 1.0.105" with D9's fix, and no Copilot process starts |
-| D17 | grok login, model, profile | `GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false timeout -k 5 30 grok models </dev/null 2>&1` | contains `You are not authenticated` ✗ (`grok login --device-auth`); rc 0, no such phrase and ≥ 1 id parsed → ✓; killed → ! (hung); anything else (non-zero rc, crash, network error, no ids) → ! with the first output line. `grok_bulk_model` among the ids (`cxlib.py parse-models --cli grok`: `^\s*[*-]\s+(\S+)` lines, else bare-id lines) ✓ else ! (an unlisted `-m` id silently drops `--effort`). `grok_sandbox_profile` defined in `~/.grok/sandbox.toml` ✓ else ! (Phase 2 `cx-init --user-grants` writes it; Phase 1 commands use `--sandbox workspace`) |
-| D18 | agy login, grant | `timeout -k 5 30 agy models --output-format json </dev/null`; if rc ≠ 0 or unparseable, `timeout -k 5 30 agy models </dev/null` | ≥ 1 id ✓; 0 ids, not killed ✗ (run `agy` once in a terminal and sign in); killed ! (hang: not an auth problem, #318 or MCP startup). `~/.gemini/antigravity-cli/settings.json` `permissions.allow` contains `write_file(<worktree_root, expanded>)` ✓ else ! with the JSON to add (§12.2) |
+| D17 | grok login, model, profile | `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false timeout -k 5 30 grok models </dev/null 2>&1` | contains `You are not authenticated` ✗ (`grok login --device-auth`); rc 0, no such phrase and ≥ 1 id parsed → ✓; killed → ! (hung); anything else (non-zero rc, crash, network error, no ids) → ! with the first output line. `grok_bulk_model` among the ids (`cxlib.py parse-models --cli grok`: `^\s*[*-]\s+(\S+)` lines, else bare-id lines) ✓ else ! (an unlisted `-m` id silently drops `--effort`). `grok_sandbox_profile` defined in `~/.grok/sandbox.toml` ✓ else ! (Phase 2 `cx-init --user-grants` writes it; Phase 1 commands use `--sandbox workspace`) |
+| D18 | agy login, grant | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 30 agy models --output-format json </dev/null`; if rc ≠ 0 or unparseable, the same prefix with `agy models` | ≥ 1 id that looks like a model slug (one token with a digit; `cxlib.py parse-models --cli agy` reads a `{"<slug>": "<label>"}` map only when every key is such a slug and no `error`/`status`/`message`/`code`/`detail`/`reason` key is present, so an rc-0 status envelope is no model list) ✓; 0 ids, not killed ✗ (run `agy` once in a terminal and sign in); killed ! (hang: not an auth problem, #318 or MCP startup). `~/.gemini/antigravity-cli/settings.json` `permissions.allow` contains `write_file(<worktree_root, expanded>)` ✓ else ! with the JSON to add (§12.2) |
 | D19 | gh login | `timeout -k 5 15 gh auth status </dev/null` | rc 0 ✓; else ✗ (`gh auth login --web`) |
 | D20 | conductor install | `installed_plugins.json`, `enabledPlugins` | installed → info with version; disabled → ! |
 | D21 | ghcp policy overlap | `cxlib.py plugins`: ghcp `coding_policy`, `delegation_nudge` (saved value, else the ghcp default `on`) | with conductor `policy` on: both `off` ✓; either on ! with fix `printf '%s' '{"coding_policy":"off","delegation_nudge":"off"}' \| claude plugin configure ghcp@ghcp-for-claude-code --values-stdin`; ghcp `usage_log` empty → info |
 | D22 | antigravity overlap | same for antigravity, plus `timeout` (default `5m`) | both off and timeout ≥ 30m ✓; else ! with fix `printf '%s' '{"coding_policy":"off","delegation_nudge":"off","timeout":"30m"}' \| claude plugin configure antigravity@antigravity-for-claude-code --values-stdin` |
 | D23 | grok-build bridge | installed and enabled | ! "its SessionEnd hook also fires on /clear and kills and erases its session-tagged bridge jobs in the current workspace; the conductor never uses the bridge"; ! "grok-build:grok-delegate is a proactive subagent that writes by default without a gate"; info: `/grok-build:import` calls a `grok import` that 1.0.70 lacks |
-| D24 | Deny rules | `settings.json` `permissions.deny` | for each installed plugin: `Task(antigravity:antigravity-delegate)` and `Task(grok-build:grok-delegate)` (the `Agent(...)` spelling is accepted too; syntax [unverified] on 2.1.316) ✓; missing ! with the JSON to add |
-| D25 | Autonomy allow rules (U2) | `permissions.allow` of the settings of the host where Claude Code runs: not forwarded, the executor host's `settings.json`; forwarded (`CX_FORWARDED=1`), the Windows-side file `CX_WIN_SETTINGS` | info listing any missing rule. Executor host: `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)`, `Bash(ghcp-delegate:*)`, `Bash(ghcp-job:*)`, `Bash(ghcp-handoff:*)`, `Bash(ghcp-ci-debug:*)`, `Bash(ghcp-models:*)`, `Bash(agy-delegate:*)`, `Bash(agy-job:*)`, `Bash(agy-media:*)`, `Bash(gh pr:*)`, `Bash(git push:*)`. Windows side: `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)` (cx-wsl reaches every allow-listed WSL tool, §7.7). Phase 2 adds `cx-run`, `cx-job`, `cx-fanout`, `cx-gate` on both. Because the Phase 1 commands begin with their §12.2 `env -u …` prefix, the info also lists the prefixed rule for each executor wrapper (e.g. `Bash(env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-delegate:*)`); how 2.1.316 matches such prefixes and multi-command steps is [unverified] (§20 item 36). On Windows `cx-wsl` applies the prefixes itself, so `Bash(cx-wsl:*)` covers it. Never written by the doctor. D24's deny rules stay checked on the executor host's settings, where the siblings live |
+| D24 | Deny rules | `settings.json` `permissions.deny` | for each installed plugin: `Task(antigravity:antigravity-delegate)` and `Task(grok-build:grok-delegate)` (the `Agent(...)` spelling is accepted too; syntax [unverified] on 2.1.316) ✓; missing ! with the JSON to add; info "the same deny rules also refuse those agents as a workflow `agent()` agentType" |
+| D25 | Autonomy allow rules (U2) | `permissions.allow` of the settings of the host where Claude Code runs: not forwarded, the executor host's `settings.json`; forwarded (`CX_FORWARDED=1`), the Windows-side file `CX_WIN_SETTINGS` | info listing any missing rule. Executor host (`cxlib.D25_HOST_RULES`): one rule per leading form of a simple command in the §12.2 commands, written exactly as the skill writes them, so that copying the skill verbatim runs unattended: `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)`; the bare wrappers `Bash(ghcp-delegate:*)`, `Bash(ghcp-job:*)`, `Bash(ghcp-handoff:*)`, `Bash(ghcp-ci-debug:*)`, `Bash(ghcp-models:*)`, `Bash(ghcp-cloud:*)`, `Bash(agy-delegate:*)`, `Bash(agy-job:*)`; each prefixed wrapper (`Bash(<ghcp prefix> ghcp-delegate:*)` … `ghcp-ci-debug`, `ghcp-cloud`, `Bash(<agy prefix> agy-delegate:*)`, `agy-job`); the raw agy forms `Bash(env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project:*)` and `Bash(<agy prefix> timeout -k 15s 35m agy:*)`; raw grok `Bash(env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok:*)`; the line that starts every step `Bash(. "$HOME/.conductor/out/:*)`; and the GitHub steps `Bash(git -C "$WT" push:*)`, `Bash(git push:*)`, `Bash(gh pr:*)`, `Bash(gh repo view:*)` (Step 1 resolves `REPO` with `gh repo view`; Step 5 uses `gh pr … -R "$REPO"`, never a `(cd … && gh …)` subshell). No `agy-media` rule: it always passes `--yolo` and is not a Phase 1 lane (§0.3). P43 checks every executor and GitHub simple command of the skill's code blocks against this list. Windows side (`cxlib.D25_WIN_RULES`): `Bash(cx-doctor:*)`, `Bash(cx-init:*)`, `Bash(cx-wsl:*)` (cx-wsl applies the prefixes itself and reaches every allow-listed WSL tool, §7.7). Both lists hold `Bash(cx-wsl:*)`, so D25 always adds the info line `cxlib.D25_CXWSL_SCOPE`: that rule also allows `cx-wsl bash -c`/`-s`, i.e. any command in WSL, without a prompt (U2 grants spend, pushes, PRs and `@copilot` reviews, not every shell command); to keep shell steps prompted, allow only the tool forms (`Bash(cx-wsl ghcp-job:*)`, `Bash(cx-wsl ghcp-delegate:*)`, `Bash(cx-wsl gh pr:*)`, …) instead. Phase 2 adds `cx-run`, `cx-job`, `cx-fanout`, `cx-gate` on both. How 2.1.316 matches rules that begin with an `env -u` prefix or hold literal `$VAR` text, and how it splits multi-line steps, is [unverified] (§20 item 36). Never written by the doctor. D24's deny rules stay checked on the executor host's settings, where the siblings live |
 | D26 | Sandbox exclusion | `settings.json` `sandbox` (of the host where Claude Code runs, as in D25) | sandbox enabled and `sandbox.excludedCommands` [docs-only key] lacks any of `ghcp-*`, `agy-*`, `agy`, `grok`, `gh`, `git`, `copilot`, `cx-*` → info with the JSON, noting that worktree setup writes `worktree_root` (default `~/.cx-wt`) and `~/.conductor`, which the sandbox also blocks |
 | D27 | Stray grok worker | `ps -eo args` | a line matching `(^\|/)grok(\.js)? worker( \|$)` → ! (`CURSOR_WORKER_MSG` in `cxlib.py`: "registers this machine with Cursor; stop it"). `grok leader` processes are normal grok leader mode and are not reported |
 | D28 | Billing and account switches | env `COPILOT_MODEL`, `COPILOT_ALLOW_ALL`, `COPILOT_AUTO_TIER`, `COPILOT_PROVIDER_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `XAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY` | each `COPILOT_*` set → ! (it can silently change the model, permissions or endpoint of every Copilot run; `COPILOT_MODEL` with an unknown id bills the default model); each API key set → ! "bills an API account instead of the subscription"; `GH_TOKEN`/`GITHUB_TOKEN` set → ! (can change the account Copilot uses), except the variable recorded as `copilot_token_env` (D16) → info "Copilot signs in through <VAR>". The Phase 1 command prefixes (§12.2) and Phase 2 adapters unset them per command |
+| D30 | Session (first line of the Session section) | `cx_session`, `cx_attended` (§7.1); `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_DESKTOP_APP_VERSION`, `CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE`, `CLAUDE_PROJECT_UUID` (wording only, never routing) | `local`: info `session local (entrypoint X[, desktop app Y])`. `bridge`: info "a Remote Control child, such as a Work locally project thread; this machine's settings, hooks and plugins apply. Phase 1 has no shared pool slots: run agy jobs one at a time across every thread and session on this computer". `byoc` with `exec_host=local`: info "option exec_host=local treats this runner as this machine". `cloud`, or `byoc` without it: ✗ "cloud session (<kind>[, environment <type>]): the conductor is inactive here; the executors and their logins are in WSL on your computer", fix "run cx-doctor in a local desktop session, a WSL terminal or a Work locally project thread"; no other check runs and the exit is 43. `CX_ATTENDED=0`: info "unattended session: permission prompts are denied, so executor commands need the D25 allow rules". `CLAUDE_PROJECT_UUID` set: info "a claude.ai Project is attached; Claude Code adds its instructions itself". Host `wsl`, session `local`, entrypoint `claude-desktop*` or a desktop app version: ! "this looks like a Claude desktop app session opened on a WSL folder: such sessions run inside WSL and load no plugins" with the fix "open the repo in a desktop session on a Windows folder, run claude in a WSL terminal, or serve the WSL folder with claude remote-control from a WSL terminal" (§1.5). Forwarded (`CX_FORWARDED=1`): no D30 line, W10 reports the caller |
+| D31 | Work locally readiness (info only, never ! or ✗: many users never use Remote Control) | `cxlib.py doctor-session`: env and the merged settings `env` blocks for `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_GROWTHBOOK`, `ANTHROPIC_BASE_URL` other than `https://api.anthropic.com` (a trailing `/` ignored); settings `disableRemoteControl`; D8's version against 2.1.280; `ANTHROPIC_API_KEY` | one info line per blocker ("Remote Control, and so Work locally threads on this machine, is off while: …"); none → info "Work locally prerequisites met here; a thread also needs the desktop app with 'Use this computer from your phone and claude.ai' on (folder added) or claude remote-control running in the folder, and Require trusted devices off" (on WSL plus "claude remote-control started in the repo folder serves Work locally threads with this WSL install's plugins", §20 item 40). The blocker list changes together with W10 and §1.7 |
+| D32 | Workflows and ultracode (info only in Phase 1) | `cxlib.py claude-settings` / `doctor-session --config-dir CFG --repo TOP --root CX_DETECT_ROOT`: managed (`<root>/etc/claude-code/managed-settings.d/*.json`, later names first, `managed-settings.json`, `${CLAUDE_CONFIG_DIR:-~/.claude}/remote-settings.json`), local (`<top>/.claude/settings.local.json`), project (`<top>/.claude/settings.json`), user (`settings.json`); effective = managed > local > project > user (`--settings` flags are invisible). Keys `ultracode`, `disableWorkflows`, `enableWorkflows`, `workflowKeywordTriggerEnabled`, `workflowSizeGuideline`, the `Workflow…` allow rules. Env `CLAUDE_CODE_DISABLE_WORKFLOWS`, `CLAUDE_CODE_WORKFLOWS`, `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_EFFORT`, `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS`; `nproc` | (1) "workflows available (… on Pro they default off: turn on Dynamic workflows in /config)", or "workflows off (<cause>): ultracode is unavailable; conductor fan-out uses the main-turn recipe". (2) "ultracode on for new sessions (<layer> settings, <file>)", or "ultracode not set in the settings files; a session can still turn it on (…); the doctor cannot see session toggles"; set while workflows are off → "… has no effect". (3) keyword trigger off. (4) size guideline (advisory only). (5) each model or effort override. (6) concurrency: the env value, or min(16, max(2, nproc − 2)). (7) the `Workflow…` allow rules. Not on a forwarded run (W11 covers the Windows side). Phase 2: (5) for the first two variables becomes ! ("overrides conductor:cx-runner's haiku"), (6) adds the pool slots, and a missing `Workflow(conductor:opus-pools)` allow rule is info |
 
 **D3 fixes**, printed in this order (P29 asserts that no fix text contains `reset --hard` or
 `rm -r --cached`: the install path is normally a copy under `~/.claude/plugins/cache/…`, not a
 work tree, so `git -C <it>` would resolve an ENCLOSING repository, such as a dotfiles repo
 holding `~/.claude`, and discard its uncommitted work):
-1. `sed -i 's/\r$//' <files>` (the files D3 listed, absolute paths).
-2. `git config --global core.autocrlf input`, then `claude plugin marketplace update
-   conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code`
-   (whether `update` re-copies an unchanged version is [unverified], §20 item 32; otherwise
-   uninstall and reinstall the plugin).
-3. Only for the marketplace clone `X=${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/marketplaces/conductor-for-claude-code`,
+1. `sed -i 's/\r$//' <files>`: the files D3 listed, absolute paths, each shell-quoted with
+   `printf %q` (`cx_shell_words`, §4.4) so that a path with a space (`/c/Users/John Smith/…`)
+   stays one word when the line is run as printed. It works whatever produced the CRs.
+2. Only for the marketplace clone `X=${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/marketplaces/conductor-for-claude-code`,
    and only after `git -C "$X" rev-parse --show-toplevel` printed exactly `X`:
-   `git -C "$X" -c core.autocrlf=input checkout-index -a -f` (rewrites tracked files from the
-   index with this repo's `eol=lf` rules; HEAD and untracked files are untouched).
+   `git -C <X> -c core.autocrlf=input checkout-index -a -f` (rewrites tracked files from the
+   index with this repo's `eol=lf` rules; HEAD and untracked files are untouched), then
+   `claude plugin update conductor@conductor-for-claude-code`.
+3. The fallback: a folder (`directory`) marketplace edited with Windows tools needs the same
+   sed fix in its source folder, or the next update copies the CRs back; an archive install can
+   instead be refreshed with `claude plugin marketplace update conductor-for-claude-code &&
+   claude plugin update conductor@conductor-for-claude-code` (whether `update` re-copies an
+   unchanged version is [unverified], §20 item 32; otherwise uninstall and reinstall the plugin).
+
+No fix sets `core.autocrlf`: this repo's `eol=lf` attributes override it (§3.5), so CRs in an
+installed copy come from archive downloads, copies made with Windows tools or a folder
+marketplace edited on Windows, where autocrlf changes nothing. W6 still warns about
+`autocrlf=true` for the user's own repositories. D3's `chmod 0755` fix quotes its paths the same
+way.
 
 Reachability: a CRLF copy of the doctor's own files cannot run (§3.5), so D3 and W6 only ever
 see CR in files outside the doctor's execution path; the session-start canary (§10.2) covers
@@ -1433,7 +1669,7 @@ first, §7.6), the saved options, and the `permissions.allow` / `permissions.den
 
 | Pool | Probe | Report |
 |---|---|---|
-| agy | D18's ids; with `--agy-usage` only: `timeout -k 5 45 agy -p /usage --output-format json </dev/null` (zero quota [docs-only]) | Opus slugs matching `^claude-opus-5-5-(low\|medium\|high)$`; `agy_opus_slug_tpl` at `high` listed ✓, else ✗ ("Opus not offered: Ultra must be billed directly, U1"). With `--agy-usage`: bucket percentages when the `/usage` JSON has recognizable keys, else its first 5 lines as info, and `agy_claude_floor_pct` > 0 with the Claude bucket below it → !; without it: info naming the flag |
+| agy | D18's ids; with `--agy-usage` only: the agy prefix, then `timeout -k 5 45 agy -p /usage --output-format json </dev/null` (zero quota [docs-only]) | Opus slugs matching `^claude-opus-5-5-(low\|medium\|high)$`; `agy_opus_slug_tpl` at `high` listed ✓, else ✗ ("Opus not offered: Ultra must be billed directly, U1"). With `--agy-usage`: bucket percentages when the `/usage` JSON has recognizable keys, else its first 5 lines as info, and `agy_claude_floor_pct` > 0 with the Claude bucket below it → !; without it: info naming the flag |
 | copilot | D16's catalog (when D16 did not probe: ghcp's cache file, with its age) | `copilot_opus_id` with `policy` `enabled` ✓ else ✗; presence of `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-luna`, `gemini-4-argon` → info; `copilot_xhigh_ok=false` → info (#5149 check pending); `copilot_reserve_pct=0` → info "no reserve (U3)"; month-to-date figure from `pools.json` with its age: older than `copilot_mtd_max_age_days`, or missing, is ! only while `copilot_reserve_pct` > 0 (the figure then gates dispatch, §16.3) and info otherwise (with no reserve nothing reads it, and the doctor never nudges anyone to track spend); ledger month sum (Phase 2; none → info). Info: the ledger is a lower bound, because PR reviews (average Lite 25, Balanced 150, Max 1,000 credits [docs-only]) and interactive use bill the same 20,000-credit month |
 | grok | D17's ids | `grok_bulk_model` listed ✓ else !; Claude ids → info ("record one as an Opus lane only after an `--effort` check; never automatic"); info `CURSOR_POOL_MSG` (`cxlib.py`): "interactive Cursor IDE use on Grok/Composer drains the same weekly pool" |
 | claude | — | info: conductor pool for xhigh/max work, architecture and unplaced tasks |
@@ -1448,7 +1684,7 @@ count.` Then, per CLI (exact text may be wrapped, commands must be verbatim):
 
 | CLI | Fresh login (WSL) | Verify (free) | Notes and things to avoid |
 |---|---|---|---|
-| copilot | `copilot login` (device flow: open https://github.com/login/device and enter the code it prints) [docs-only] | `ghcp-models --json --refresh` (rc 0 logged in, rc 11 not; without `--refresh` a cached catalog answers) | If the keyring is unreachable through `wsl.exe` (no D-Bus): create a fine-grained PAT with the "Copilot Requests" permission and store it with `install -d -m 700 ~/.conductor/secrets && install -m 600 /dev/null ~/.conductor/secrets/copilot-token`, then paste the token into that file; Phase 2 exports it as `COPILOT_GITHUB_TOKEN` for Copilot lanes only. Avoid classic `ghp_` tokens and a stray `GH_TOKEN`/`GITHUB_TOKEN` (they can change the account Copilot uses) |
+| copilot | `copilot login` (device flow: open https://github.com/login/device and enter the code it prints) [docs-only] | `/conductor:doctor` in a Claude Code session in WSL, or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal (create that copy once with `/conductor:doctor --install-runtime`; its D16 line probes the login; ghcp's `ghcp-models` is not on a plain terminal's PATH) | If the keyring is unreachable through `wsl.exe` (no D-Bus): create a fine-grained PAT with the "Copilot Requests" permission and store it with `install -d -m 700 ~/.conductor/secrets && install -m 600 /dev/null ~/.conductor/secrets/copilot-token`, then paste the token into that file; `cx-wsl ghcp-*` calls export it as `COPILOT_GITHUB_TOKEN` for that call only (§7.7), so from Windows the Copilot lanes run as direct `cx-wsl ghcp-*` calls (§12.2 From Windows), not inside `cx-wsl bash -s` steps; Phase 2 adapters export it for every Copilot lane. Avoid classic `ghp_` tokens and a stray `GH_TOKEN`/`GITHUB_TOKEN` (they can change the account Copilot uses) |
 | grok | `grok login --device-auth` (prints a URL and a code; works headless) [verified flag] | `grok models` must not print `You are not authenticated.` | Avoid `grok login --oauth` in containers (loopback callback) and `XAI_API_KEY` (bills the API account, not the subscription) |
 | agy | `agy` (first run asks you to sign in with Google; over SSH it prints a URL and a code) then quit [docs-only] | `agy models` lists `claude-opus-5-5-high` | Without D-Bus agy stores credentials in a file (expected in wsl.exe shells). Avoid `GEMINI_API_KEY` (bills the key, not the plan); never run `/antigravity:migrate` or `agy plugin import claude` |
 | gh | `gh auth login --web` (prints a one-time code for https://github.com/login/device) | `gh auth status` | — |
@@ -1465,28 +1701,33 @@ OAuth does not work in the container; the credential directories are named volum
 |---|---|---|
 | W1 | `command -v wsl.exe`; `timeout --version` | wsl.exe present ✓, else ✗; the first line of `timeout --version` names GNU coreutils ✓, else ✗ ("`timeout` resolves to `C:\Windows\System32\timeout.exe`: put `/usr/bin` before the Windows directories on PATH") |
 | W2 | `WSL_UTF8=1 wsl.exe -l -q \| cx_decode_wsl` (one name per line); `WSL_UTF8=1 wsl.exe -l -v \| cx_decode_wsl` (rows after the header: an optional `*` marking the default, NAME as the first field, VERSION as the LAST field; STATE is localized and may be several words, so it is shown verbatim but never parsed) | `wsl_distro=auto`: a default (`*`) row exists with VERSION 2 ✓ (its name is exported as `CX_WSL_DISTRO`), VERSION 1 !, no default ✗; explicit `wsl_distro`: listed by `-l -q` with VERSION 2 ✓, VERSION 1 !, absent ✗ (`installed: <names>; set wsl_distro or leave it auto`); command failed ✗ |
-| W3 | `command -v cygpath`; `cygpath -w -l "$PWD"` | cygpath present ✓ else ✗; cwd under `\\wsl.localhost\` or `\\wsl$\` ✓; on a drive ! (slow `/mnt/<x>` access from WSL; prefer the WSL filesystem); other UNC ✗ (unmappable) |
+| W3 | `command -v cygpath`; `cygpath -w -l "$PWD"` | cygpath present ✓ else ✗; cwd under `\\wsl.localhost\` or `\\wsl$\` ✓; on a drive info (slow `/mnt/<x>` access from WSL for large repos; for a repo that lives in WSL use a WSL terminal, `claude` or `claude remote-control` there, never a desktop session opened on `\\wsl.localhost`, which runs inside WSL without plugins, §1.5); other UNC ✗ (unmappable) |
 | W4 | `[ -d "//wsl.localhost/$D/" ]`, else `[ -d "//wsl\$/$D/" ]` (`D` from W2: the explicit `wsl_distro`, or the default row's name) | first ✓; only the legacy prefix ! (host paths use `\\wsl.localhost`); neither ! (distro not running yet) |
 | W5 | cwd on a WSL UNC path: `git rev-parse --show-toplevel` (Git for Windows) | success ✓; output contains `dubious ownership` ✗, fix = the `git config --global --add safe.directory …` line git prints (extracted verbatim), else `git config --global --add safe.directory '%(prefix)///wsl.localhost/<D>/<path>'` [unverified form]; not a repo → no line. All conductor git operations still run in WSL git |
-| W6 | `grep -l $'\r'` over the Windows-side plugin files outside the Git Bash execution path (`.claude-plugin/*`, `hooks/*.json`, `templates/**`, `skills/**`, `commands/*`, `worker-shims/*`, `scripts/host/{wsl-entry,install-runtime}.sh`, `scripts/lib/*.py`); `git config --global --get core.autocrlf` | no CR ✓, else ✗ with the D3 fixes; `autocrlf=true` ! (repos touched from both sides need `* text=auto eol=lf` in `.gitattributes`; this plugin's own `eol=lf` rules already protect its git checkouts). CR in the execution path itself (`bin/`, `scripts/cx-*.sh`, `scripts/lib/*.sh`, the forwarder) means this check cannot run; the session-start canary reports that case (§10.2) |
+| W6 | `grep -l $'\r'` over every Windows-side file of the shipped list (`CX_SHIPPED_FILES`, §13.4; grep only reads, so the files on the doctor's own execution path cost nothing when they are fine, and `bin/cx-init`, `bin/cx-wsl`, `scripts/cx-init.sh`, `scripts/cx-wsl.sh`, which no canary covers, are checked); `git config --global --get core.autocrlf` | no CR ✓, else ✗ with D3 fixes 1 and 3 (paths shell-quoted); `autocrlf=true` ! (repos touched from both sides need `* text=auto eol=lf` in `.gitattributes`; this plugin's own `eol=lf` rules already protect its git checkouts). CR in the execution path itself (`bin/`, `scripts/cx-*.sh`, `scripts/lib/*.sh`, the forwarder) means this check cannot run; the session-start canary reports that case (§10.2) |
 | W7 | Windows-side `plugins/installed_plugins.json` and `settings.json` (grep after stripping a BOM and CRs, no python) | conductor installed ✓; ghcp, antigravity or grok-build installed natively ! each ("its policy would send Claude to run its wrappers in Git Bash, bypassing WSL; install it in WSL only"). The lite-read `exec_host`/`wsl_distro` are passed along; the WSL side compares them with its real parse of the same file (`CX_WIN_SETTINGS`) and reports a disagreement as ! |
 | W8 | `bash scripts/host/forward-wsl.sh cx-doctor --version` (`--windows` mode only) | prints `cx-doctor <CX_VERSION>` ✓; exit 41 ✗ (runtime could not be installed); exit 40 ✗ with the decoded wsl.exe message |
-| W9 | `bash scripts/host/forward-wsl.sh cx-doctor --logins-only` (`--windows` mode only) | relays the forwarded D15–D19 lines verbatim (rendered on the WSL side). A CLI that is logged out through wsl.exe while the host record's last `direct` result says logged in → ! "keyring unreachable through wsl.exe" with the token-file fix of §8.5 instead of the login command (§8.3, forwarded login comparison); no `direct` result yet → info "run cx-doctor once in a WSL terminal to compare" |
+| W9 | `bash scripts/host/forward-wsl.sh cx-doctor --logins-only` (`--windows` mode only) | relays the forwarded D15–D19 lines verbatim (rendered on the WSL side). A CLI that is logged out through wsl.exe while the host record's last `direct` result says logged in → ! "keyring unreachable through wsl.exe" with the token-file fix of §8.5 instead of the login command (§8.3, forwarded login comparison); no `direct` result yet → info "run ~/.conductor/runtime/current/bin/cx-doctor once in a WSL terminal to compare" |
+| W10 | The caller's session and Work locally readiness (pure bash): `cx_session`, `cx_attended`, the entrypoint and desktop version, the Windows environment, and the Windows-side `settings.json` through the lite readers (`cx_lite_top`/`cx_lite_value` in `options.sh`: BOM and CRs stripped, nested objects cut out, the top-level `env` object kept) | As D30 (without the desktop WSL-session check) plus an always-present info "desktop app sessions opened on a \\wsl.localhost folder (or in the WSL environment) run inside WSL, where plugins are not loaded: keep conductor work in a desktop session on a Windows folder, like this one, in a WSL terminal, or behind claude remote-control in WSL"; then D31's blockers (environment, the settings `env` block, top-level `disableRemoteControl`, `ANTHROPIC_API_KEY`; no claude version on the Windows side) as info lines. The caller's session and attended flag also go into the Windows report as a `meta session` record for the WSL side's header, `CX_HOST` and `CX_DOCTOR` |
+| W11 | D32 on the Windows side (pure bash) | The lite top-level reader over `$ProgramFiles/ClaudeCode/managed-settings.json` (wins) and the Windows-side `settings.json`; the registry and project files are not read; concurrency from `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS`, else `NUMBER_OF_PROCESSORS` (no `nproc` on the §3.1 list) | As D32, all info |
 
 ### 8.7 `--json`
 
 ```json
 {"version": 1, "plugin_version": "0.1.0",
- "host": {"host": "wsl", "hostkey": "wsl-Ubuntu", "distro": "Ubuntu", "os_id": "ubuntu", "os_version": "24.04", "wsl_version": 2, "arch": "x86_64", "kernel": "..."},
- "caller": "gitbash",
+ "host": {"host": "wsl", "hostkey": "wsl-Ubuntu", "distro": "Ubuntu", "os_id": "ubuntu", "os_version": "24.04", "wsl_version": 2, "arch": "x86_64", "kernel": "...", "session": "bridge", "attended": null},
+ "caller": "gitbash", "session": "bridge", "attended": null,
  "checks": [{"id": "D9", "section": "CLIs", "status": "fail", "text": "copilot 1.0.106-1 (pinned 1.0.105)", "fix": "npm install -g @github/copilot@1.0.105"}],
  "pools": null,
  "record": "/home/me/.conductor/hosts/wsl-Ubuntu.json",
  "summary": {"ok": 24, "warn": 3, "fail": 1}}
 ```
 
-`status` ∈ `ok|warn|fail|info`; `pools` holds the `CX_POOLS` payload with `--pools`; exit codes
-as in text mode.
+`status` ∈ `ok|warn|fail|info`; `session` is the caller's session kind (§7.1; a forwarded call
+takes it from the Git Bash side's report, because the env allowlist drops the `CLAUDE_CODE_*`
+variables) and `attended` its flag (`1`, `0` or null); `pools` holds the `CX_POOLS` payload with `--pools`; exit codes
+as in text mode. stdout holds exactly this one document or, when there is none (a Git Bash
+forwarding failure, §8.1), nothing at all: a caller checks the exit code before parsing.
 
 ## 9. `cx-init` and the repo bundle
 
@@ -1531,6 +1772,16 @@ cx-init [--dir <path>] [--dry-run] [--force] [--json] [--only agents|routes|copi
 | `AGENTS.md` | The block from the line `<!-- cx:begin conductor bundle v1: written by cx-init; edit freely, cx-init --force rewrites this block -->` to the line `<!-- cx:end -->` | absent → create (block only); block present and equal → `same`; block present and different → conflict, `--force` replaces the block only; file present with no block → `update` (non-destructive, no `--force` needed): a blank line and the block are appended at the end. Text outside the block is never changed, byte for byte |
 | `.github/copilot-instructions.md` | Same block markers | Same rules |
 | `.cx/routes.json` | The whole file (`json.dumps(obj, indent=2) + "\n"`) | absent → create; present and JSON-equal → `same`; different → conflict, `--force` overwrites. cx-init is a bootstrapper, not a sync tool: after hand edits, do not use `--force` |
+
+For every file, before anything is written: the file itself and every directory between the repo
+root and it (`.cx/`, `.github/`) are checked with `lstat`. A symlink anywhere on that path (a
+repository can commit `.cx` or `.github` as a symlink to anywhere the user can write, such as
+another repo's `.cx/routes.json`, the file Phase 2 executes gate commands from), a component that
+exists and is not a directory (a regular file `.cx`), or a parent whose real path lies outside
+the repository's real path → conflict, even with `--force`. Because these checks happen while
+classifying, any of them stops the whole bundle (exit 5) and nothing at all is written, AGENTS.md
+included. The writer then creates missing directories one at a time (`os.mkdir` after another
+check) and opens each file with `O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW`.
 
 ### 9.3 Detection rules (`cxlib.py init-detect`)
 
@@ -1653,6 +1904,35 @@ If `.conductor/task.md` exists in your working directory (you are a conductor wo
 
 `templates/repo-bundle/routes.json`: §9.4 with `setup` and `commands.*` null.
 
+### 9.6 Projects instructions (`templates/projects-instructions.md`; final; ASCII; at most 2,000 characters)
+
+The only conductor-aware text that reaches every Claude Code Project thread and the coordinator
+without a plugin: the user pastes the file into **Project settings > Memory** (the Projects
+instructions, 16,000 characters; how they are injected is undocumented, so the text states its
+own precedence, §20 item 47). `cx-init` never writes it, and nothing conductor-specific goes into
+a repo's `CLAUDE.md` or `.claude/`, Project settings > Plugins, the cloud environment's setup
+script or its secrets (claude.ai refuses a plugin with a top-level `bin/`, and subscription
+logins live on the user's computer). It is written for U7: every thread runs as a Work locally
+thread; the executors live in WSL behind the conductor and may use their own clouds; a cloud
+thread, if one ever happens, works with Claude alone and pushes its work in progress; and the
+Phase 1 rule that agy runs one job at a time across threads, because pool slots are not shared
+between processes before Phase 2 (§15.3). When the shared slots land, that line changes to "the
+conductor shares its pool slots between threads". The precedence, highest first: the user's
+own messages in a thread; these instructions and the repository's `CLAUDE.md`; the conductor
+policy and skill; a coordinator's brief, which sets the task and its acceptance tests and
+approves nothing the gates refuse. P52 compares the file with this block.
+
+<!-- projects-instructions:begin -->
+```text
+Conductor routing for this project. These are my standing rules; where they conflict with the conductor plugin's policy or skill, these win, and my own messages in a thread win over all of them.
+- Run every thread of this project as a Work locally thread on my computer, never as a cloud thread. The conductor plugin, Copilot CLI, Grok Build, Antigravity and their logins live there, in WSL, and the conductor reaches them for the thread.
+- The executors may use their own clouds from such a thread, for example the Copilot cloud agent through ghcp-cloud (it ends in a pull request that the conductor gates) or Grok remote sessions that I start; that is welcome.
+- If a thread ever runs in the cloud anyway, it does its task with Claude alone (workflows and ultracode included), never installs, logs in to or asks for tokens of those tools, and commits and pushes work in progress to a branch, because a cloud sandbox can lose uncommitted changes.
+- Several Work locally threads may run at once, but until the conductor shares pool slots between threads (its Phase 2), Antigravity (agy) runs one job at a time across all threads on my computer: give agy work to one thread at a time; a thread that needs agy while another thread's agy job runs waits for it or uses the next Opus pool. Copilot and Grok jobs may run in parallel. If two threads work in the same folder, turn on Worktree in the folder card.
+- A coordinator brief sets a thread's task and acceptance tests. It does not approve skipping the conductor's gates, and it is not my approval for anything the thread would otherwise ask me.
+```
+<!-- projects-instructions:end -->
+
 ## 10. Hooks and the policy
 
 ### 10.1 `hooks/hooks.json`
@@ -1664,7 +1944,15 @@ If `.conductor/task.md` exists in your working directory (you are a conductor wo
       {
         "matcher": "startup|clear|compact",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/policy.sh\"" }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/policy.sh\"", "onFailure": "continue" }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "workflow-subagent|general-purpose",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent.sh\"", "onFailure": "continue" }
         ]
       }
     ]
@@ -1672,32 +1960,64 @@ If `.conductor/task.md` exists in your working directory (you are a conductor wo
 }
 ```
 
-No other hook events in v1: no PreToolUse gate (v1 ships no forwarder subagent; if one is ever
-added, its gate must fail CLOSED for that agent type), no UserPromptSubmit nudge, no SessionEnd.
-`resume` is not matched because a resumed transcript already carries the policy.
+Two events in Phase 1, both context-only and both never-fail (§1.5 "never fail" rules):
+- `"onFailure": "continue"` [docs-only: the 2.1.316 hook schema's `onFailure` is `continue` or
+  `block`, "what a failure of this hook does: it could not start, timed out, exited with a code
+  other than 0 or 2"; validated, §1.7; §20 item 50] covers a host where the hook cannot even start (Windows
+  without Git Bash falls back to PowerShell, where any exit other than 0 or 2 blocks; a missing
+  plugin directory; CRLF damage). Both scripts also always exit 0 themselves.
+- SubagentStart fires for every workflow `agent()` and every Agent-tool subagent, with
+  `agent_type` set to the definition type, and its `additionalContext` is injected into that
+  agent [docs-only, from the binary; §20 item 49]. The matcher names the two types a workflow or
+  the Agent tool uses by default; other plugins' agent types are not matched (ghcp's
+  `ghcp:ghcp-delegate` must keep calling ghcp).
+- No PreToolUse gate in Phase 1 (the Phase 2 gate of §15.10 becomes `PreToolUse[0]`, with no
+  `onFailure`, because a forced block would stop every Bash call of the main session too), no
+  UserPromptSubmit nudge, no SessionEnd. `resume` is not matched because a resumed transcript
+  already carries the policy.
 
 ### 10.2 `hooks/policy.sh`
 
-Bash builtins plus `cat` and `uname`; never reads stdin; always exits 0 and prints either
-nothing or one whole policy JSON document. No-op when `CX_WORKER` is set to anything but empty
-or `0` (a conductor worker running Claude) or when option `policy` is off. It reads options only
-from `CLAUDE_PLUGIN_OPTION_POLICY` and `CLAUDE_PLUGIN_OPTION_OPUS_LANE_ORDER`, which Claude Code
-injects into hooks; it does not re-read settings files. It chooses one of three constant files:
+Bash builtins plus `cat` and `uname`; reads at most 256 KiB of stdin (the hook payload) with a
+2-second timeout; always exits 0 and prints either nothing or one whole JSON document. It reads
+options only from `CLAUDE_PLUGIN_OPTION_POLICY`, `CLAUDE_PLUGIN_OPTION_OPUS_LANE_ORDER` and
+`CLAUDE_PLUGIN_OPTION_EXEC_HOST`, which Claude Code injects into hooks; it does not re-read
+settings files. First match wins:
 
-| Condition (first match wins) | File | § |
-|---|---|---|
-| The first line of `bin/cx-doctor`, `scripts/lib/common.sh` or `scripts/host/forward-wsl.sh` ends in CR (`IFS= read -r l < "$f"; [[ $l == *$'\r' ]]`, builtins only) | `hooks/policy-context-crlf.json` | §10.5 |
-| `uname -s` matches `MINGW*` or `MSYS*` (missing `uname` = no match: fail open to the default) | `hooks/policy-context-gitbash.json` | §10.4 |
-| otherwise | `hooks/policy-context.json` | §10.3 |
+| # | Condition | Prints | § |
+|---|---|---|---|
+| 1 | `CX_WORKER` set to anything but empty or `0` (a conductor worker running Claude) | nothing | §11 |
+| 2 | option `policy` off (`off\|false\|0\|no\|disabled`, any case, spaces ignored) | nothing | §5.1 |
+| 3 | the payload has a non-empty `"agent_id"` string: a **subagent** is compacting (SessionStart `compact` carries that agent's context [docs-only, from the binary; §20 item 60]) | `hooks/subagent-context-compact.json` when `"agent_type"` is `workflow-subagent` or `general-purpose`; else nothing (a plugin agent such as `ghcp:ghcp-delegate` keeps its own rules, and the main policy would invite a subagent to start delegating on its own) | §10.7 |
+| 4 | `CLAUDE_CODE_REMOTE` truthy (`1\|true\|yes\|on`, any case, spaces ignored) and `CLAUDE_CODE_ENVIRONMENT_KIND` not `bridge`, except any non-empty kind (BYOC: `byoc`, `self_hosted`, any other) with option `exec_host=local`; and never on the user's computer: not when `uname -s` is `MINGW*`/`MSYS*`, `WSL_DISTRO_NAME` is set, `/proc/sys/fs/binfmt_misc/WSLInterop*` exists (under `CX_DETECT_ROOT`) or `uname -r` contains `microsoft` (Anthropic's cloud containers are plain Linux, and a false cloud verdict would switch the conductor off on its own executor host) | `hooks/policy-context-cloud.json`; nothing when it is unreadable (in the cloud silence is correct and the WSL policy would be wrong) | §10.6 |
+| 5 | the first line of `bin/cx-doctor`, `scripts/lib/common.sh` or `scripts/host/forward-wsl.sh` ends in CR (`IFS= read -r l < "$f"; [[ $l == *$'\r' ]]`, builtins only) | `hooks/policy-context-crlf.json` | §10.5 |
+| 6 | `uname -s` matches `MINGW*` or `MSYS*` (missing `uname` = no match: fail open to the default) | `hooks/policy-context-gitbash.json` | §10.4 |
+| 7 | otherwise | `hooks/policy-context.json` | §10.3 |
 
-It then replaces the placeholder `{ORDER}` with a phrase composed only of constants, so the
-JSON stays valid without escaping and no option text ever reaches it: the trimmed, lowercased
-`opus_lane_order` must consist of `[a-z,]` only (else the default), `claude` is appended when
-missing, each distinct token maps to `agy (agy-delegate)`, `Copilot (ghcp-delegate)` or
-`own subagents`, and the pieces are joined with `, then `; an unknown or repeated token gives the
-default phrase `agy (agy-delegate), then Copilot (ghcp-delegate), then own subagents`. The A/B's result (§6.7) therefore takes effect at the next session
-start without regenerating any file. The phrases contain no `&` (bash 5.2's
-`patsub_replacement` would expand it in the replacement).
+A `--agent` main thread has `agent_type` but no `agent_id`, so it gets the main policy. Row 4
+duplicates `cx_session`'s truth table (§7.1) with builtins only: the two change together. Cloud
+comes before the CRLF canary because both route nothing and only the cloud text is true in the
+cloud.
+
+It then replaces two placeholders with phrases composed only of constants, so the JSON stays
+valid without escaping and no option text ever reaches it:
+- `{ORDER}`: the trimmed, lowercased `opus_lane_order` must consist of `[a-z,]` only with no
+  empty segment (no leading, trailing or doubled comma: the grammar `^[a-z]+(,[a-z]+)*$` of
+  `cx_opt_check`, §5.3, in pure bash), else the default, so the session policy and the scripts
+  always agree on the order in force; `claude` is appended when missing, each distinct token
+  maps to `agy (agy-delegate)`, `Copilot (ghcp-delegate)` or `own subagents`, and the pieces are
+  joined with `, then `; an unknown or repeated token gives the default phrase
+  `agy (agy-delegate), then Copilot (ghcp-delegate), then own subagents`. The A/B's result
+  (§6.7) therefore takes effect at the next session start without regenerating any file.
+- `{ATTN}`, at the end of the last line of both policies: when `CLAUDE_CODE_SESSION_ATTENDED=0`
+  and the session is not a bridge child (headless `claude -p`, scheduled and background
+  sessions, §7.1), the 246-character sentence ` UNATTENDED RUN: nobody approves prompts or
+  reads a later turn, so commands outside the allow rules are denied; wait for jobs with
+  consecutive foreground waits of at most 9 minutes (not background Bash) and report any job
+  still running by its id.`; otherwise nothing.
+
+The phrases contain no `&` and no backslash (bash 5.2's `patsub_replacement` would expand `&`
+in the replacement).
 
 CRLF-tolerant by construction: no blank lines, and every line after the shebang either is a
 comment or ends with ` #`, so a CR from a CRLF checkout lands inside a comment (the shebang does
@@ -1707,8 +2027,11 @@ not matter: hooks.json runs `bash <file>`). Reference text:
 #!/usr/bin/env bash
 # hooks/policy.sh - SessionStart (startup|clear|compact): print the conductor policy as #
 # hookSpecificOutput.additionalContext (docs/DESIGN.md section 10). Bash builtins plus cat and #
-# uname; never reads stdin; always exits 0 (fails open). Silent when CX_WORKER is set (a #
-# conductor worker) or option policy is off. Every line ends in " #" so a CRLF copy works. #
+# uname; reads at most 256 KiB of stdin with a 2-second timeout; always exits 0 (fails open). #
+# Silent when CX_WORKER is set (a conductor worker) or option policy is off. A compacting #
+# workflow-subagent or general-purpose agent gets the subagent guard instead, another agent #
+# nothing; a cloud session, or BYOC (any kind but bridge) without exec_host=local, gets the cloud #
+# notice, never on Git Bash or WSL (the user's computer). Every line ends in " #" (CRLF-safe). #
 set -uo pipefail #
 case "${CX_WORKER:-}" in ""|0) ;; *) exit 0 ;; esac #
 p="${CLAUDE_PLUGIN_OPTION_POLICY:-on}" #
@@ -1718,8 +2041,30 @@ case "$p" in off|false|0|no|disabled) exit 0 ;; esac #
 shopt -u nocasematch #
 d="${BASH_SOURCE[0]%/*}" #
 [ "$d" != "${BASH_SOURCE[0]}" ] || d=. #
+i= #
+IFS= read -r -d '' -t 2 -n 262144 i 2>/dev/null #
+re='"agent_id"[[:space:]]*:[[:space:]]*"[^"]' #
+if [[ $i =~ $re ]]; then #
+  re='"agent_type"[[:space:]]*:[[:space:]]*"(workflow-subagent|general-purpose)"' #
+  [[ $i =~ $re ]] && [ -r "$d/subagent-context-compact.json" ] && cat -- "$d/subagent-context-compact.json" #
+  exit 0 #
+fi #
+q="${CLAUDE_CODE_REMOTE:-}" #
+q="${q//[[:space:]]/}" #
+e="${CLAUDE_PLUGIN_OPTION_EXEC_HOST:-auto}" #
+e="${e//[[:space:]]/}" #
+c= #
+case "${q,,}:${CLAUDE_CODE_ENVIRONMENT_KIND:-}:${e,,}" in 1:bridge:*|true:bridge:*|yes:bridge:*|on:bridge:*|1:?*:local|true:?*:local|yes:?*:local|on:?*:local) ;; 1:*|true:*|yes:*|on:*) c=1 ;; esac #
+u="$(uname -s 2>/dev/null)" #
+if [ -n "$c" ]; then #
+  case "$u" in MINGW*|MSYS*) c= ;; esac #
+  [ -n "${WSL_DISTRO_NAME:-}" ] && c= #
+  for w in "${CX_DETECT_ROOT:-}"/proc/sys/fs/binfmt_misc/WSLInterop*; do [ -e "$w" ] && c=; done #
+  case "$(uname -r 2>/dev/null)" in *[Mm]icrosoft*) c= ;; esac #
+fi #
+if [ -n "$c" ]; then [ -r "$d/policy-context-cloud.json" ] && cat -- "$d/policy-context-cloud.json"; exit 0; fi #
 f="$d/policy-context.json" #
-case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*) f="$d/policy-context-gitbash.json" ;; esac #
+case "$u" in MINGW*|MSYS*) f="$d/policy-context-gitbash.json" ;; esac #
 for c in "$d/../bin/cx-doctor" "$d/../scripts/lib/common.sh" "$d/../scripts/host/forward-wsl.sh"; do #
   l= #
   { IFS= read -r l < "$c"; } 2>/dev/null #
@@ -1728,7 +2073,7 @@ done #
 o="${CLAUDE_PLUGIN_OPTION_OPUS_LANE_ORDER:-}" #
 o="${o//[[:space:]]/}" #
 o="${o,,}" #
-case "$o" in ""|*[!a-z,]*) o=agy,copilot,claude ;; esac #
+case "$o" in ""|*[!a-z,]*|,*|*,|*,,*) o=agy,copilot,claude ;; esac #
 case ",$o," in *,claude,*) ;; *) o="$o,claude" ;; esac #
 r= #
 s=, #
@@ -1741,62 +2086,90 @@ done #
 [ -n "$r" ] || r='agy (agy-delegate), then Copilot (ghcp-delegate), then own subagents' #
 [ -r "$f" ] || exit 0 #
 t="$(cat -- "$f" 2>/dev/null)" || exit 0 #
+a= #
+case "${CLAUDE_CODE_SESSION_ATTENDED:-}:${CLAUDE_CODE_ENVIRONMENT_KIND:-}" in 0:bridge) ;; 0:*) a=' UNATTENDED RUN: nobody approves prompts or reads a later turn, so commands outside the allow rules are denied; wait for jobs with consecutive foreground waits of at most 9 minutes (not background Bash) and report any job still running by its id.' ;; esac #
 k='{ORDER}' #
-printf '%s\n' "${t//"$k"/$r}" #
+t="${t//"$k"/$r}" #
+k='{ATTN}' #
+printf '%s\n' "${t//"$k"/$a}" #
 exit 0 #
 ```
 
-Each policy JSON file is `json.dumps(obj, indent=2, ensure_ascii=True) + "\n"`, generated from
+Each hook JSON file is `json.dumps(obj, indent=2, ensure_ascii=True) + "\n"`, generated from
 the blocks of this file: `hooks/policy-context.json` and `hooks/policy-context-gitbash.json` are
 `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": POLICY}}`, where
 POLICY is the §10.3 or §10.4 block with its lines joined by `\n` and no trailing newline;
-`hooks/policy-context-crlf.json` is the same shape plus a top-level `"systemMessage"` (user
-visible), from the two §10.5 blocks. Tests compare every file with its block (P20) and render
-every order (P21). If live check L3 shows that Windows hooks run through `cmd.exe` and WSL's
-`bash.exe` (§20 item 12), the host test above must change with the hook command.
+`hooks/policy-context-crlf.json` and `hooks/policy-context-cloud.json` are the same shape plus a
+top-level `"systemMessage"` (user visible), from the two §10.5 or §10.6 blocks; the two subagent
+files are §10.7. Tests compare every file with its block (P20, P47, P55) and render every order
+(P21). If live check L10 shows that Windows hooks run through `cmd.exe` and WSL's `bash.exe`
+(§20 item 12), the host test above must change with the hook command.
 
-### 10.3 Policy text, WSL and Linux (final; at most 1,993 characters rendered, ASCII; limit 2,000)
+### 10.3 Policy text, WSL and Linux (final; at most 2,712 characters rendered, ASCII; limit 2,800)
 
 Phase 1 has no `cx-run`, so the policy routes through the sibling wrappers and makes Claude load
 the skill, whose commands are complete (§12.2), before the first delegation; inline commands
 here are limited to the agy registration, the one step that silently goes wrong when skipped
 (§6.6). When Phase 2 lands, the lane lines change to `cx-run`/`cx-fanout` and these blocks are
-updated in the same commit as the JSON files. `{ORDER}` is rendered by `policy.sh` (§10.2).
+updated in the same commit as the JSON files. `{ORDER}` and `{ATTN}` are rendered by
+`policy.sh` (§10.2). Every lane it names is one the conductor may use outside Docker:
+`agy-media`, `/antigravity:research` and `agy-handoff` always pass `--yolo` (machine-wide, §0.3,
+G10) and are named only to forbid them, as are the proactive `antigravity-delegate` and
+`grok-delegate` subagents (§6.6). `ghcp-delegate --github` adds every GitHub MCP tool acting as
+the user, so triage fetches with `gh` and runs a read-only `ghcp-delegate` instead (§12.2 step
+5). A background Bash call is stopped at its `timeout` too (default 30 minutes, §1.1), so the
+policy names the 2-hour maximum.
+
+The Workflows line (§1.7 "Workflows and ultracode") tells the main loop, which alone receives
+the ultracode reminders ("use the Workflow tool on every substantive task"), that ultracode
+changes thoroughness, not who executes: workflows run Claude stages and the own-subagent pool;
+executor lanes start from the main turn between workflows (the Phase 1 hybrid, §12.1), and one
+agy run at a time on the computer, across every session and Work locally thread, because Phase
+1 has no shared pool slots (§15.3 lands them first in Phase 2). The limit is 2,800 rendered
+characters (the 2.1.316 binary caps `additionalContext` at 8,000 [docs-only]). P20 and P57
+assert these items.
 
 <!-- policy:begin -->
 ```text
-CONDUCTOR POLICY (replaces the ghcp and antigravity policies). You own spec, gates and merge; executors draft. Without asking you may spend Copilot credits and agy quota, push cx/* branches, open PRs and request @copilot reviews. No spend caps.
+CONDUCTOR POLICY (replaces sibling policies). You own spec, gates and merge; executors draft. Without asking you may spend Copilot credits and agy quota, push cx/* branches, open PRs and request @copilot reviews. No spend caps.
 - Before your first delegation, load the conductor skill and copy its commands verbatim (env prefixes too). Run agy/agy-delegate only in a directory registered with (cd DIR && timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null).
 - Do yourself: architecture, one-way doors, xhigh/max reasoning, debugging hypotheses, merge conflicts, small or judgement-heavy edits.
 - Opus 5.5 offload at high, strong acceptance tests required, in order: {ORDER}. One task, one worktree under option worktree_root (default ~/.cx-wt), one cx/<id> branch, contract .conductor/task.md.
-- Exploration, mechanical edits, tests to your contract, reference docs, commit/PR text: raw grok (not the grok-build plugin).
-- PRs, issues, CI: gh pr edit N --add-reviewer @copilot; ghcp-ci-debug without --apply; ghcp-delegate --github.
+- Workflows (ultracode too): use them for Claude stages (scouting, design panels, reviews, verification) and for own-subagent Opus tasks at effort high in the task's ~/.cx-wt worktree, never with isolation worktree or remote. Start agy, ghcp and grok lanes from your own turn between workflows, never from a workflow agent. Pool slots are not shared yet: one agy run at a time on this computer, across all sessions and threads (the skill's agy steps take a lock).
+- Exploration, mechanical edits, tests to your contract, reference docs, commit/PR text: raw grok (never the grok-build plugin).
+- PRs, CI: gh pr edit N --add-reviewer @copilot; ghcp-ci-debug without --apply. Triage: gh fetch + read-only ghcp-delegate (--github acts as you).
 - Second opinion: Argon (agy-delegate) on Opus-written code, plus GPT (ghcp-delegate) on high-risk paths; you review Grok/Gemini code. Opus on Opus is not independent. Security: you + GPT + CodeQL, never Grok alone.
-- Media, Google-grounded research, >200k-token digests: agy-media, /antigravity:research, agy-delegate --digest.
+- Digests over 200k tokens: agy-delegate --digest. Never agy-media, agy-handoff or /antigravity:research (always --yolo).
 - Results are claims: exit 0 is not success (check denials, served model); rerun the tests yourself on a clean checkout; read digests, not transcripts.
-- Calls that may exceed 9 minutes: one background Bash call, or ghcp-job/agy-job start; wait inside one background call, never by re-checking across turns.
-- Executor calls (ghcp-*, agy-*, agy, grok, gh, git push) and worktree setup (worktree_root, ~/.conductor) run outside the Bash sandbox. Never use the antigravity-delegate agent. Help: /conductor:route, /conductor:doctor.
+- Calls that may exceed 9 minutes: one background Bash call with timeout 7200000 (default: 30 min), or ghcp-job start (agy has no job form); wait inside one such call, never across turns.
+- Executor calls, gh, git push and worktree setup (worktree_root, ~/.conductor) run outside the Bash sandbox. Never use the antigravity-delegate or grok-delegate agents.{ATTN}
 ```
 <!-- policy:end -->
 
-### 10.4 Policy text, Windows / Git Bash (final; at most 1,997 characters rendered, ASCII; limit 2,000)
+### 10.4 Policy text, Windows / Git Bash (final; at most 2,778 characters rendered, ASCII; limit 2,800)
 
 Injected when Claude Code runs in Git Bash (the Windows app). Nothing that the WSL variant names
 exists on the Windows side, so every executor step goes through `cx-wsl` (§7.7); the policy also
 forbids the two tempting wrong fixes (installing the siblings natively, worktrees made with Git
-for Windows under `C:\Users`).
+for Windows under `C:\Users`). It shows no raw command: the agy registration lives inside the
+skill's step files (run through `cx-wsl bash -s`), and `gh` and `ghcp-ci-debug` carry the
+`cx-wsl` prefix, since a native Windows `gh` or `agy` would act on the wrong side. Its Workflows
+line is the §10.3 one with the WSL worktree reached through its `\\wsl.localhost` path (file
+tools) and `cx-wsl bash -c` (commands), the same forms as the skill's step 2d. It names the
+exact `cx-wsl` allowlist (§7.7).
 
 <!-- policy-gitbash:begin -->
 ```text
 CONDUCTOR POLICY, WINDOWS (replaces sibling policies). This session runs in Git Bash; executors, logins, worktrees and git work live in WSL. You own spec, gates and merge; executors draft. Without asking you may spend Copilot credits and agy quota, push cx/* branches, open PRs and request @copilot reviews. No spend caps.
-- Reach WSL only through cx-wsl: cx-wsl TOOL ARGS for ghcp-*, agy-*, agy, grok, gh, git (it adds the skill's env prefixes); for the skill's shell steps, write each step verbatim to FILE and run cx-wsl bash -s < FILE. Pass WSL paths (/home/...). Never install ghcp, antigravity or grok-build on Windows, never call wsl.exe or agent CLIs directly or make worktrees with Git for Windows.
-- Before your first delegation, load the conductor skill and copy its commands verbatim. Run agy/agy-delegate only in a directory registered with (cd DIR && timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null).
+- Reach WSL only through cx-wsl: cx-wsl TOOL ARGS for ghcp-delegate/-job/-handoff/-ci-debug/-models/-cloud, agy-delegate, agy-job, agy, grok, gh, git (it adds the skill's env prefixes; nothing else); for the skill's shell steps, write each step verbatim (LF) to FILE and run cx-wsl bash -s < FILE. Pass WSL paths (/home/...). Never install ghcp, antigravity or grok-build on Windows, never call wsl.exe or agent CLIs directly or make worktrees with Git for Windows.
+- Before your first delegation, load the conductor skill and copy its commands verbatim. Run agy/agy-delegate only in a directory registered first (--new-project), as the skill's steps do.
 - Do yourself: architecture, one-way doors, xhigh/max reasoning, debugging hypotheses, merge conflicts, small or judgement-heavy edits.
 - Opus 5.5 offload at high, strong acceptance tests required, in order: {ORDER}. One task, one worktree under option worktree_root (default ~/.cx-wt), one cx/<id> branch, contract .conductor/task.md.
-- Raw grok: exploration, mechanical edits, tests to your contract, docs, commit/PR text. PRs and CI: gh pr edit N --add-reviewer @copilot; ghcp-ci-debug without --apply.
+- Workflows (ultracode too): use them for Claude stages (scouting, design panels, reviews, verification) and for own-subagent Opus tasks at effort high in the task's WSL worktree (file tools on its wsl.localhost path, commands via cx-wsl bash -c), never with isolation worktree or remote. Start executor calls from your own turn between workflows, never from a workflow agent. Pool slots are not shared yet: one agy run at a time on this computer, across all sessions and threads.
+- Raw grok: exploration, mechanical edits, tests to your contract, docs, commit/PR text. PRs and CI: cx-wsl gh pr edit N --add-reviewer @copilot; cx-wsl ghcp-ci-debug without --apply.
 - Second opinion: Argon (agy-delegate) on Opus-written code, plus GPT (ghcp-delegate) on high-risk paths; Opus on Opus is not independent. Security: you + GPT + CodeQL.
 - Results are claims: exit 0 is not success (check denials, served model); rerun the tests yourself on a clean checkout.
-- Calls that may exceed 9 minutes: one background Bash call; wait inside it, never by re-checking across turns. cx-wsl calls run outside the Bash sandbox. Help: /conductor:route, /conductor:doctor.
+- Calls that may exceed 9 minutes: one background Bash call with timeout 7200000 (default: 30 min); wait inside it, never across turns. cx-wsl calls run outside the Bash sandbox. Help: /conductor:route.{ATTN}
 ```
 <!-- policy-gitbash:end -->
 
@@ -1804,19 +2177,88 @@ CONDUCTOR POLICY, WINDOWS (replaces sibling policies). This session runs in Git 
 
 Injected instead of either policy when a canary file carries CR (§10.2): the conductor cannot
 run, so the notice routes nothing through it and gives the fix (the D3 fixes, §8.3, without
-paths, because the file is constant).
+paths, because the file is constant). It leads with the sed fix, which works for every source
+of CRs (archive downloads, Windows-tool copies, a folder marketplace edited on Windows); it
+never advises `core.autocrlf`, which this repo's `eol=lf` rules already override, so it would
+change nothing for exactly the copies that reach this notice. The `find` covers the eight
+shipped directories only, never `tests/fixtures` (intentional CRLF bytes) or `.git` of a
+folder marketplace.
 
 <!-- policy-crlf-context:begin -->
 ```text
-CONDUCTOR PLUGIN DISABLED: its installed files have CRLF line endings, so its cx-* commands (cx-doctor, cx-init, cx-wsl) cannot run; they fail with errors such as env: 'bash\r': No such file or directory. Do not route work through the conductor in this session; do the work yourself. The user has been shown the fix; apply it only when the user asks: git config --global core.autocrlf input, then claude plugin marketplace update conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code (or reinstall the plugin), then cx-doctor. Never use git commands inside the plugin's install folder to repair it.
+CONDUCTOR PLUGIN DISABLED: its installed files have CRLF line endings, so its cx-* commands (cx-doctor, cx-init, cx-wsl) cannot run; they fail with errors such as env: 'bash\r': No such file or directory. Do not route work through the conductor in this session; do the work yourself. The user has been shown the fix; apply it only when the user asks: in the plugin's install folder (the installPath of conductor@conductor-for-claude-code in ~/.claude/plugins/installed_plugins.json, or under CLAUDE_CONFIG_DIR when that is set) run find .claude-plugin bin scripts hooks worker-shims templates skills commands -type f -exec sed -i 's/\r$//' {} +, then cx-doctor. If the plugin comes from a folder (directory) marketplace edited with Windows tools, convert that source folder the same way, or the next update copies the CRs back; for an archive install, claude plugin marketplace update conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code (or a reinstall) also works. Never use git commands inside the plugin's install folder to repair it.
 ```
 <!-- policy-crlf-context:end -->
 
 <!-- policy-crlf-system:begin -->
 ```text
-conductor: this plugin copy has CRLF line endings, so its cx-* commands cannot run and its routing policy is off. Fix: git config --global core.autocrlf input, then claude plugin marketplace update conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code (or reinstall the plugin), then run cx-doctor.
+conductor: this plugin copy has CRLF line endings, so its cx-* commands cannot run and its routing policy is off. Fix: in its install folder (the installPath of conductor@conductor-for-claude-code in ~/.claude/plugins/installed_plugins.json) run find .claude-plugin bin scripts hooks worker-shims templates skills commands -type f -exec sed -i 's/\r$//' {} +, then run cx-doctor. A folder (directory) marketplace edited with Windows tools needs the same fix in its source folder; an archive install can instead be refreshed with claude plugin marketplace update conductor-for-claude-code && claude plugin update conductor@conductor-for-claude-code (or a reinstall).
 ```
 <!-- policy-crlf-system:end -->
+
+### 10.6 Cloud notice (final; ASCII)
+
+Injected instead of every other variant in an Anthropic cloud session, or a BYOC runner without
+`exec_host=local` (§10.2 row 4): the cloud has no executors, no logins and normally no
+conductor (a WSL directory-marketplace install is never forwarded to the cloud, and claude.ai
+refuses a plugin with a top-level `bin/`, §1.5), so when the plugin is loaded anyway (a
+`--plugin-dir` dev container, a forwarded GitHub-marketplace install) it degrades and never
+fails. The user's Project threads always run as Work locally threads (U7), so this is a safety
+net. Executors may still use their own clouds from a local session (the Copilot cloud agent
+through `ghcp-cloud`, Grok remote sessions): that happens on the user's computer, not here.
+
+<!-- policy-cloud-context:begin -->
+```text
+CONDUCTOR INACTIVE: this is a cloud session, not the user's computer. Copilot CLI, Grok Build, Antigravity, their logins and the conductor's cx-* commands live in WSL on the user's computer and cannot be reached from here. Do the work yourself with your own tools and subagents; workflows and ultracode run here with Claude agents only. Do not run or install cx-*, ghcp-*, agy-*, agy, grok or copilot, and do not ask for their tokens. GitHub work this session can already do (branches, PRs, @copilot review requests) is fine. Commit and push work in progress: a cloud sandbox can lose uncommitted changes. If a task needs an executor, say so once and suggest running it on the user's computer: in a project, as a Work locally thread; otherwise in a local desktop session or a WSL terminal. Explicit user and project instructions win where they conflict with this notice, but cannot make the executors reachable here.
+```
+<!-- policy-cloud-context:end -->
+
+<!-- policy-cloud-system:begin -->
+```text
+conductor: cloud session, so Copilot, Grok and Antigravity delegation is off and Claude does the work itself; run delegated tasks in a Work locally thread or a local session.
+```
+<!-- policy-cloud-system:end -->
+
+### 10.7 Subagent guard (`hooks/subagent.sh`; final; ASCII; at most 800 characters)
+
+The Phase 1 rule for ultracode and every other workflow: **workflow and Agent-tool subagents
+never run executors**; the main turn dispatches executor lanes (§12.1 "Workflows and
+ultracode"). Phase 1 has no pool slots shared between processes, agy launches must be
+serialized (§6.6) and the skill's recipe uses per-task `vars.sh` files and ids that parallel
+agents would collide on. The text is soft (no gate in Phase 1): autonomy U2 already permits the
+spend, so the risk is races, not authority. Phase 2 (§15.9–§15.11) replaces it with the runner
+agent and a fail-closed gate.
+
+`hooks/subagent.sh` is pure bash (builtins plus `cat`), CRLF-tolerant like `policy.sh`, and
+always exits 0. It prints nothing when `CX_WORKER` is set (not `0`) or option `policy` is off,
+and nothing when the payload (at most 256 KiB of stdin, 2-second timeout) names an
+`"agent_type"` other than `workflow-subagent` or `general-purpose` (a guard in case the matcher
+is not applied as alternation, §20 item 49); otherwise it prints `hooks/subagent-context.json`
+(`hookEventName` `SubagentStart`). `policy.sh` prints `hooks/subagent-context-compact.json`
+(`hookEventName` `SessionStart`) for a compacting subagent of the two types (§10.2 row 3), so
+an agent keeps the guard, never the main policy, through compaction. Both files carry the
+block below as `additionalContext`. The cloud and CRLF cases print the same guard, because it is
+true there too. The executor names in it change together with the policy's and, in Phase 2,
+with the gate's executor guard. Its worktree sentence covers both hosts: in WSL the agent works
+in `~/.cx-wt/<repo>-<id>` with absolute paths; in Git Bash (the Windows app) `~` is the Windows
+home, so it uses the worktree's `\\wsl.localhost` path for file tools and `cx-wsl bash -c` for
+commands, as §12.2 step 2d and the claude-pool script's `wt_win` say.
+
+<!-- subagent-context:begin -->
+```text
+CONDUCTOR SUBAGENT RULES (a workflow or the Agent tool started you in a conductor session). Do not run Copilot, Grok or Antigravity in any form (ghcp-*, agy-*, agy, grok, copilot, directly or through cx-wsl), no cx-* command but cx-wsl bash or cx-wsl git for your own task, and do not follow the skill's lane recipes: only the main session dispatches executors (pool slots are not shared yet). If your task needs an executor, stop and return EXECUTOR_NEEDED: <lane> - <one-line reason>. If your task names a conductor worktree (~/.cx-wt/<repo>-<id> in WSL), work only inside it with absolute paths (in Git Bash: file tools on its wsl.localhost path, commands via cx-wsl bash -c, never ~), leave .conductor/ unchanged, and do not commit, push or open PRs. End with the tests you ran and their results.
+```
+<!-- subagent-context:end -->
+
+Phase 2 text (`subagent-context-p2`, replaces the block above when `cx-run` and the shared
+slots land): `CONDUCTOR SUBAGENT RULES (a workflow or the Agent tool started you in a conductor
+session). Never run Copilot, Grok or Antigravity directly (ghcp-*, agy-*, agy, grok, copilot,
+or cx-wsl with any of them): executor work goes only through cx-run --background and cx-job
+wait, which take the shared pool slots, and only when your task says so; otherwise return
+EXECUTOR_NEEDED: <lane> - <one-line reason>. If your task names a conductor worktree
+(~/.cx-wt/<repo>-<id>), work only inside it with absolute paths, leave .conductor/ unchanged,
+and do not commit, push or open PRs. End with the tests you ran and their results; the main
+session verifies your work.`
 
 ## 11. Worker shims (`worker-shims/`)
 
@@ -1856,6 +2298,11 @@ subscription or model should do a task, delegate or offload work, Opus fan-out, 
 workers, Copilot / Grok / Antigravity / agy, cross-model or second-opinion review, PR or CI
 triage, media or Google-grounded research, cx-doctor, cx-init, cx-wsl, worktree task contracts.
 
+A preface, the first paragraph after the title (P61): "**If you are a subagent or a workflow
+agent, do not run anything in this skill: return `EXECUTOR_NEEDED: <lane> - <reason>` and let
+the main session dispatch.**" (Phase 2: "…run only what your task names, through
+`cx-run`/`cx-job`.")
+
 Body sections (in this order; each cites the DESIGN § it condenses, so a §6 change updates the
 skill in the same commit):
 1. Roles: Claude owns spec, gates, merge; executors draft; autonomy and no caps (U2, U3).
@@ -1864,7 +2311,27 @@ skill in the same commit):
    one the session-start policy names (rendered from `opus_lane_order`, §10.2).
 4. Phase 1 recipe and exact lane commands (§12.2, verbatim): the rules for every call, then the
    headings in this order (P43): Step 1 worktree and contract; Step 2a–2d lanes; Step 3 after
-   every run (commit and gate); Step 4 reviews; Step 5 GitHub; From Windows (Git Bash).
+   every run (commit and gate); Step 4 reviews; Step 5 GitHub; From Windows (Git Bash). Then
+   two subsections (P61), in this order:
+   - **Workflows and ultracode** (§1.7, §10.7; U8): the levers; "ultracode changes how
+     thorough you are, not who executes"; the Phase 1 hybrid: (1) a Claude-only scout or design
+     workflow returns the decomposition with disjoint files per task; (2) the main turn runs
+     Step 1 for every task; (3) the main turn starts the executor runs (agy as step 2a's
+     background call, which the agy lock serializes across the computer; Copilot as step 2b's job
+     form); (4) a claude-pool workflow, in parallel, runs the other Opus tasks at effort high in
+     their `~/.cx-wt` worktrees without isolation (marked `running`, so agy's snapshots leave
+     them out; on Windows each task also gets `wt_win`, its `\\wsl.localhost` path, and the
+     prompt sends file tools there and commands through `cx-wsl bash -c`); (5) the main turn
+     collects, runs Step 3 per task and Step 4. Never `isolation: 'worktree'` or `'remote'`; no
+     `agentType` in Phase 1 and never another plugin's delegate agent; `budget` counts Claude
+     output only and never sizes or caps executor work (U3); `EXECUTOR_NEEDED` → the main turn
+     dispatches that lane; the claude-pool script (a static `meta` literal, `parallel()` of one
+     `agent()` per task with `effort`, no `Date.now`/`Math.random`). `bashCommandClamp` is never
+     mentioned.
+   - **In a Claude Code Project** (§1.7, §9.6; U7): every thread is a Work locally thread
+     (`session bridge`), the precedence list of §9.6, the Phase 1 rule that agy runs one job at a
+     time across threads (use the next pool or wait), auto mode relying on the D25 allow rules,
+     and the reply tool for a thread's final text.
 5. Guardrails checklist (§6.5) and the after-run checklist (§12.2 step 3), which records the
    agy served model as `unverified (wrapper)` unless the raw arm checked it.
 6. Hazards (§6.6).
@@ -1890,9 +2357,15 @@ siblings read the same names).
 - Each Bash tool call starts a fresh shell (§1.1). Step 1 writes the task's variables to
   `$OUT/vars.sh`; every later call starts with `. "$HOME/.conductor/out/<id>/vars.sh"`.
 - Any call that may run longer than 9 minutes (every executor run with `--timeout 30m`,
-  `ghcp-handoff`, a slow gate) is ONE background Bash call (`run_in_background: true`; the tool
-  notifies on exit), or is started with `ghcp-job start` / `agy-job start` and waited for inside
-  one background call with the one-liners below. Only calls with `--timeout 9m` or less may run
+  `ghcp-handoff`, a slow gate) is ONE background Bash call with `run_in_background: true` and
+  `timeout: 7200000` (the tool notifies on exit), or is started with `ghcp-job start` and
+  waited for inside one such background call with the one-liner below (agy has no job form:
+  its lock and tree snapshots must span the whole run, step 2a). A
+  background call is stopped at its timeout too, and the default (30 minutes, §1.1) is shorter
+  than a 30m run plus registration, the raw arm's 35m bound or `ghcp-handoff`'s delegation,
+  tests and fix-up: every background executor or wait call passes `timeout: 7200000` (the
+  2-hour maximum), and each lane's own wall clock (agy-delegate's guard, the raw `timeout 35m`,
+  the handoff total) stays below it. P43 asserts the skill names it. Only calls with `--timeout 9m` or less may run
   in the foreground. A foreground call killed at the Bash tool's timeout wastes the run: ghcp
   forwards TERM to Copilot (billed tokens, exit 130); agy ignores TERM and is orphaned.
 - Executor calls (`ghcp-*`, `agy-*`, `agy`, `grok`, `gh`, `git push`) and every step that writes
@@ -1904,7 +2377,7 @@ siblings read the same names).
   | Commands | Prefix |
   |---|---|
   | `grok` | `env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}"` (`G_ENV` from `vars.sh`: `GROK_DISABLE_AUTOUPDATER=1` and the five `GROK_CLAUDE_*_ENABLED=false`) |
-  | `agy`, `agy-delegate`, `agy-job`, `agy-media` | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true` |
+  | `agy`, `agy-delegate`, `agy-job` | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true` |
   | `ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug` | `env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false` |
 
   `XAI_API_KEY` would bill the xAI API account instead of the subscription, `GEMINI_API_KEY` /
@@ -1920,17 +2393,31 @@ siblings read the same names).
 
 One `command(<cmd>)` per routes command; the `write_file` grant is recursive and covers only
 the worktree root (use `worktree_root`'s value when it is not the default). Never use `--yolo` /
-`--dangerously-skip-permissions` outside Docker.
+`--dangerously-skip-permissions` outside Docker, and so never `agy-handoff`, `agy-media` or
+`/antigravity:research`, which always pass it (§0.3).
 
-**Step 1: worktree and contract** (outside the sandbox; foreground unless `setup` is slow).
+**Step 1: worktree and contract** (outside the sandbox; foreground unless `setup` is slow; run
+from inside the repo). The id is unique on the computer: no `cx/<id>` branch in the repo and no
+`~/.conductor/out/<id>` (threads and repos share that directory, and other threads' `running`
+marks live there). `REPO` comes from `gh repo view` (gh resolves the checkout's remote, ssh
+host aliases such as `git@github-work:` included; free), else from the origin URL with any
+`:port` stripped. `vars.sh` also defines `trees` (step 2a), so each later call gets it from the
+same line that loads the variables. Each dispatch marks the worktree `running` (both its path
+and its `pwd -P` form) until step 3: a lane may write there, so agy's snapshots, in every
+thread, leave it out.
 
 ```bash
 ID=t1
 TOP=$(git rev-parse --show-toplevel); BASE=$(git -C "$TOP" rev-parse HEAD)
 WT="$HOME/.cx-wt/$(basename "$TOP")-$ID"; OUT="$HOME/.conductor/out/$ID"; mkdir -p "$OUT"
+REPO=$(gh repo view --json url --jq .url 2>/dev/null | sed -E 's#^https?://##')   # host/owner/repo for gh -R; gh resolves ssh host aliases
+[ -n "$REPO" ] || REPO=$(git -C "$TOP" remote get-url origin 2>/dev/null | sed -E 's#^[a-z+]+://([^@/]*@)?##; s#^[^@/]*@([^:/]+):#\1/#; s#^([^/:]+):[0-9]+/#\1/#; s#\.git$##')   # gh not logged in: from the URL
 P='Read .conductor/task.md in the working directory and do exactly what it says. Do not spawn subagents. End with the DIGEST: line it specifies.'
-{ printf '%s=%q\n' ID "$ID" TOP "$TOP" BASE "$BASE" WT "$WT" OUT "$OUT" P "$P"
+{ printf '%s=%q\n' ID "$ID" TOP "$TOP" BASE "$BASE" WT "$WT" OUT "$OUT" REPO "$REPO" P "$P"
   echo 'G_ENV=(GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false)'
+  cat <<'SH'
+trees() { local m; m=$(git -C "$TOP" worktree list --porcelain | sed -n '1s/^worktree //p'); git -C "$TOP" worktree list --porcelain | sed -n 's/^worktree //p' | grep -vxF -e "$WT" -e "$(cd "$WT" && pwd -P)" | grep -vxF -f <(cat "$HOME"/.conductor/out/*/running 2>/dev/null) | while IFS= read -r d; do case "$d" in "$TOP") ;; "$m"/.claude/worktrees/*) continue ;; esac; printf '== %s\n' "$d"; git -C "$d" status --porcelain=v1 --untracked-files=all -- . ':!.claude/worktrees'; git -C "$d" diff HEAD | sha256sum; (cd "$d" && git ls-files -z -o --exclude-standard -- . ':!.claude/worktrees' | xargs -0r sha256sum); done; }
+SH
 } > "$OUT/vars.sh"
 git -C "$TOP" worktree add -q -b "cx/$ID" "$WT" "$BASE"
 EX="$(git -C "$TOP" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
@@ -1938,44 +2425,77 @@ grep -qx '/.conductor/' "$EX" 2>/dev/null || echo '/.conductor/' >> "$EX"
 # write $OUT/task.md (section 6.4); then before EVERY dispatch:
 mkdir -p "$WT/.conductor" && cp "$OUT/task.md" "$WT/.conductor/task.md" \
   && sha256sum "$OUT/task.md" | cut -d' ' -f1 > "$OUT/task.sha"
+printf '%s\n' "$WT" "$(cd "$WT" && pwd -P)" > "$OUT/running"   # a lane may write here: agy snapshots skip it until Step 3
 (cd "$WT" && npm ci --prefer-offline) > "$OUT/setup.log" 2>&1 || echo ENV_FAILED   # routes.json setup
 ```
 
 `~/.cx-wt` is `worktree_root`'s default; use the option's value when `cx-doctor` D7 lists it.
 
-**Step 2a: agy Opus (lane `agy-opus`)**, one background Bash call. Register first (free,
-bounded: print mode can hang, #1313/#318), launch agy runs one at a time, snapshot the main
-checkout:
+**Step 2a: agy Opus (lane `agy-opus`)**, one background Bash call. It takes the machine-wide
+agy lock first: `exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9`, held until the call
+ends (agy-delegate and agy inherit fd 9, so an orphaned agy keeps it too), which is how Phase 1
+runs agy one job at a time across every session and Work locally thread of the computer (no
+shared pool slots before Phase 2, §15.3, whose slots replace this lock); after 80 minutes it
+prints `AGY_BUSY` and exits 28 (`NO_CAPACITY`): use the next pool in the order. 4,800 s plus the
+60 s registration and agy-delegate's guard stays below the 7,200,000 ms background limit. No
+D25 rule covers `flock` (`flock FILE CMD` runs any command). Then it registers the directory
+(free, bounded: print mode can hang, #1313/#318) and snapshots every other worktree of the
+repo with content (`trees`, defined in `vars.sh`: status with untracked files, the hash of
+`git diff HEAD`, the hashes of untracked files), because agy's documented failure writes into
+its LAST project root, in this flow usually a previous task's worktree under `~/.cx-wt`, which
+the once-per-machine `write_file` grant also covers; porcelain status alone would also miss a
+second edit to an already-modified file. The agy step deletes its own task's `running` mark
+first, so its tree stays in later agy runs' snapshots. Left out of the snapshot: `$WT`; every
+worktree under the MAIN checkout's `.claude/worktrees/` except `$TOP` itself (the main checkout
+is the first `worktree` entry of `git worktree list --porcelain`, not `$TOP`: a session that
+itself starts in a Claude worktree has `TOP=<repo>/.claude/worktrees/A`, and its sibling `B`
+belongs to another thread, while `A` stays a likely last project root), because
+Claude Code's own isolation worktrees (a workflow agent with `isolation: 'worktree'`, a
+Projects folder card's Worktree option, probably `claude remote-control --spawn worktree`)
+live there; that directory inside every status and untracked-file list (`-- .
+':!.claude/worktrees'`; whether git lists it at all is §20 item 55, the exclusion is harmless
+either way); and every worktree named in a `~/.conductor/out/*/running` mark (another lane at
+work, in any thread; P60):
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
+rm -f "$OUT/running"   # an agy task's tree stays in later agy runs' snapshots
+mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
 (cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > "$OUT/agy-model.json"
-git -C "$TOP" status --porcelain > "$OUT/trees.before"
+trees > "$OUT/trees.before"
 (cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true \
   agy-delegate --model claude-opus-5-5-high --dir "$WT" --timeout 30m --digest "$P") \
   > "$OUT/answer.txt" 2> "$OUT/agy.err"; echo $? > "$OUT/rc"
-git -C "$TOP" status --porcelain > "$OUT/trees.after"; cmp -s "$OUT/trees.before" "$OUT/trees.after" || echo WRONG_TREE
+trees > "$OUT/trees.after"; cmp -s "$OUT/trees.before" "$OUT/trees.after" || echo WRONG_TREE
 grep -E '^AGY_(USAGE|SIGNAL)' "$OUT/agy.err"
 ```
 
 `AGY_USAGE`'s `model` only echoes the requested model (§1.4): record the served model as
 `unverified (wrapper)`, never as verified. Exit 15 = missing grant (report it, never retry with
-`--yolo`); exit 12 = timeout or PARTIAL. Job form: `cd "$WT" && env -u GEMINI_API_KEY -u
-GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true agy-job start --model
-claude-opus-5-5-high --dir "$WT" --timeout 30m --digest "$P"` prints the job id `J`; wait in one
-background call with
-`while agy-job status "$J" | grep -qx '  state=running'; do sleep 15; done; agy-job result "$J"; cat "${ANTIGRAVITY_JOBS:-$HOME/.antigravity-jobs}/$J/rc"`
-(`agy-job result` exits 0 whatever the job's rc; the `rc` file is the verdict).
+`--yolo`); exit 12 = timeout or PARTIAL. `WRONG_TREE`: `diff` the two snapshots to name the
+tree, report it with its diff, stop using agy for the task, and never reset or restore a tree
+the conductor did not create in this task (it may be another thread's or lane's work: ask the
+user). Known false alarms: a worktree of the repo added or removed during the run (another
+task's step 1, a gate checkout) and another thread's lane writing without a `running` mark.
+agy has no job form in Phase 1: an `agy-job` started in one Bash call and waited for in
+another would release the lock when the start call ends (whether the detached job inherits fd 9
+depends on the wrapper), and the next agy run, or its registration, would land between the two
+snapshots.
 
 Raw arm (served model verified; preferred for the A/B, §6.7; flags [docs-only] until `agy
---help` is captured, §20 item 4; the init event shape is [unverified], item 6). Same
-registration and tree snapshots, then, as one background call:
+--help` is captured, §20 item 4; the init event shape is [unverified], item 6). Same lock,
+registration and tree snapshots, written out, as one background call:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
+rm -f "$OUT/running"   # an agy task's tree stays in later agy runs' snapshots
+mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
+(cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > "$OUT/agy-model.json"
+trees > "$OUT/trees.before"
 (cd "$WT" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true \
   timeout -k 15s 35m agy --model claude-opus-5-5-high --add-dir "$WT" --print-timeout 30m \
   --output-format stream-json -p "$P" </dev/null) > "$OUT/agy.ndjson" 2> "$OUT/agy.err"; echo $? > "$OUT/rc"
+trees > "$OUT/trees.after"; cmp -s "$OUT/trees.before" "$OUT/trees.after" || echo WRONG_TREE
 python3 -I - "$OUT/agy.ndjson" <<'PY'
 import json, sys
 served = None
@@ -2027,7 +2547,7 @@ env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok --prompt-file 
   --permission-mode acceptEdits --allow 'Bash(npm test)' --allow 'Bash(git status)' --allow 'Bash(git diff)' \
   --no-subagents --max-turns 60 </dev/null > "$OUT/grok.json" 2> "$OUT/grok.err"; echo $? > "$OUT/rc"
 grep -n 'permission required:' "$OUT/grok.err" && echo DENIED     # a hit means denied, even with rc 0
-env -u XAI_API_KEY "${G_ENV[@]}" grok usage "$UUID"
+env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1 "${G_ENV[@]}" grok usage "$UUID"
 ```
 
 Read-only exploration (same prefix): `env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1
@@ -2040,36 +2560,50 @@ writes that profile; `--always-approve` is only ever combined with `read-only` o
 The `Bash(<cmd>)` rule syntax and the `workspace` profile name are [docs-only].
 
 **Step 2d: Claude (lane `claude`).** A Task/Agent subagent with prompt `$P`, told to work only
-in `$WT`.
+in `$WT`. On Windows (Git Bash) it gets two paths: the `\\wsl.localhost\<distro>\…` form of
+`$WT` (`cx-wsl bash -c '. "$HOME/.conductor/out/t1/vars.sh"; wslpath -w "$WT"'`) for Read,
+Edit, Write, Glob and Grep, and `cx-wsl bash -c 'cd "<WSL path>" && <command>'` for every
+command; never `~` (on Windows `C:\Users\<you>`) and never Git Bash's own git, npm or test
+tools on those files (§12.1 claude-pool `wt_win`, §10.7).
 
 **Step 3: after every run (the conductor commits; the gate never runs in `$WT`).** Background
 when the checks are slow:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
-[ "$(sha256sum "$WT/.conductor/task.md" | cut -d' ' -f1)" = "$(cat "$OUT/task.sha")" ] || echo SPEC_TAMPERED
+rm -f "$OUT/running"                                                                    # the lane is done
+[ "$(sha256sum "$WT/.conductor/task.md" | cut -d' ' -f1)" = "$(cat "$OUT/task.sha")" ] || { echo SPEC_TAMPERED; exit 23; }
+[ "$(git -C "$WT" symbolic-ref -q --short HEAD)" = "cx/$ID" ] || { echo BRANCH_TAMPERED; exit 24; }        # the executor left cx/$ID
 [ "$(git -C "$WT" rev-parse HEAD)" = "$BASE" ] || git -C "$WT" reset -q --soft "$BASE"   # squash executor commits
 git -C "$WT" add -A
-git -C "$WT" diff --cached --quiet && echo NO_CHANGES                                  # empty result: status empty
+git -C "$WT" diff --cached --quiet && { echo NO_CHANGES; exit 3; }                    # empty result: status empty
 git -C "$WT" diff --cached --stat "$BASE"; git -C "$WT" diff --cached --name-only "$BASE"   # tamper review (G4)
 git -C "$WT" commit -qm "cx/$ID: <executor>/<served model>"
-G="$HOME/.conductor/gate/$ID.1"; git -C "$TOP" worktree add -q --detach "$G" "cx/$ID"
+C=$(git -C "$WT" rev-parse HEAD); [ "$(git -C "$TOP" rev-parse "cx/$ID")" = "$C" ] || { echo BRANCH_TAMPERED; exit 24; }
+G="$HOME/.conductor/gate/$ID.1"; git -C "$TOP" worktree add -q --detach "$G" "$C"         # gate the exact commit
 (cd "$G" && npm ci --prefer-offline && npm test && npm run lint && npx tsc --noEmit)   # routes setup + commands
 ```
 
 The served model in the commit message is the verified one, or `unverified (wrapper)` (step
-2a). Failover to the next lane: `git -C "$WT" reset -q --hard "$BASE" && git -C "$WT" clean
+2a). `SPEC_TAMPERED` (exit 23), `BRANCH_TAMPERED` (exit 24: the executor created or switched
+branches, so a soft reset and commit would land on its branch while `cx/<id>` stays at BASE and
+a gate by branch name would test the unchanged BASE) and `NO_CHANGES` (exit 3) stop the step
+before anything is committed or gated. The gate checks out the exact commit `C` after
+verifying that `cx/<id>` points at it. Failover to the next lane: `git -C "$WT" reset -q --hard "$BASE" && git -C "$WT" clean
 -ffdxq -e /.conductor/` (inside the conductor's own worktree only), re-copy `task.md` (step 1),
 dispatch. Never let two lanes write to one worktree.
 
 **Step 4: reviews (read-only, on the same gate checkout `$G`; only after step 3 committed).**
-No second `worktree add`: step 3 created `$G`. Each reviewer is one background call:
+No second `worktree add`: step 3 created `$G`. Each reviewer is one background call: the first
+four lines, then the agy lines (the lock first: registering `$G` changes agy's last project
+root, so it must not happen during another agy run) or the ghcp line:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"; G="$HOME/.conductor/gate/$ID.1"
 git -C "$TOP" diff "$BASE" "cx/$ID" > "$OUT/change.diff"
 [ -s "$OUT/change.diff" ] || { echo EMPTY_DIFF; exit 3; }     # nothing committed: do not review
 R="Review the change in $OUT/change.diff against the code in this checkout. List findings as file:line - severity - issue, most severe first. Do not edit files."
+mkdir -p "$HOME/.conductor/locks"; exec 9>> "$HOME/.conductor/locks/agy"; flock -w 4800 9 || { echo AGY_BUSY; exit 28; }   # one agy run at a time on this computer
 (cd "$G" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 60 agy --new-project --output-format json -p /model </dev/null) > /dev/null
 (cd "$G" && env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true \
   agy-delegate --model 'Gemini 4 Argon (High)' --dir "$G" --dir "$OUT" --timeout 30m --digest "$R")
@@ -2080,24 +2614,94 @@ env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVID
 The model names are the defaults of `review_model_gemini` and `review_model_gpt` (§5.1). Clean
 up gate checkouts with `git -C "$TOP" worktree remove --force "$G"` once the reviews are in.
 
-**Step 5: GitHub (only after a green gate).** `git -C "$WT" push -u origin "cx/$ID"`; `gh pr
-create --head "cx/$ID" --title … --body-file …`; `gh pr edit <N> --add-reviewer @copilot` (needs
-a gh whose `gh pr edit --help` mentions `@copilot`, D12; otherwise the REST fallback
+**Step 5: GitHub (only after a green gate).** Write the PR body to `$OUT/pr-body.md` first
+(step 2e drafts it), then:
+
+```bash
+. "$HOME/.conductor/out/t1/vars.sh"
+git -C "$WT" push -u origin "cx/$ID"
+gh pr create -R "$REPO" --head "cx/$ID" --title '<title>' --body-file "$OUT/pr-body.md"
+gh pr edit "cx/$ID" -R "$REPO" --add-reviewer @copilot
+```
+
+`REPO` (`host/owner/repo` from `gh repo view`, step 1) lets every `gh` call name the repo with
+`-R`, so each simple command begins with a D25 rule (§8.3) and none needs a `(cd … && …)`
+subshell; `gh -R` uses a host as given, so a URL-derived SSH alias (`github-work`) would fail
+there, which is why step 1 asks gh first. `--add-reviewer @copilot` needs a gh whose `gh pr edit --help` mentions `@copilot`
+(D12); otherwise the REST fallback
 `gh api -X POST "repos/{owner}/{repo}/pulls/<N>/requested_reviewers" -f 'reviewers[]=copilot-pull-request-reviewer[bot]'`
-[unverified], §20 item 30). CI failures: `ghcp-ci-debug --pr <N>` or `--run <id>` (with the
-ghcp prefix) WITHOUT `--apply`; `--apply` creates and switches to a branch in its `--dir`, whose
-default is the cwd (normally the user's main checkout), so use it only as `--apply --dir "$WT"`
-inside a conductor worktree.
+[unverified], §20 item 30 (`<N>` from `gh pr view "cx/$ID" -R "$REPO" --json number --jq .number`).
+CI failures: `ghcp-ci-debug --pr <N>` or `--run <id>` (with the ghcp prefix) WITHOUT `--apply`;
+`--apply` creates and switches to a branch `ghcp/ci-fix-<run id>` in its `--dir`, whose default
+is the cwd (normally the user's main checkout), and leaves the edits uncommitted
+(`ghcp-ci-debug.sh:186-188`), so use it only as `--apply --dir "$WT"` inside the task's
+conductor worktree, and hand the edits back before step 3, which would otherwise stop with
+`BRANCH_TAMPERED` (P43), in one background call:
+
+```bash
+. "$HOME/.conductor/out/t1/vars.sh"
+printf '%s\n' "$WT" "$(cd "$WT" && pwd -P)" > "$OUT/running"
+env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false \
+  ghcp-ci-debug --pr 123 --apply --dir "$WT" > "$OUT/ci-fix.txt" 2> "$OUT/ci-fix.err"; echo $? > "$OUT/rc"
+F=$(git -C "$WT" symbolic-ref -q --short HEAD); case "$F" in ghcp/ci-fix-*) git -C "$WT" switch -q "cx/$ID" && git -C "$WT" branch -q -D "$F" ;; esac   # hand the edits back to cx/$ID
+printf 'BASE=%q\n' "$(git -C "$WT" rev-parse "cx/$ID")" >> "$OUT/vars.sh"   # Step 3 commits the fix on top of the pushed commit
+```
+
+Both branches point at the same commit, so `git switch` carries the uncommitted edits; the
+appended `BASE` makes step 3 commit the fix on top of the pushed `cx/<id>` (no squash, so the
+push stays a fast-forward) and step 4 review only the fix; the gate then uses `$ID.2` when
+`$ID.1` still exists.
+Issue and PR triage is read-only: fetch with `gh` first (`gh issue view N --json
+title,body,comments,labels > "$OUT/issue.json"`, `gh pr view N`, `gh pr diff N`), then run
+`ghcp-delegate --model gpt-6.1-sol --effort medium --add-dir "$OUT" --digest "<question>"` with
+the ghcp prefix. `ghcp-delegate --github` adds `--allow-tool github-mcp-server`, every GitHub
+MCP tool acting as the user (comment, label, close, merge; ghcp README), so it is never a
+triage or read lane; it is kept for a task that is meant to act on GitHub.
+
+Copilot cloud agent (U7: an executor's own cloud, used from a local session; lane
+`copilot-github`; billed in Copilot premium requests and Actions minutes): step 1 as usual (the
+worktree stays unused), `$OUT/task.md` without "committing, pushing or branching" in its
+Forbidden list, then `ghcp-cloud create -R "$REPO" -` with the task on stdin (ghcp's wrapper
+around `gh agent-task create -F -`, a gh preview feature):
+
+```bash
+. "$HOME/.conductor/out/t1/vars.sh"
+env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1 COPILOT_AUTO_UPDATE=false ghcp-cloud create -R "$REPO" - < "$OUT/task.md" > "$OUT/cloud.txt"
+```
+
+Its pull request is gated like any executor's draft before anything merges: fetch the PR head
+into a gate checkout of that exact commit, read the name-only list against `allowed_paths` and
+G4, run setup and every routes command, then step 4 on `$G` with `git -C "$TOP" diff
+"$BASE...$C"` as the diff; it never merges on the agent's word:
+
+```bash
+. "$HOME/.conductor/out/t1/vars.sh"; N='<PR number>'
+git -C "$TOP" fetch -q origin "pull/$N/head" && C=$(git -C "$TOP" rev-parse FETCH_HEAD) || { echo FETCH_FAILED; exit 2; }
+git -C "$TOP" diff --stat "$BASE...$C"; git -C "$TOP" diff --name-only "$BASE...$C"   # tamper review (G4)
+G="$HOME/.conductor/gate/$ID.1"; git -C "$TOP" worktree add -q --detach "$G" "$C"         # gate the exact commit
+(cd "$G" && npm ci --prefer-offline && npm test && npm run lint && npx tsc --noEmit)   # routes setup + commands
+```
+
+Grok remote sessions are not a Phase 1 command: grok 1.0.70 only resumes one (`--resume` with
+`--worktree`/`--restore-code`); the user starts them.
 
 **From Windows (Git Bash).** Every step above runs inside WSL through `cx-wsl` (§7.7); nothing
 runs on the Windows side, and nothing is installed there. Write the step text verbatim (its
-`vars.sh` line included) to a Windows-side scratch file with the Write tool and run
-`cx-wsl bash -s < FILE`, as one background Bash call when the step is long; in step 1 the
+`vars.sh` line included) to a Windows-side scratch file with the Write tool, with LF line
+endings (`cx-wsl bash -s` strips a CR before each LF with a note: a CR would end up in every
+word, so `. vars.sh` would fail and `git -C "$WT" …` would run in the cwd), and run
+`cx-wsl bash -s < FILE`, as one background Bash call with `timeout: 7200000` when the step is
+long; in step 1 the
 `task.md` text goes into the step as a quoted heredoc (`cat > "$OUT/task.md" <<'TASK'` …
 `TASK`). Single commands may go direct: `cx-wsl ghcp-job status <id>`, `cx-wsl gh pr view <N>`,
 `cx-wsl git -C /home/<you>/<repo> status` (`cx-wsl` adds the prefixes above for `ghcp-*`,
-`agy-*`, `agy` and `grok`). Paths inside steps and arguments are WSL paths (`$HOME`, `~/.cx-wt`,
-`/home/<you>/…`), never `C:\…` or `/c/…`. Read results with `cx-wsl bash -c 'cat "$1"' _
+`agy-*`, `agy` and `grok`; its allowlist is exactly `ghcp-delegate ghcp-job ghcp-handoff
+ghcp-ci-debug ghcp-models ghcp-cloud agy-delegate agy-job agy grok gh git bash`, §7.7). Paths
+inside steps and arguments are WSL paths (`$HOME`, `~/.cx-wt`, `/home/<you>/…`), never `C:\…`
+or `/c/…`. The Claude lane gets the `\\wsl.localhost` path for file tools and `cx-wsl bash -c`
+for commands (step 2d). With the Copilot token file (§8.5), only direct `cx-wsl ghcp-*` calls
+get `COPILOT_GITHUB_TOKEN` (§7.7), so Copilot lanes then run as direct `cx-wsl ghcp-job start …`
+calls with literal WSL paths rather than inside a `cx-wsl bash -s` step. Read results with `cx-wsl bash -c 'cat "$1"' _
 /home/<you>/.conductor/out/<id>/answer.txt`. `cx-wsl` calls run outside the sandbox.
 
 ### 12.3 Commands
@@ -2175,13 +2779,18 @@ work and its conventions are reused by design.
 `scripts/lib/cxlib.py`, `scripts/host/detect.sh`, `scripts/host/pathmap.sh`,
 `scripts/host/forward-wsl.sh`, `scripts/host/wsl-entry.sh`, `scripts/host/install-runtime.sh`,
 `hooks/hooks.json`, `hooks/policy.sh`, `hooks/policy-context.json`,
-`hooks/policy-context-gitbash.json`, `hooks/policy-context-crlf.json`, the 8 `worker-shims/*`,
+`hooks/policy-context-gitbash.json`, `hooks/policy-context-crlf.json`,
+`hooks/policy-context-cloud.json`, `hooks/subagent.sh`, `hooks/subagent-context.json`,
+`hooks/subagent-context-compact.json`, the 8 `worker-shims/*`,
 `templates/repo-bundle/AGENTS.md`, `templates/repo-bundle/routes.json`,
-`templates/repo-bundle/copilot-instructions.md`, `skills/conductor/SKILL.md`,
-`commands/doctor.md`, `commands/init.md`, `commands/route.md`. Executable: `bin/*`,
-`scripts/*.sh`, `scripts/host/*.sh`, `hooks/policy.sh`, `worker-shims/*`. The runtime copy
-(§7.5) holds the subset under `.claude-plugin bin scripts hooks worker-shims templates`; D3
-checks the installed copy against the whole list, D4 the runtime against that subset.
+`templates/repo-bundle/copilot-instructions.md`, `templates/projects-instructions.md`,
+`skills/conductor/SKILL.md`, `commands/doctor.md`, `commands/init.md`, `commands/route.md`.
+Executable: `bin/*`, `scripts/*.sh`, `scripts/host/*.sh`, `hooks/policy.sh`, `hooks/subagent.sh`,
+`worker-shims/*`. The runtime copy (§7.5) holds the subset under `.claude-plugin bin scripts
+hooks worker-shims templates`; D3 checks the installed copy against the whole list, D4 the
+runtime against that subset. The Phase 2 `agents/` and `workflows/` directories are read by
+Claude Code from the installed plugin, never from the runtime copy, so that subset does not
+change when they land.
 
 ## 14. Phase 1 tests
 
@@ -2190,7 +2799,7 @@ checks the installed copy against the whole list, D4 the runtime against that su
 `bash tests/run-tests.sh` runs everything, needs no network, spends nothing, and runs inside
 Claude Code's Bash sandbox. Style as ghcp's: `check "[P7] name" cmd args…`, `section`, PASS /
 FAIL / SKIP counters, non-zero exit on any FAIL, `bash tests/run-tests.sh 2>&1 | grep -v '^PASS  '`
-for failures only. Tags: `[P1]`–`[P45]` (plus `[P22b]`) are the Phase 1 cases below (later phases use `[A…]`,
+for failures only. Tags: `[P1]`–`[P63]` (plus `[P22b]`) are the Phase 1 cases below (later phases use `[A…]`,
 `[G…]`, `[W…]`, `[K…]`); `[X]` is extra coverage.
 
 Isolation (set before any case): one `TMP=$(mktemp -d)`; `HOME=$TMP/home`,
@@ -2199,13 +2808,34 @@ Isolation (set before any case): one `TMP=$(mktemp -d)`; `HOME=$TMP/home`,
 root, so the build container's own `/.dockerenv` cannot leak in); unset every
 `CLAUDE_PLUGIN_OPTION_*`, `STUB_*`, `CX_*` (other than those just set), `GHCP_*`, `COPILOT_*`,
 `GROK_*`, `AGY_*`, `WSL_DISTRO_NAME`, `WSL_INTEROP`, `WSLENV`, `MSYSTEM`, `container`,
-`CLAUDE_PLUGIN_ROOT`, `GH_TOKEN`, `GITHUB_TOKEN`; `GHCP_COPILOT_BIN=$ROOT/tests/stubs/copilot`;
+`CLAUDE_PLUGIN_ROOT`, `GH_TOKEN`, `GITHUB_TOKEN`, every `CLAUDE_CODE_*`, and by name (P62) the
+session, Work locally and workflow signals: `CLAUDE_CODE_REMOTE`, `CLAUDE_CODE_ENVIRONMENT_KIND`,
+`CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_PROJECTS_SESSION`,
+`CLAUDE_CODE_DESKTOP_APP_VERSION`, `CLAUDE_CODE_HOSTED_DESKTOP`, `CLAUDE_CODE_IS_COWORK`,
+`CLAUDE_CODE_USE_COWORK_PLUGINS`, `CLAUDE_PROJECT_UUID`, `CLAUDE_PROJECT_DIR`,
+`DISABLE_GROWTHBOOK`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `ANTHROPIC_BASE_URL`,
+`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_SESSION_KIND`, `CLAUDE_CODE_DISABLE_WORKFLOWS`,
+`CLAUDE_CODE_WORKFLOWS`, `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`,
+`CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_EFFORT`,
+`CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS`, `CLAUDE_CODE_REMOTE_TOOLS_FORWARD`, `CLAUDE_EFFORT`,
+`AI_AGENT`, `CLAUDE_CODE_SESSION_ID`, `NUMBER_OF_PROCESSORS`, `ProgramFiles`/`PROGRAMFILES`
+(the build container is itself a cloud session, `CLAUDE_CODE_REMOTE=true` measured: without
+this every policy case would flip to the cloud notice); `GHCP_COPILOT_BIN=$ROOT/tests/stubs/copilot`;
 `PATH=$ROOT/tests/stubs:$REAL_PATH`; git identity variables and `GIT_CONFIG_NOSYSTEM=1`; the
 suite runs from a scratch cwd. A fake Claude config is generated per section:
 `installed_plugins.json` pointing at fake plugin install dirs the suite creates under
 `$TMP/plugins/{ghcp,antigravity}/bin/` (two-line scripts that `exec` `tests/stubs/ghcp-models`,
 or `tests/stubs/billable` for every other wrapper) and a `settings.json` built from
 `tests/fixtures/settings/`.
+
+A case that needs a PATH without some agent CLI (the missing-CLI doctor runs) uses a copy of
+the stub directory without it plus a directory of links to named system tools (bash,
+coreutils, git, python3, `timeout`, `setsid`, `flock`, `ps`, …), never `$REAL_PATH`: a real
+`copilot`, `grok` or `agy` installed on the developer's host would otherwise run (network calls,
+an agy self-update), and the stub-log audit (P30) cannot see real binaries; a check asserts
+that such a PATH resolves none of them. The suite prints its wall time; only with
+`CX_TEST_STRICT_TIME=1` does a run over 60 s fail (wall time alone never turns a functionally
+green run red on a slow or loaded machine).
 
 Git Bash simulation: `STUB_UNAME_S=MINGW64_NT-10.0-26100`, `STUB_WIN_ROOT=$TMP/win` (stub
 `cygpath` maps `$TMP/win/<x>/rest` ↔ `X:\rest`, `$TMP/unc/<rest>` ↔ `\\wsl.localhost\Ubuntu\<rest>`,
@@ -2229,15 +2859,16 @@ appears (P30).
 | `uname` | `-s`/`-r`/`-m`/`-n` from `STUB_UNAME_S/_R/_M/_N`, else the real `uname` (found on PATH minus the stub dir) |
 | `cygpath` | `-w`/`-u`/`-m` with the mapping above, `-l` (long form: a path component listed in `STUB_CYGPATH_SHORT`, e.g. `JOHNSM~1=John Smith`, is replaced by its long name; without `-l` it stays short), `--version`; any other POSIX path → rc 1; logs its flags, so P13/P15 assert `-l` was passed |
 | `wsl.exe` | Parses `-d`, `--cd`, `--exec PROG ARGS…`, `-l -v`/`--list --verbose`, `-l -q`/`--list --quiet`. Own messages are UTF-16LE with a BOM unless `WSL_UTF8=1` (`STUB_WSL_IGNORE_UTF8=1` forces UTF-16LE). `STUB_WSL_DISTROS` (`*Ubuntu-24.04:Running:2,Debian:Stopped:2`; `*` marks the default, used when `-d` is absent; a STATE may contain spaces). `STUB_WSL_FAIL=nodistro` → "There is no distribution with the supplied name." rc 255; `=launch` → "The Windows Subsystem for Linux instance has terminated." rc 1 before running the child; `=crash` → runs the child, then prints that message and `Error code: Wsl/Service/E_UNEXPECTED`, rc 1. The child runs under `env -i` with `HOME=$STUB_WSL_HOME`, `USER`, `LOGNAME`, `SHELL=/bin/bash`, `TERM=dumb`, `LANG=C.UTF-8`, `WSL_DISTRO_NAME=<D>`, `WSL_INTEROP`, `CX_MNT_ROOT=$STUB_WSL_MNT`, `CX_DETECT_ROOT`, `PATH=$STUB_WSL_PATH` (default includes python3's dir, the stub dir and `/mnt/c/Windows/System32`), `STUB_WSL_EXTRA_ENV` names (e.g. `DBUS_SESSION_BUS_ADDRESS`, `XAI_API_KEY`), plus each name listed in `WSLENV` (verbatim; flags are an error in the stub). `--cd ~` → `$STUB_WSL_HOME`. `--exec /bin/kill …` runs the real `kill` in the same process space. stdin passes through; exit = the child's. Logs its argv and the env names it passed |
-| `wslpath` | `-u 'X:\rest'` → `$CX_MNT_ROOT<x>/rest`; `-w /p` → `\\wsl.localhost\$WSL_DISTRO_NAME\p`; `STUB_WSLPATH_ROOT` overrides the mount root (mismatch test) |
+| `wslpath` | `-u 'X:\rest'` → `$CX_MNT_ROOT<x>/rest`; `-w /p` → `\\wsl.localhost\<D>\p` with `D` = `STUB_WSLPATH_DISTRO` when set (empty → "Invalid argument", exit 1), else `$WSL_DISTRO_NAME`, else `Ubuntu`; `STUB_WSLPATH_LEGACY=1` prints `\\wsl$\`; `STUB_WSLPATH_ROOT` overrides the mount root (mismatch test) |
 | `copilot` | `--version` → `GitHub Copilot CLI ${STUB_COPILOT_VERSION:-1.0.105}.`; the doctor probe (`-p . --model __cx_doctor_probe__ …`) → the real stderr shape for `STUB_COPILOT_AUTH=ok\|none\|rofs` with rc 1; anything else billable. Logs its cwd (`cwd=<pwd>`) and whether `GH_TOKEN`/`GITHUB_TOKEN` were set; `STUB_COPILOT_TOKEN_ONLY=GH_TOKEN` → the probe reports logged in only when that variable is set |
 | `grok` | `--version` → `grok ${STUB_GROK_VERSION:-1.0.70} (f50904eaee6c)`; `models` → `fixtures/grok-models-auth.txt` when `STUB_GROK_AUTH=1`, else the verified unauthenticated text, rc `${STUB_GROK_MODELS_RC:-0}` (`STUB_GROK_MODELS_FAIL=network` → one error line, no ids, rc 1); `usage` → fixture; prompts billable; `STUB_ENV_FILE` receives its environment (P45 prefix checks) |
-| `agy` | `--version` → `${STUB_AGY_VERSION:-1.4.12}`; `models [--output-format json]` → fixtures, empty when `STUB_AGY_AUTH=0`, `sleep 60` when `STUB_AGY_HANG=1`; `-p /usage\|/model\|/config` → fixture JSON; other prompts billable |
+| `agy` | `--version` → `${STUB_AGY_VERSION:-1.4.12}`; `models [--output-format json]` → fixtures, empty when `STUB_AGY_AUTH=0`, a `{"status": "ERROR", …}` envelope or a "not signed in" line (rc 0) when `STUB_AGY_AUTH=envelope`, `sleep 60` when `STUB_AGY_HANG=1`; `-p /usage\|/model\|/config` → fixture JSON; other prompts billable |
 | `claude` | `--version` → `${STUB_CLAUDE_VERSION:-2.1.316} (Claude Code)`; `auth status --json` → `{"loggedIn": ${STUB_CLAUDE_LOGGED_IN:-true}, "authMethod": "oauth_token"}`; `-p` billable. (P3 uses the real `claude` from `REAL_PATH`.) |
 | `gh` | `--version` → `gh version ${STUB_GH_VERSION:-2.89.0} (2026-03-26)`; `pr edit --help` → help text that mentions `@copilot` unless `STUB_GH_NO_COPILOT=1`; `auth status` rc `${STUB_GH_AUTH:-0}` |
 | `gitbash/git` (only on the simulated Git Bash PATH) | `rev-parse --show-toplevel` with `STUB_GIT_DUBIOUS=1` → Git for Windows' dubious-ownership message including a `git config --global --add safe.directory '…'` line, rc 128; otherwise the real git |
 | `ghcp-models` | `--json` → `fixtures/ghcp-models.json` rc 0; `STUB_GHCP_MODELS=auth\|sandbox\|timeout\|catalog` → rc 11\|16\|12\|2; exits 98 unless `GHCP_COPILOT_BIN` is an absolute path; logs whether `--refresh` was given and its cwd. Reached only through the fake ghcp install dir (the doctor resolves wrappers from `installed_plugins.json`) |
 | `billable` | Logs `BILLABLE` and its own name, exits 99 (stands in for every other sibling wrapper) |
+| `nproc` | Prints `STUB_NPROC` when set, else the real `nproc`; logs nothing (free; D32) |
 
 Fixtures: `grok-models-unauth.txt` (verified, §1.3); `grok-models-auth.txt`, `agy-models.txt`,
 `agy-models.json`, `agy-usage.json`, `ghcp-models.json` (synthetic, shapes as in §1; replaced by
@@ -2266,57 +2897,96 @@ the repo: the A/B's raw records stay under `$CX_HOME/ab/` (§6.7).
 | P4 | §5.2 | Loader: settings value exported; an env value (even empty) wins; key fallbacks `conductor` and `conductor@x`; invalid JSON, missing file or no python3 → silent no-op; non-scalars skipped; bools → `true`/`false`; a planted `json.py` in the cwd is not imported |
 | P5 | §5.2, §3.3 | `CX_WIN_SETTINGS` beats the WSL settings value; env beats both; a Windows settings file with a UTF-8 BOM and CRLF (`settings/win-bom-crlf.json`) still loads (`utf-8-sig`) |
 | P6 | §5.3 | `cap_agy=abc` → note + `2`; `worktree_root=/` and `exec_host=docker` invalid; `opus_lane_order=copilot,agy` → `copilot,agy,claude`; D7 lists each as ! |
-| P7 | §5.2 | `cx_opt_lite` finds `wsl_distro` inside the conductor's `pluginConfigs` entry; ignores the same key in an earlier plugin block AND in a later foreign block when `enabledPlugins` lists the conductor first (`settings/enabled-first.json`); handles a leading BOM and CRLF; braces inside strings do not end the span; rejects a value with a space |
+| P7 | §5.2 | `cx_opt_lite` finds `wsl_distro` inside the conductor's `pluginConfigs` entry; ignores the same key in an earlier plugin block AND in a later foreign block when `enabledPlugins` lists the conductor first (`settings/enabled-first.json`); handles a leading BOM and CRLF; braces inside strings do not end the span; rejects a value with a space; `cx_opt_lite` and `cx_lite_top` read an 80 KB BOM+CRLF settings file (a long `permissions.allow`, the conductor entry last) with the right values in under 3 s (linear readers: the text is split at its quotes once, and every key search is a `${x%%"KEY"*}` longest-suffix match; `${x#*"KEY"}` and `${s:i:1}` loops are quadratic in bash) |
 | P8 | §4.2 | `cx_emit`: one line, `CX_NAME ` prefix, default separators, `ensure_ascii`, typed keys; `reason` sanitizing (CR/LF/TAB/U+2028 collapse, 200-char cut ending `...`) |
 | P9 | §4.2 | `cx_signal` with no python3 on PATH: the hand-built line parses as JSON, holds only constant text, is the last stderr line, and the exit code is the given one |
 | P10 | §4.1 | `cx_status_for_exit` covers every row; each script header lists exactly the codes the script can return |
 | P11 | §7.2 | Every row of the pathmap example table, in CLI and sourced form; refusals exit 42 with a `pathmap:` reason; `--mnt-root` and `/etc/wsl.conf` under `CX_DETECT_ROOT` honoured; with no `--distro`, `WSL_DISTRO_NAME` or `CX_WSL_DISTRO`, T6 and `to-win /home/me` refuse with "distro unknown" while drive mappings still work |
-| P12 | §7.1 | Detection matrix: `MINGW64_NT…`/`MSYS_NT…` → gitbash; `CYGWIN_NT…` → cygwin; `Darwin` → macos; Linux + `WSL_DISTRO_NAME` + `6.6.87.2-microsoft-standard-WSL2` → wsl/2; Linux + `WSLInterop` only → wsl; `4.4.0-19041-Microsoft` → wsl/1; Linux + `.dockerenv` + WSL2 kernel → docker; cgroup `docker` → docker; plain → linux; os-release quoting; hostkey sanitizing |
+| P12 | §7.1 | Detection matrix: `MINGW64_NT…`/`MSYS_NT…` → gitbash; `CYGWIN_NT…` → cygwin; `Darwin` → macos; Linux + `WSL_DISTRO_NAME` + `6.6.87.2-microsoft-standard-WSL2` → wsl/2; Linux + `WSLInterop` only → wsl; `4.4.0-19041-Microsoft` → wsl/1; Linux + `.dockerenv` + WSL2 kernel → docker; cgroup `docker` → docker; plain → linux; os-release quoting; hostkey sanitizing; WSL without `WSL_DISTRO_NAME`: the name from `wslpath -w /` (both prefixes), else os-release |
 | P13 | §7.3, §7.7 | Argv fidelity through the forwarder: simulated Git Bash runs `bin/cx-init --dry-run --json --test "$WEIRD"` where WEIRD holds spaces, `"`, `'`, `$HOME`, backslashes, a newline, `é—✓` and a leading `-`; `detected.test` equals it byte for byte; `--lint ''` arrives as an empty argument (→ null); with `CX_DEBUG=1` the kept `argv` file equals `printf '%s\0'` of the arguments; `cx-wsl bash -c 'printf "%s\0" "$@"' _ "$WEIRD" ''` prints exactly those two arguments; every Windows path in `meta` came from `cygpath -w -l` |
 | P14 | §7.3, §7.4 | Env allowlist: with `CX_DEBUG=1 CLAUDE_PLUGIN_OPTION_POLICY=off GH_TOKEN=x COPILOT_MODEL=y FOO=z` the kept `env` file holds only `CX_DEBUG` and `CLAUDE_PLUGIN_OPTION_POLICY`; the stub logged only `CX_FWD_WIN` crossing via `WSLENV` |
 | P15 | §7.3, §7.4 | cwd mapping: a drive cwd and a `\\wsl.localhost\Ubuntu\…` cwd reach the same repo on the WSL side (`CX_FORWARD.cwd`); a `\\server\share` cwd → `cx-init` and `cx-wsl` exit 42 (one `CX_SIGNAL`, from wsl-entry.sh), `cx-doctor` runs from `$HOME` with `cwd: null`; a `TMPDIR` with a short-name component (`JOHNSM~1`, `STUB_CYGPATH_SHORT`) still maps because the forwarder passed `-l` |
-| P16 | §7.3, §7.4 | Exit propagation (forwarded `cx-init` 5, `cx-doctor` 4 and 0, `cx-wsl bash -c 'exit 37'` 37 with no `CX_*` line); no `wsl.exe` → 40 with the constant reason; `STUB_WSL_FAIL=nodistro` with `STUB_WSL_IGNORE_UTF8=1` → 40 and the note shows the decoded English message; `STUB_WSL_FAIL=crash` (after `started`) → 40 `FORWARD_FAILED`; wsl-entry.sh version mismatch → 41; in every failure exactly one `CX_SIGNAL` line in total; invalid `wsl_distro` → 40 without invoking wsl.exe; `wsl_distro=auto` → the wsl.exe argv has no `-d` and `CX_FORWARD.distro` is the stub's default; stdin reaches the child (`printf x \| cx-wsl bash -c 'cat'` prints `x`); INT during a forwarded call whose WSL-side child sleeps → 130, and the Linux-side child (and its process group) is gone within 6 s |
+| P16 | §7.3, §7.4 | Exit propagation (forwarded `cx-init` 5, `cx-doctor` 4 and 0, `cx-wsl bash -c 'exit 37'` 37 with no `CX_*` line); no `wsl.exe` → 40 with the constant reason; `STUB_WSL_FAIL=nodistro` with `STUB_WSL_IGNORE_UTF8=1` → 40 and the note shows the decoded English message; `STUB_WSL_FAIL=crash` (after `started`) → 40 `FORWARD_FAILED`; wsl-entry.sh version mismatch → 41; in every failure exactly one `CX_SIGNAL` line in total; invalid `wsl_distro` → 40 without invoking wsl.exe; `wsl_distro=auto` → the wsl.exe argv has no `-d` and `CX_FORWARD.distro` is the stub's default; stdin reaches the child (`printf x \| cx-wsl bash -c 'cat'` prints `x`); INT during a forwarded call whose WSL-side child sleeps → 130, and the Linux-side child (and its process group) is gone within 6 s; under a pty (python3 `pty.fork`) a forwarded `cx-wsl bash -c 'read -r x; echo "got:$x"'` reads the terminal and prints `got:hello` within 15 s (no SIGTTIN stop) |
 | P17 | §7.3, §7.5 | Runtime auto-install: an empty WSL home → the first call installs (`installed: true`, stamp, `current` link) and succeeds; the second call does not reinstall; `CX_NO_AUTO_INSTALL=1` → 41 (one `CX_SIGNAL`, from the forwarder) |
-| P18 | §7.5 | `install-runtime.sh`: copies only the six directories; exec bits; a mid-line CR → exit 44 and the old runtime stays; identical reinstall → `changed: false`; a changed source replaces the copy and moves `current`; two concurrent installs of one source → one `changed: true`, one `changed: false`, a single clean tree (no copy nested inside `runtime/<version>/`) |
+| P18 | §7.5 | `install-runtime.sh`: copies only the six directories; exec bits; a mid-line CR → exit 44 and the old runtime stays; identical reinstall → `changed: false`; a changed source replaces the copy and moves `current`; two concurrent installs of one source → one `changed: true`, one `changed: false`, a single clean tree (no copy nested inside `runtime/<version>/`); bootstrap mode (`bash -s` with `CX_STAGE_WIN`) from a cwd that holds a file named `main` still installs from the stage |
 | P19 | §7.4, §7.6 | WSL-side environment: the host record's `.path` is used when present; the fallback has `$HOME/.local/bin`, `/snap/bin`, `$HOME/.bun/bin`, `$HOME/.cargo/bin` and no `/mnt/` entry although the stub appended `/mnt/c/Windows/System32`; `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` from the stub survive; the three auto-update pins are set; a forwarded doctor never replaces an `interactive` record `path`; host-record wrappers come from the `scope: "user"` entry when a project entry is listed first, and a moved `installPath` is re-resolved once |
-| P20 | §10.2–§10.5 | Each of the three policy JSON files parses; `hookEventName` = `SessionStart`; each `additionalContext` equals its block in this file (`policy`, `policy-gitbash`, `policy-crlf-context`), and the CRLF file's `systemMessage` equals `policy-crlf-system`; all ASCII; the WSL and Git Bash texts are ≤ 2000 characters with the longest `{ORDER}` phrase substituted, contain `--new-project` and the skill-first rule (`load the conductor skill`), and the Git Bash text contains `cx-wsl` |
-| P21 | §10.2 | `policy.sh` prints exactly the selected file with `{ORDER}` replaced and never prints `{ORDER}`; orders: unset → `agy (agy-delegate), then Copilot (ghcp-delegate), then own subagents`; `copilot,agy` and ` COPILOT, AGY ` → Copilot first; `copilot` → `Copilot (ghcp-delegate), then own subagents`; `agy,agy`, `bogus`, `*` → the default phrase; `STUB_UNAME_S=MINGW64_NT-10.0-26100` (and `MSYS_NT-…`) → the Git Bash variant; `CLAUDE_PLUGIN_OPTION_POLICY` = `off`, `OFF`, ` no `, `disabled`, `0`, `false` → nothing; `CX_WORKER=1` → nothing, `CX_WORKER=0` → printed; stdin `not json` or closed → exit 0 with output; missing JSON file → exit 0, nothing; stderr empty every time; works with a PATH holding only `bash` and `cat` (no `uname`: the WSL variant) |
+| P20 | §10.2–§10.6 | Each of the four policy JSON files parses; `hookEventName` = `SessionStart`; each `additionalContext` equals its block in this file (`policy`, `policy-gitbash`, `policy-crlf-context`, `policy-cloud-context`), and the CRLF and cloud files' `systemMessage` equals `policy-crlf-system` / `policy-cloud-system`; all ASCII; the WSL and Git Bash texts are ≤ 2,800 characters with the longest `{ORDER}` phrase and the unattended sentence substituted, end with exactly one `{ATTN}`, contain `--new-project` and the skill-first rule (`load the conductor skill`), and the Git Bash text contains `cx-wsl`; both texts name the background timeout (`background Bash call with timeout 7200000`); `agy-media`, `/antigravity:research` and `agy-handoff` appear only in a `Never` clause; the WSL text keeps the inline agy registration, forbids both `antigravity-delegate` and `grok-delegate`, and says `--github acts as you`; the Git Bash text shows no raw agy command and prefixes `gh pr edit` and `ghcp-ci-debug` with `cx-wsl`; the CRLF notice gives no `core.autocrlf` advice |
+| P21 | §10.2 | `policy.sh` prints exactly the selected file with `{ORDER}` replaced and never prints `{ORDER}`; orders: unset → `agy (agy-delegate), then Copilot (ghcp-delegate), then own subagents`; `copilot,agy` and ` COPILOT, AGY ` → Copilot first; `copilot` → `Copilot (ghcp-delegate), then own subagents`; `agy,agy`, `bogus`, `*` → the default phrase; `STUB_UNAME_S=MINGW64_NT-10.0-26100` (and `MSYS_NT-…`) → the Git Bash variant; `CLAUDE_PLUGIN_OPTION_POLICY` = `off`, `OFF`, ` no `, `disabled`, `0`, `false` → nothing; `CX_WORKER=1` → nothing, `CX_WORKER=0` → printed; stdin `not json` or closed → exit 0 with output; missing JSON file → exit 0, nothing; stderr empty every time; works with a PATH holding only `bash` and `cat` (no `uname`: the WSL variant); empty segments (`copilot,,agy`, `copilot,agy,`, `,copilot`, `,`) → the default phrase, the same order `cx_opt opus_lane_order` uses |
 | P22 | §10.2, §3.5 | A CRLF-converted copy of `hooks/` run as `bash <copy>/hooks/policy.sh`: exit 0, empty stderr, stdout parses with the same `additionalContext`; with the option off, nothing |
-| P22b | §10.2, §3.5 | A fully CRLF-converted copy of the plugin (every file) run as `bash <copy>/hooks/policy.sh`: exit 0, empty stderr, stdout parses and is the CRLF notice (`systemMessage` present, `additionalContext` = `policy-crlf-context`); the same with only `bin/cx-doctor` converted; with the option off, nothing |
-| P23 | §10.1 | `hooks.json` parses; only `SessionStart`; matcher exactly `startup\|clear\|compact`; command exactly `bash "${CLAUDE_PLUGIN_ROOT}/hooks/policy.sh"`; the file exists |
+| P22b | §10.2, §3.5 | A fully CRLF-converted copy of the plugin (every file) run as `bash <copy>/hooks/policy.sh`: exit 0, empty stderr, stdout parses and is the CRLF notice (`systemMessage` present, `additionalContext` = `policy-crlf-context`); the same with only `bin/cx-doctor` converted; with the option off, nothing; the `find … -exec sed` fix the notice prints, run in a fully CRLF copy, restores it (normal policy, `cx-doctor --version` runs) |
+| P23 | §10.1 | Replaced by P53 |
 | P24 | §11 | Exactly the 8 shims; each a regular executable LF file; with arguments, stdin and env: stdout empty, stderr exactly `blocked: CX_WORKER\n`, exit 126; `PATH="worker-shims:$PATH" CX_WORKER=1 claude -p x` exits 126 and the claude stub logged nothing |
 | P25 | §8.1–§8.3, §7.6 | All-green doctor (stubs ok, fake plugins, sibling options off, deny rules, pins exported, grok config) → exit 0, no ✗, `CX_DOCTOR.fail` 0; host record with absolute bins (wrappers from the fake installPaths) and a `.path` without `/mnt/`; `--no-record` writes nothing |
-| P26 | §8.3 | One failure at a time: copilot `1.0.106-1` → ✗ D9, ! D16 "login not probed", exit 4, `CX_SIGNAL CHECKS_FAILED`, and neither the copilot stub saw `-p` nor ghcp-models ran; grok `1.0.73` → ✗ D10; claude `2.1.300` → ! D8 (exit 0); agy `1.1.9` → ✗ D11; grok unauthenticated → ✗ D17 naming `grok login --device-auth`; grok models rc 1 with a network error and no ids → ! D17 with that line (not ✓); ghcp-models rc 11 / 16 → ✗ D16 with the login / sandbox text; ghcp absent → the copilot stub saw `--model __cx_doctor_probe__` and `--disable-builtin-mcps`; agy models empty → ✗ D18; agy hang (with `CX_PROBE_TIMEOUT=2`) → ! D18 "hung"; `loggedIn: false` → ! D15 (exit 0); gh auth rc 1 → ✗ D19; gh without `@copilot` in `pr edit --help` → ! D12 |
+| P26 | §8.3 | One failure at a time: copilot `1.0.106-1` → ✗ D9, ! D16 "login not probed", exit 4, `CX_SIGNAL CHECKS_FAILED`, and neither the copilot stub saw `-p` nor ghcp-models ran; grok `1.0.73` → ✗ D10; claude `2.1.300` → ! D8 (exit 0); agy `1.1.9` → ✗ D11; grok unauthenticated → ✗ D17 naming `grok login --device-auth`; grok models rc 1 with a network error and no ids → ! D17 with that line (not ✓); ghcp-models rc 11 / 16 → ✗ D16 with the login / sandbox text; ghcp absent → the copilot stub saw `--model __cx_doctor_probe__` and `--disable-builtin-mcps`; agy models empty → ✗ D18; agy hang (with `CX_PROBE_TIMEOUT=2`) → ! D18 "hung"; `loggedIn: false` → ! D15 (exit 0); gh auth rc 1 → ✗ D19; gh without `@copilot` in `pr edit --help` → ! D12; agy `models` printing a status envelope or a "not signed in" line with rc 0 → ✗ D18 (never "logged in"); with `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `GROK_SANDBOX` exported and no pins, every agy and grok probe runs without the keys and with its auto-update pin; on WSL, copilot, grok and claude found only under the automount root never resolve (their lines name the Windows path, the record stores `null`), and a `GHCP_COPILOT_BIN` there is ignored with ! D9; WSL without `WSL_DISTRO_NAME` and a non-default `CX_HOME` → ! D1 each; forwarded in a repo with an SSH origin and `commit.gpgsign=true` → ! D5 each; the missing-CLI cases run on the stub copy plus a directory of system-tool links, never `$REAL_PATH`, and a check asserts that PATH resolves no copilot, grok or agy |
 | P27 | §8.3 | Siblings: ghcp options unset (default on) → ! D21 with the exact `claude plugin configure` command; both off → ✓; antigravity default timeout → ! D22; grok-build installed → both D23 warnings; deny rules missing → ! D24, the `Agent(...)` spelling accepted; allow rules missing → D25 info; forwarded (`CX_FORWARDED=1`) → D25 reads `CX_WIN_SETTINGS` and lists `Bash(cx-wsl:*)`; conductor `policy=off` → no overlap warning; a `grok leader` process → no D27 line, a `grok worker` process → ! D27 |
 | P28 | §8.3 | `COPILOT_AUTO_UPDATE` unset → ! D14, set → ✓; forwarded with the three exports present in `~/.profile` → ✓ D14 although the env was not read from it; grok `[cli] auto_update = false` → ✓; `COPILOT_MODEL`, `GH_TOKEN`, `XAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY` or `ANTHROPIC_API_KEY` set → ! D28 each (API keys with "bills an API account instead of the subscription"); Copilot logged in only through `GH_TOKEN` (`STUB_COPILOT_TOKEN_ONLY`) → ✓ D16, `copilot_token_env` recorded, D28 info for it |
-| P29 | §8.3 | A plugin copy with a CRLF `hooks/policy.sh` → ✗ D3 naming the file with the sed fix and the autocrlf + update fix; no fix text anywhere in the doctor contains `reset --hard` or `rm -r --cached`; a fake marketplace clone that is not its own git toplevel (inside an enclosing repo) → no git-based fix printed; a real toplevel clone → the `checkout-index` fix; a forwarded doctor running from the runtime copy checks the installed copy, not the runtime (no ✗ D3 for `skills/` or `commands/`) |
+| P29 | §8.3 | A plugin copy with a CRLF `hooks/policy.sh` → ✗ D3 naming the file with the sed fix and the autocrlf + update fix; no fix text anywhere in the doctor contains `reset --hard` or `rm -r --cached`; a fake marketplace clone that is not its own git toplevel (inside an enclosing repo) → no git-based fix printed; a real toplevel clone → the `checkout-index` fix; a forwarded doctor running from the runtime copy checks the installed copy, not the runtime (no ✗ D3 for `skills/` or `commands/`); the last fix is the folder-marketplace / archive fallback, never autocrlf advice; a plugin root with spaces: the sed and `chmod` fix lines quote each path and, run as printed, repair the copy; the clone's `checkout-index` fix ends with `claude plugin update` |
 | P30 | §3.7 | Across the suite no stub logged `BILLABLE`; copilot saw only `--version` or the doctor probe; grok only `--version` and `models`; agy only `--version`, `models`, and `-p /usage` when `--agy-usage` was given; claude only `--version` and `auth status`; ghcp-models always got an absolute `GHCP_COPILOT_BIN` and `--refresh` for D16; every copilot and ghcp-models probe ran with cwd `$CX_HOME/probe` |
 | P31 | §8.4 | `--pools`: agy Opus slugs from the fixture; `claude-opus-5.5` enabled → ✓, removed from the fixture → ✗; `--set-copilot-mtd 1234` writes `pools.json`; an old or missing figure → info with `copilot_reserve_pct=0` and ! with `copilot_reserve_pct=10`; reserve 0 reported as off; D16 not probed (unpinned copilot) → the copilot pool comes from ghcp's cache file with its age and ghcp-models never runs; `--agy-usage` adds exactly one `agy -p /usage` call and none without it; `CX_POOLS` parses |
 | P32 | §8.5 | `--login-help` for each CLI contains its exact command (`copilot login`, `grok login --device-auth`, `agy`, `gh auth login --web`, `claude auth login`); runs without python3; the Git Bash variant starts with the WSL-terminal sentence; no stub invoked; exit 0 |
 | P33 | §8.7 | `--json` parses, matches §8.7, statuses in the enum, same exit as text mode |
-| P34 | §8.6 | Simulated Git Bash without python3: W1–W9 with stubs (W1 fails when `timeout` resolves to a non-GNU stub; distro list from the UTF-16LE fixture with a multi-word STATE; W2 with `wsl_distro=auto` takes the `*` row, an explicit missing distro ✗ W2; drive cwd ! W3; dubious ownership ✗ W5 with git's own suggested command; CR in `templates/` of the Windows-side copy ✗ W6; natively installed ghcp in the fake `%USERPROFILE%\.claude` ! W7; W8 prints `cx-doctor 0.1.0`; W9 with a `direct` logged-in record and a forwarded logged-out probe → ! "keyring unreachable through wsl.exe" with the token-file fix); default Git Bash `cx-doctor` shows a "Windows (Git Bash)" section in the forwarded report and returns the WSL side's exit |
+| P34 | §8.6 | Simulated Git Bash without python3: W1–W9 with stubs (W1 fails when `timeout` resolves to a non-GNU stub; distro list from the UTF-16LE fixture with a multi-word STATE; W2 with `wsl_distro=auto` takes the `*` row, an explicit missing distro ✗ W2; drive cwd ! W3; dubious ownership ✗ W5 with git's own suggested command; CR in `templates/` of the Windows-side copy ✗ W6; natively installed ghcp in the fake `%USERPROFILE%\.claude` ! W7; W8 prints `cx-doctor 0.1.0`; W9 with a `direct` logged-in record and a forwarded logged-out probe → ! "keyring unreachable through wsl.exe" with the token-file fix); default Git Bash `cx-doctor` shows a "Windows (Git Bash)" section in the forwarded report and returns the WSL side's exit; W6 covers every shipped file (`bin/cx-wsl`, `scripts/cx-init.sh`), and its sed fix for a copy under a path with spaces, run as printed, removes every CR; with `--json` a forwarding failure leaves stdout empty, the W report on stderr and one `CX_SIGNAL` last; `--windows --json` → exit 1 |
 | P35 | §9.3 | Detection matrix on generated repos: npm (lock / no lock → `npm install --no-audit --no-fund --no-package-lock` / default test script), pnpm (lockfile, `packageManager`), yarn classic, yarn berry, bun (`bun.lock` → setup null with a note, `bun run test`), python plain with pytest+ruff+mypy, uv, poetry, go with and without golangci config, rust with a tracked `Cargo.lock` (`cargo fetch --locked`) and without (setup null with a note), Makefile only, `tests/run-tests.sh` only, node+go (joined with ` && `), nothing; after each detected `setup` runs in a fresh worktree, `git status --porcelain` is empty (where the tool is installed; SKIP otherwise) |
-| P36 | §9.1, §9.2, §9.4, §9.5 | Write rules: fresh repo → 3 files, exit 0, `/.conductor/` once in `info/exclude` after two runs; rerun → all `same`; edited block → exit 5, nothing written; `--force` replaces only the block (outside text byte-identical); an `AGENTS.md` without a block → `update` without `--force`, block appended, earlier text byte-identical; `--only agents --force` never touches an edited `routes.json` (`skipped`); JSON-equal routes.json with other whitespace → `same`; `--dry-run` writes nothing, same exit; not a repo → 1; subdirectory → toplevel; `CLAUDE.md`, `.claude/`, `.gitignore`, `.gitattributes` checksums unchanged; routes.json keys and order per §9.4, pools all true; the AGENTS.md block contains the sentence `If \`.conductor/task.md\` exists in your working directory (you are a conductor worker):` and no worker-only rule above it; copilot-instructions.md says the worker-only rules do not apply to Copilot coding agent tasks assigned on GitHub; the Setup line reads `Setup (run by the caller before you start; do not run it unless your task says so):` |
+| P36 | §9.1, §9.2, §9.4, §9.5 | Write rules: fresh repo → 3 files, exit 0, `/.conductor/` once in `info/exclude` after two runs; rerun → all `same`; edited block → exit 5, nothing written; `--force` replaces only the block (outside text byte-identical); an `AGENTS.md` without a block → `update` without `--force`, block appended, earlier text byte-identical; `--only agents --force` never touches an edited `routes.json` (`skipped`); JSON-equal routes.json with other whitespace → `same`; `--dry-run` writes nothing, same exit; not a repo → 1; subdirectory → toplevel; `CLAUDE.md`, `.claude/`, `.gitignore`, `.gitattributes` checksums unchanged; routes.json keys and order per §9.4, pools all true; the AGENTS.md block contains the sentence `If \`.conductor/task.md\` exists in your working directory (you are a conductor worker):` and no worker-only rule above it; copilot-instructions.md says the worker-only rules do not apply to Copilot coding agent tasks assigned on GitHub; the Setup line reads `Setup (run by the caller before you start; do not run it unless your task says so):`; committed `.github`/`.cx` symlinks to directories outside the repo, or a regular file `.cx` → conflicts, exit 5, nothing written anywhere (not even `AGENTS.md`) |
 | P37 | §9.1 | Notes for a missing `.gitattributes` and `core.autocrlf=true` |
 | P38 | §3 | Every `*.sh` passes `bash -n`; shellcheck clean (SKIP when absent); `python3 -I -m py_compile scripts/lib/cxlib.py` |
 | P39 | §3.5, §2.2 | Every shipped text file is LF-only and ends with a newline; `.gitattributes` content as in §2.2, with `tests/fixtures/** -text` and `*.utf16le binary` as its last two lines; `git check-attr text eol -- tests/fixtures/settings/win-bom-crlf.json` reports `text: unset` |
 | P40 | §3 | No `python3 -c`; every `python3` call is `python3 -I`; no `jq` or `node` calls; no `set -e`; every script (`worker-shims/*`, `hooks/policy.sh` and `scripts/host/wsl-entry.sh` included) has the bash shebang and a header comment; `--help` prints the header and `--version` prints `<prog> 0.1.0` for `bin/*`, `scripts/*.sh` and `scripts/host/{detect,pathmap,forward-wsl,install-runtime}.sh` only (P24 and P21 own the shims' and the hook's output); bin shims are 3 lines, not symlinks, executable, and work from a relative path with `CDPATH=.` exported |
 | P41 | §13.4, §7.5 | Every listed file exists; the doctor's D3 list equals §13.4; `install-runtime.sh` copies exactly the subset under `.claude-plugin bin scripts hooks worker-shims templates` (and D4 accepts exactly that subset plus `RUNTIME_STAMP`) |
 | P42 | §3.1, §7.3 | Git Bash code paths run on the simulated Git Bash PATH (stub dir + the §3.1 mini bin + a `python3` trap): forwarding, `cx-wsl` forwarding, `--windows`, `--login-help`, `cx_signal`, `cx_opt_lite`, `policy.sh`; the case fails if the trap logged `PYTHON_CALLED`; a script that needs a tool missing from the mini bin fails the case; `CX_FORWARDED=1` leaked into the Git Bash environment still forwards (the wsl.exe stub was invoked) |
-| P43 | §12 | SKILL and commands frontmatter present; every frontmatter value that starts with `[` or `{` is double-quoted (all three `argument-hint`s are); `route.md` has `allowed-tools: Read, Glob, Grep`; SKILL exit table has `\| 130 \| CANCELLED \|`, README has ``\| 130 \| `CANCELLED` \|``; SKILL contains the §12.2 commands verbatim (`agy-delegate --model claude-opus-5-5-high`, `ghcp-delegate --model claude-opus-5.5 --effort high`, `--new-project`, `timeout -k 5 60 agy`, `--no-subagents`, `--test-cmd`), every `grok`, `agy-delegate`/`agy-job` and `ghcp-delegate`/`ghcp-job`/`ghcp-handoff` command line in it carries its §12.2 prefix (`env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1`, `env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1`, `env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1`), no `export CX_WORKER`; the recipe headings appear in the order of §12.1 item 4 (Step 3 after-run before Step 4 reviews before Step 5 GitHub); no `ghcp-ci-debug … --apply` without `--dir "$WT"` |
+| P43 | §12 | SKILL and commands frontmatter present; every frontmatter value that starts with `[` or `{` is double-quoted (all three `argument-hint`s are); `route.md` has `allowed-tools: Read, Glob, Grep`; SKILL exit table has `\| 130 \| CANCELLED \|`, README has ``\| 130 \| `CANCELLED` \|``; SKILL contains the §12.2 commands verbatim (`agy-delegate --model claude-opus-5-5-high`, `ghcp-delegate --model claude-opus-5.5 --effort high`, `--new-project`, `timeout -k 5 60 agy`, `--no-subagents`, `--test-cmd`), every `grok`, `agy-delegate`/`agy-job` and `ghcp-delegate`/`ghcp-job`/`ghcp-handoff` command line in it carries its §12.2 prefix (`env -u XAI_API_KEY -u GROK_SANDBOX CX_WORKER=1`, `env -u GEMINI_API_KEY -u GOOGLE_API_KEY CX_WORKER=1`, `env -u COPILOT_MODEL -u COPILOT_ALLOW_ALL -u COPILOT_AUTO_TIER -u COPILOT_PROVIDER_BASE_URL CX_WORKER=1`), no `export CX_WORKER`; the recipe headings appear in the order of §12.1 item 4 (Step 3 after-run before Step 4 reviews before Step 5 GitHub); no `ghcp-ci-debug … --apply` without `--dir "$WT"`; every non-comment line of every bash block of §12.2 appears in the SKILL verbatim; every executor and GitHub simple command of the SKILL's bash blocks (the `vars.sh` line, prefixed wrappers, raw agy and grok, `git push`, `gh pr`) starts with a `cxlib.D25_HOST_RULES` rule, and no `gh` or `git push` runs in a `(cd … && …)` subshell; no SKILL code block runs `agy-media`, `agy-handoff`, `/antigravity:research` or `--yolo`, and the `agy-media` lane row is not marked read-only; the rules for every call name `timeout: 7200000`; the SKILL's `trees` snapshot, run in a scratch repo, ignores `$WT` and flags a write in a previous task's worktree and a second edit to an already-modified file; the SKILL's Step 3, run in a scratch repo, exits 24 `BRANCH_TAMPERED` after an executor switched branches (cx/t1 still at BASE, nothing gated) and otherwise gates the exact squashed commit; after a simulated `ghcp-ci-debug --apply` (switched to `ghcp/ci-fix-99`, edits uncommitted) the SKILL's two hand-back lines plus Step 3 commit the fix on top of the pushed commit and gate it, while Step 3 alone exits 24; every block of the SKILL and §12.2 that registers or runs agy has the agy lock line before it, and no block starts an `agy-job`; the lock line, with the wait shortened to 1 s, prints `AGY_BUSY` and exits 28 while another process holds `~/.conductor/locks/agy` and proceeds once it is free; the D25 and prefix checks also cover `ghcp-cloud`, `ghcp-ci-debug` and `gh repo` |
 | P44 | U5 | No Cursor option, adapter or doctor check: a case-insensitive grep for `cursor` over every shipped file outside `docs/`, README and CHANGELOG matches only the `worker-shims/cursor-agent` file name (and references to it) and the two message constants `CURSOR_WORKER_MSG` and `CURSOR_POOL_MSG`, defined once in `cxlib.py`; the test names those constants and checks each is defined exactly once |
-| P45 | §7.7 | `cx-wsl`: tools outside the allowlist (`copilot`, `claude`, `agy-handoff`, `rm`) → exit 1 without running anything; an allow-listed tool resolves from the host record (`ghcp-models` via the fake install dir; a PATH entry of the same name is never used); no record → 13 with one `CX_SIGNAL`; the passed-through tool's exit status and stderr are unchanged and no `CX_*` line is added; `cx-wsl grok --version` with `XAI_API_KEY` and `GROK_SANDBOX` set → the grok stub's env dump lacks both and has `CX_WORKER=1` and the `GROK_CLAUDE_*` / `GROK_DISABLE_AUTOUPDATER` values; the same prefix checks for `ghcp-models` and `agy`; `cx-wsl bash` sees the sibling wrapper dirs on PATH |
+| P45 | §7.7 | `cx-wsl`: tools outside the allowlist (`copilot`, `claude`, `agy-handoff`, `agy-media`, `rm`, `cx-doctor`) → exit 1 without running anything; `ghcp-cloud` is allow-listed and resolves from the record; the token route: a 0600 `$CX_HOME/secrets/copilot-token` becomes `COPILOT_GITHUB_TOKEN` for `cx-wsl ghcp-*` only (a caller's own token wins, `cx-wsl bash` never gets it, a 0644 file or a symlink is ignored with a note); an allow-listed tool resolves from the host record (`ghcp-models` via the fake install dir; a PATH entry of the same name is never used); no record → 13 with one `CX_SIGNAL`; the passed-through tool's exit status and stderr are unchanged and no `CX_*` line is added; `cx-wsl grok --version` with `XAI_API_KEY` and `GROK_SANDBOX` set → the grok stub's env dump lacks both and has `CX_WORKER=1` and the `GROK_CLAUDE_*` / `GROK_DISABLE_AUTOUPDATER` values; the same prefix checks for `ghcp-models` and `agy`; `cx-wsl bash` sees the sibling wrapper dirs on PATH; `agy-media` is refused too (it always passes `--yolo`); `cx-wsl bash -s` with a CRLF step on stdin runs it with LF and prints a `cx-wsl:` note, an LF step runs unchanged with empty stderr |
+| P46 | §10.2 | `policy.sh` cloud matrix: `CLAUDE_CODE_REMOTE` = `true`, `TRUE`, ` 1 `, `yes`, `on`, `On` → exactly `policy-context-cloud.json`; kinds `byoc` (also with `exec_host=wsl`) and `self_hosted` → cloud; plain Linux → cloud; kind `bridge` (with or without REMOTE), REMOTE `false`, `0`, empty, `CLAUDE_CODE_HOSTED_DESKTOP=1` or `CLAUDE_CODE_ENTRYPOINT=remote_projects` alone, any non-bridge kind (`byoc`, `self_hosted`, `BYOC`) with `exec_host=local` (any case, spaces) → the normal policy; REMOTE without a kind (or byoc) on WSL (`uname -r` with `microsoft`, `WSL_DISTRO_NAME`, a `WSLInterop` file under `CX_DETECT_ROOT`) → the WSL policy, on simulated Git Bash → the Git Bash policy; a bridge child on Git Bash → the Git Bash policy; cloud with `CX_WORKER=1` or the option off → nothing; the cloud file unreadable → nothing, exit 0; CRLF copies and a CR canary still select the cloud notice |
+| P47 | §10.6 | `policy-context-cloud.json` parses; `SessionStart`; equals `policy-cloud-context` and `policy-cloud-system`; ASCII; ≤ 1,000 and 200 characters; contains `CONDUCTOR INACTIVE`, `Work locally` and `Claude agents only`; no `cx-wsl`, `agy --new-project`, `{ORDER}` or `{ATTN}` |
+| P48 | §7.1 | `cx_session` truth table (empty, `true`, `TRUE`, ` 1 `, `yes`, `On`, ` true `; kinds `byoc`, `self_hosted` → byoc, `bridge` with and without REMOTE; `false`, `0`, `false`+byoc → local); never cloud or byoc on Git Bash (`MINGW*`, `MSYS*`) or WSL (`uname -r` with `microsoft`, `WSL_DISTRO_NAME`, a `WSLInterop` file under `CX_DETECT_ROOT`), with no kind, `byoc` or `self_hosted` → local. The suite's default host is plain Linux even on a WSL machine (`STUB_UNAME_R` pinned when the real kernel is WSL's), so the cloud cases stay cloud there |
+| P49 | §7.3, §8.3 | With `CLAUDE_CODE_REMOTE=true`: `cx-wsl ghcp-models --json`, `cx-wsl agy-delegate …`, `cx-init --dry-run` exit 43 with the `cloud session` note and exactly one `CX_SIGNAL HOST_UNSUPPORTED` last, empty stdout, no stub ran; byoc too; `cx-doctor` prints its header, ✗ D30 and the summary and exits 43 (with `--json`: stdout empty), `--pools` probes nothing, no host record; byoc with `exec_host=local` runs the full doctor; on simulated Git Bash the same variables do not count (a Git Bash host is never cloud): `cx-init`, `cx-doctor` and `cx-wsl` forward into WSL as usual and the doctor says `session local`; `--help`, `--version` and `--login-help` still exit 0; a bridge child is never refused |
+| P50 | §7.3, §8.6 | `CLAUDE_CODE_ENVIRONMENT_KIND=bridge` on simulated Git Bash: argv fidelity (P13) and exit propagation (P16) unchanged; the env file still holds only its allowlisted variable (no `CLAUDE_CODE_*` crosses); W10 reports `bridge`, the WSL side prints no D30 and no D32, the header and `CX_DOCTOR` say `session bridge` |
+| P51 | §8.3, §8.6 | D30 `local` (entrypoint, desktop version, `CLAUDE_PROJECT_UUID`), `bridge` (the agy rule, never unattended, no desktop warning), byoc + `exec_host=local`, attended 0 (info, `--json` `attended` 0); the desktop WSL-session ! on a WSL host with entrypoint `claude-desktop`; D31 and W10: each blocker (environment, settings `env`, `disableRemoteControl`, claude 2.1.279, a gateway `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) is an info line and never ! or ✗, `https://api.anthropic.com/` is no blocker, the doctor exits 0 |
+| P52 | §9.6, §12.1 | `templates/projects-instructions.md` equals the §9.6 block; ASCII, LF, ≤ 2,000 characters; says every thread runs Work locally, `these win`, agy one job at a time across threads until Phase 2, the executors' own clouds (`ghcp-cloud`), a cloud thread works with Claude alone; the SKILL has its Projects subsection; README says where to paste it |
+| P53 | §10.1 | `hooks.json` parses; exactly `SessionStart` and `SubagentStart`; matchers exactly `startup\|clear\|compact` and `workflow-subagent\|general-purpose`; commands exact; both `"onFailure": "continue"`; no `PreToolUse` in Phase 1; both scripts exist |
+| P54 | §10.7 | `subagent.sh` prints `subagent-context.json` byte-equal for both agent types and whatever the stdin (none, `not json`, closed, 1 MiB in < 3 s), also in the cloud; silent with the option off (six spellings), `CX_WORKER=1` or another `agent_type`; `CX_WORKER=0` prints; works with only `bash` and `cat` on PATH; a CRLF copy gives the same text |
+| P55 | §10.7 | Both subagent JSON files parse; `hookEventName` `SubagentStart` / `SessionStart`; `additionalContext` equals the `subagent-context` block; ASCII, ≤ 800 characters; contains `EXECUTOR_NEEDED`, `cx-wsl` and every executor name; no `"`, `\` or `&` |
+| P56 | §10.2 | Compaction: `{"source":"compact","agent_id":"a1","agent_type":"workflow-subagent"}` and `general-purpose` → the compact guard; `conductor:cx-runner` or `ghcp:ghcp-delegate` with `agent_id` → nothing; `agent_type` without `agent_id`, no or an empty `agent_id`, closed stdin, 1 MiB of stdin (< 3 s) → the main policy; cloud plus a subagent payload → the guard; a CRLF copy agrees |
+| P57 | §10.2–§10.4 | `{ATTN}`: `CLAUDE_CODE_SESSION_ATTENDED=0` → both variants end with the unattended sentence; `1`, empty, or `0` with kind `bridge` → none; the output never holds `{ATTN}` or `{ORDER}`; both texts carry the Workflows line (`Workflows (ultracode too)`, `isolation worktree or remote`, one agy run at a time); the Git Bash text says `cx-wsl bash -s`; the P21 matrix still passes |
+| P58 | §7.1 | `cx_attended`: `1`, `0`, `0` + bridge (empty), empty, `yes` (empty); `detect.sh --field session` and `--field ATTENDED`; `--shell` lists both on simulated Git Bash with a silent `python3` trap; `--json` and `--emit` have both |
+| P59 | §8.3, §8.6 | D32 matrix through `cxlib.py doctor-session`: ultracode in user, project over user, local `enableWorkflows: false`, a managed file (BOM + CRLF) and a drop-in `disableWorkflows`, `CLAUDE_CODE_DISABLE_WORKFLOWS`, `CLAUDE_CODE_WORKFLOWS=false`, keyword trigger off, guideline `small`, each model and effort variable, nproc 8/3/64/1 → 6/2/16/2, the env override wins, a forwarded run has D31 only; every line info. W11 over a BOM + CRLF Windows file (a nested `disableWorkflows` ignored) and Program Files' managed file (wins) with no python |
+| P60 | §12.2 | Snapshot exclusion: `trees` is defined once (in step 1's `vars.sh`, SKILL and §12.2) and carries `':!.claude/worktrees'`; in a scratch repo, a file under `.claude/worktrees/x/` and a `git worktree add .claude/worktrees/y` (with an edit inside it) between two snapshots → no `WRONG_TREE`; an edit to a tracked file of the main checkout still → `WRONG_TREE`; with `TOP` itself a Claude worktree (`<main>/.claude/worktrees/A`), an edit in the sibling `B` → no `WRONG_TREE`, a worktree named in a `~/.conductor/out/<id>/running` mark → ignored, flagged again once the mark is gone, the main checkout and `TOP` → flagged |
+| P61 | §12.1 | SKILL: the subagent preface is the first paragraph after the title; "Workflows and ultracode" then "In a Claude Code Project" before section 5; the claude-pool js block is static (starts `export const meta = {`, a pure-literal `meta` with `name` and `description`, no `Date.now`, `Math.random`, `new Date(`, `isolation`, `agentType`, `import`, `require`; `effort` set; the WSL path quoted, `cd "${t.wt}" &&`; a `t.wt_win` prompt with file tools on `${t.wt_win}` and commands through `cx-wsl bash -c 'cd "${t.wt}" && <command>'`); the SKILL never mentions `bashCommandClamp`; P43 still passes |
+| P62 | §14.1 | The suite's environment has none of the session, attended, Work locally and workflow variables of §14.1 (each by name); no file under `bin/` or `scripts/` reads `CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_VERSION` or `CLAUDE_CODE_ENTRYPOINT` (the D30 wording lines allow-listed) |
+| P63 | §13.4 | The new Phase 1 files are in §13.4, `CX_SHIPPED_FILES` (D3, W6) and, for `hooks/subagent.sh`, `CX_SHIPPED_EXEC`; the runtime subset is unchanged; no `agents/` or `workflows/` yet |
 
 `CX_PROBE_TIMEOUT=<secs>` (env, any value ≥ 1) caps every doctor probe timeout; it exists for
 the suite and for slow machines and is documented in the doctor's `--help`.
 
 ### 14.4 Live checks (manual, Phase 1; not in the suite)
 
+None spends Copilot or agy credits. Run the Projects and workflow checks first, in this order:
+L11 (the user's top question, U7), then L13–L15 (free), L16 and L18 before closing Phase 1, L19
+with L11's thread, L17 and L20 before Phase 2's optional workflow work. The checks after L15 cost
+a few Haiku turns: set model `haiku` and effort `low` first (for Projects, the thread model and
+effort in Project settings). Delete every probe file afterwards; the probe log holds ids and
+paths.
+
 | ID | Where | Check | Decides |
 |---|---|---|---|
+| L11 | WSL terminal | **First:** `cd ~/<repo> && claude remote-control --spawn worktree` (answer the trust prompt), then start a Work locally thread on that folder from the desktop app's Projects; in it run `cx-doctor --version`, then `cx-doctor` outside the sandbox (free probes), and quote the first line of any CONDUCTOR POLICY in its context | §20 item 40: whether `claude remote-control` inside WSL serves Work locally threads and loads the WSL user-scope plugins (policy, skill, `cx-*` on PATH, D30 `session bridge`); if it does, it becomes the recommended Projects route (no Git Bash, no forwarder, no `/mnt/c`) |
+| L8 | Desktop app | Open Projects (BETA) in the Code tab sidebar: New project or Get started? | Which feature the user has; eligibility |
+| L9 | One cloud thread of a test project (a safety-net check only, U7) | `env \| grep -E '^CLAUDE_CODE_(ENTRYPOINT\|REMOTE\|ENVIRONMENT_KIND\|REMOTE_ENVIRONMENT_TYPE\|PROJECTS_SESSION)=\|^CLAUDE_PROJECT_UUID='; uname -sr; command -v cx-doctor copilot grok agy wsl.exe` | §20 item 41; confirms a cloud thread has no conductor and no executors |
+| L10 | Windows desktop app | A probe SessionStart hook (both `%USERPROFILE%\.claude\settings.json` and WSL `~/.claude/settings.json`) that appends `uname -a`, `$0 $SHELL $BASH_VERSION $MSYSTEM $PWD` and the `CLAUDE_CODE_*`/`WSL_*` variables to `~/cx-probe.log`; then (a) a local session on a `C:\` folder, (b) a `\\wsl.localhost\…` folder from the picker, (c) a Work locally thread on a `C:\` folder; in each, `command -v cx-doctor && cx-doctor --version` | §20 items 42–45 and 12: Work locally on Windows, the hook shell, the entrypoint, `bridge`, plugin loading (also in WSL sessions), the `$PWD` form; supersedes L2 and L3 |
+| L12 | The L10c thread | `cx-wsl ghcp-models --json --refresh` and `cx-doctor --windows` (free probes) | Forwarding from a Windows Remote Control child; §20 item 46 (does auto mode prompt?) |
+| L13 | WSL | `claude plugin validate` on a `git ls-files` copy with the Phase 1 `hooks.json` (done 2026-11-01: `onFailure: continue` and `SubagentStart` accepted, a bogus `onFailure` reported), then with a dummy `agents/cx-runner.md` and `workflows/opus-pools.js` | §20 item 50; whether `agents/` and `workflows/` validate |
+| L14 | WSL scratch repo | `git worktree add .claude/worktrees/probe -b probe && git status --porcelain; git worktree remove .claude/worktrees/probe` | §20 item 55 |
+| L15 | One of the user's cloud sessions | Ask Claude to call `list_computer_folders` (read-only) and quote `folders` and `cannot_be_used` | §20 item 57 |
+| L16 | WSL terminal, `claude --plugin-dir <copy> --model haiku --effort low` | "Use the Workflow tool: 2 agents, each replies with the first 40 characters of any text starting CONDUCTOR SUBAGENT RULES in its context, and the output of echo $CLAUDE_EFFORT." Both should quote the guard; note whether a launch prompt appeared | §20 item 49 |
+| L17 | Same, with a Phase 2 copy (`agents/cx-runner.md`, `gate.sh`) | `RUN: cx-doctor --version` → blocked by the gate; `RUN: cx-job status 20261101-000000-abcd` passes it; the same with `bashCommandClamp`; a 5-minute stub job waited through three waits | §20 items 52, 53, 58, 59 (Phase 2 prerequisite) |
+| L18 | WSL | Extend L10's probe with `CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_SESSION_KIND AI_AGENT`; start (a) an interactive session, (b) `claude -p --model haiku 'Reply OK'`, (c) the L11 thread | §20 item 51; the `{ATTN}` condition |
+| L19 | The L11 thread | (a) type "ultracode: list the top-level files with a 2-agent workflow"; (b) `"ultracode": true` in WSL `~/.claude/settings.json`, a new thread, ask whether ultracode is on, then remove the key | §20 item 56 |
+| L20 | WSL, default permission mode | `/conductor:opus-pools` with `{"tasks": []}` (throws before any agent): an approval prompt? Again with `Workflow(conductor:opus-pools)` allowed | §20 item 54 (Phase 2) |
+| L21 | WSL, optional | A probe agent forced to compact, with L18's hook logging stdin on `compact` | §20 item 60 |
+| L22 | Windows desktop app, optional | An SSH session into the WSL distro (needs sshd): is the conductor policy in context, does `cx-doctor --version` work? | §20 item 61 |
 | L1 | Windows box, Git Bash | `wsl.exe -d Ubuntu --exec /usr/bin/setsid -f /usr/bin/sleep 900`; make sure no `wsl.exe` remains; wait 2 minutes; `wsl.exe -d Ubuntu --exec /usr/bin/pgrep -x sleep` | Whether detached jobs survive WSL idle shutdown; if not, §15.5's keepalive is mandatory and `.wslconfig` idle settings get tested |
-| L2 | Windows app | Open a `\\wsl.localhost\Ubuntu\…` project; run `pwd; cygpath -w "$PWD"` in the Bash tool | The `$PWD` form; whether W3/P15's UNC path is what the app produces |
-| L3 | Windows app | A temporary SessionStart hook that writes `uname -s`, `$SHELL`, `$0` to a file | Which shell runs hooks (if `cmd.exe` and `bash` resolves to `C:\Windows\System32\bash.exe`, the hook command needs changing) |
+| L2, L3 | Windows app | Folded into L10 | — |
 | L4 | Windows app | `cx-doctor`, `cx-doctor --windows`, `cx-init --dry-run` in a `\\wsl.localhost` repo and in a `C:\` repo; an argument with spaces and quotes; Ctrl-C during `cx-doctor` and during `cx-wsl bash -c 'sleep 300'` (then `wsl.exe --exec pgrep -f 'sleep 300'` finds nothing); the same from an account whose `%TEMP%` contains an 8.3 short name (`JOHNSM~1`) | The forwarder end to end, signal handling and cancellation reaching Linux, long-path handling |
 | L5 | Git Bash | `git -C '\\wsl.localhost\Ubuntu\home\<you>\<repo>' status` | The exact safe.directory hint W5 extracts |
 | L6 | WSL | The A/B (§6.7) | `opus_lane_order` |
@@ -2330,6 +3000,42 @@ Sources: plan §6.3 (exact commands), §6.4 (caps), §6.5 (results, served-model
 Waits for Phase 0 captures (`tests/fixtures/real/<cli>/`: `agy --help`, `copilot --help`, grok
 JSON output, agy stream-json) before the parsers are final; build against the shapes below and
 mark every unverified field in code.
+
+**Build order** (U7, U8). Several Work locally threads and sessions on one computer are the
+normal case, so Phase 2 starts with what makes them safe together:
+1. **First: cross-process pool slots** (`scripts/lib/locks.sh`, §15.3), taken by every executor
+   path: `cx-run`, `cx-job` and the adapters, and `cx-wsl` whenever its tool is an executor
+   (`ghcp-*`, `agy-delegate`, `agy-job`, `agy`, `grok`), which closes the passthrough bypass.
+   Calls forwarded from Git Bash share the WSL side's `$CX_HOME/locks`. When this lands, the
+   Projects template's agy line, the policy's Workflows line and the subagent guard switch to
+   their Phase 2 texts (§9.6, §10.3, §10.7), and the "one agy run at a time" rule becomes
+   `cap_agy` with serialized launches.
+2. Then adapters, `cx-run`, `cx-job`, normalizer, ledger, locks' callers and the worker
+   environment (§15.1–§15.7), with these changes: the `claude` lane also emits `CX_RESULT` with
+   `lane: "claude"`, `status: "dispatched"` and `dispatch: {worktree, host_path, prompt, effort,
+   task_file}`; `cx-run` refuses (exit 1) when the cwd's toplevel lies under `.claude/worktrees/`
+   and `--repo` is absent (the base would be wrong); ledger lines gain `claude_session`
+   (`CLAUDE_CODE_SESSION_ID`) and `claude_effort` (`CLAUDE_EFFORT`); the `--headless` claude
+   worker also unsets `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_REMOTE*`,
+   `CLAUDE_CODE_ENVIRONMENT_KIND`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_*`,
+   `CLAUDE_CODE_SESSION_ID`, `CLAUDECODE`, `AI_AGENT` and `CLAUDE_EFFORT` (a nested `claude` that
+   inherits a hosted entrypoint can be refused login [docs-only, binary]); `cx-job status` gains
+   `queued`; the env knob `CX_SLOT_WAIT_SECS` (default 600, for tests) sets the slot wait.
+3. **The Copilot cloud agent lane as an adapter** (`copilot-cloud`; welcome under U7). Phase 1
+   already has the hand recipe (§12.2 step 5: `ghcp-cloud create -R "$REPO" -` from the main
+   turn of a local session, the PR head gated in a gate checkout before anything merges), and
+   `cx-wsl` and D25 already allow `ghcp-cloud`. Phase 2 makes it a `cx-run` lane: the adapter
+   renders the task from the §6.4 contract (goal, acceptance tests, allowed changes), records the
+   task and PR in the ledger, and gates the PR branch like every other lane (fetch it into a gate
+   checkout, step 3's tamper and test checks, then §16); reviews and the merge stay Claude's.
+   The 59-minute cap and the `model`/`reasoning_effort` fields of REST tasks or Automations are
+   [docs-only].
+4. **Optional** (U8: ultracode is normally off): the workflow stage runner
+   `conductor:cx-runner` (§15.9), its fail-closed PreToolUse gate (§15.10) and the shipped
+   workflow `conductor:opus-pools` (§15.11). Without them the Phase 1 hybrid stays the
+   ultracode recipe, with `cx-run --background` from the main turn, and the Phase 2 subagent
+   guard (§10.7) lets a default workflow agent run `cx-run --background` and `cx-job wait`
+   itself when its task says so, because the slots are shared by then.
 
 ### 15.1 `cx-run`
 
@@ -2403,6 +3109,19 @@ Gemini lanes (digest, research, Argon review) always register the directory firs
 group releases it); poll every 2 s up to WAIT_SECS; rc 0 with the slot number, or 28. Pools:
 `agy` (`cap_agy`), `copilot` (`cap_copilot`), `grok` (`cap_grok`). The agy launch lock is
 separate and held only from launch to the `init` event.
+
+`locks.sh` is the cross-process semaphore of every executor path on the executor host (§15
+build order, item 1): `cx-run` takes the slot before the adapter starts; `cx-job`'s detached
+runner takes it inside the job, so `cx-job start` and `cx-run --background` return `JOB_ID` at
+once and the job shows `queued` until it gets a slot (`cx-job wait` exits 75 for queued and
+running jobs); `cx-wsl` takes the same slot for `ghcp-*`, `agy*` and `grok` before it `exec`s the
+tool (`gh`, `git` and `bash` are unchanged), waiting `CX_SLOT_WAIT_SECS` (default 600) and then
+exiting 28. With `cap_agy` 2 and `cap_copilot` 3, ten workflow runners or five Work locally
+threads still run at most five Opus executors; the rest queue, then fall to the Claude pool on
+28. D32 prints the slot caps next to the workflow concurrency in Phase 2. These slots replace
+the Phase 1 skill's whole-run agy lock (`$HOME/.conductor/locks/agy`, §12.2 step 2a); while
+Phase 1 steps and Phase 2 runs coexist, `cx_lock_acquire agy` also takes that file (`flock -w`
+on it before the slot), so a hand-dispatched agy step and a `cx-run` agy lane never overlap.
 
 ### 15.4 `result.json` and the ledger
 
@@ -2506,6 +3225,90 @@ a worktree); (3) `[cli] auto_update = false` in `~/.grok/config.toml` when absen
 | A16 | Forwarded `cx-run`/`cx-job` from simulated Git Bash: `host_path` fields are Windows paths; a background job outlives the forwarder |
 | A17 | `--dry-run`/`--explain` create nothing and call no executor (stub logs show free probes only) |
 | A18 | `cx-init --user-grants` merges JSON and TOML idempotently with a backup |
+
+Phase 2 additions for the session kinds, the shared slots and the optional workflow pieces:
+
+| ID | Case |
+|---|---|
+| A19 | Gate runner grammar (§15.10): the allowed `cx-run …`/`cx-job wait\|status\|result` forms → 0; `;`, `&&`, `\|`, `>`, `$(…)`, backticks, `$HOME`, a double-quoted argument, a newline, `*`, `--allow`, `--model`, `--fusion`, `--reuse-worktree`, `--headless`, `--effort max`, a free-text task, `-`, `--repo /`, `cx-job kill/start/list`, `cx-doctor`, `bash`, `ls`, `env cx-run …` → 2, each with its reason |
+| A20 | Gate attribution: main-session payloads (no `agent_type`) → 0 even for `rm -rf /` text; non-object, empty, no `tool_input`, two `agent_type` keys → 2; `foo:cx-runner` gated, `conductor:cx-runner2` → 0; `_host` blocks the runner only; stderr never echoes the command; a 2,000-payload fuzz exits only 0 or 2; a CRLF copy agrees; no python on simulated Git Bash |
+| A21 | Executor guard for `workflow-subagent` and `general-purpose`: `agy-delegate …`, `env -u COPILOT_MODEL CX_WORKER=1 ghcp-delegate …`, `cd /x && grok -p y`, `timeout 60 agy …`, `cx-wsl ghcp-job start …`, `(copilot -p z)` blocked; `grep -r grok src`, `echo agy`, `cx-run --background …`, `cx-wsl bash -c 'npm test'` pass; option `policy` off → everything passes; `ghcp:ghcp-delegate` → 0 |
+| A22 | Agents: every Bash-capable `agents/**/*.md` derives its type as Claude Code does (`<plugin>:<subdirs>:<name>`) and the gate blocks a forbidden command for it; `cx-runner.md` frontmatter contract; no `hooks`, `permissionMode`, `mcpServers` or `initialPrompt` |
+| A23 | `hooks.json` Phase 2: the first key is `PreToolUse`, `PreToolUse[0]` is matcher `Bash` with exactly `bash "${CLAUDE_PLUGIN_ROOT}/hooks/gate.sh"` and no `onFailure`; P53's entries unchanged |
+| A24 | `workflows/opus-pools.js` static contract: pure-literal `meta`, `name` `opus-pools` (no clash with `commands/*.md`), phase titles equal the used `phase` strings, every `agentType` the derived runner type, every runner command `cx-run `/`cx-job `, `SAFE` = `CX_GATE_SAFE`, a `bashCommandClamp` fallback, no `isolation`/`Date.now`/`Math.random`/`import`/`require`, `TO_CLAUDE` as documented |
+| A25 | Concurrency: 12 concurrent `cx-run --background` (6 direct, 6 forwarded through the stub `wsl.exe`), sleeping stubs, `cap_agy=2`, `cap_copilot=3`: the caps hold, agy launches never overlap, `queued` then running; `CX_SLOT_WAIT_SECS=2` → overflow ends 28 |
+| A26 | `cx-wsl ghcp-delegate` while every copilot slot is held → 28 after `CX_SLOT_WAIT_SECS`; `cx-wsl gh --version` unaffected |
+| A27 | `--exec claude` emits the `dispatched` `CX_RESULT`; `--finish` the final one; the `--headless` stub env lacks every scrubbed variable |
+| A28 | `cx-run` with its cwd in a `.claude/worktrees/x` checkout and no `--repo` → 1; ledger lines carry `claude_session` and `claude_effort`; the agy adapter snapshot ignores `.claude/worktrees` |
+| A29 | D33 (runner and gate wiring) self-test green with the real gate, ✗ with an allow-all copy; D32 Phase 2 ! for `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`; D25 lists `Workflow(conductor:opus-pools)` |
+| A30 | `copilot-cloud` lane: the stub `gh agent-task` receives the rendered contract; the PR branch is gated like a local lane; the ledger records task and PR; `cx-wsl ghcp-cloud` allowed |
+
+### 15.9 `agents/cx-runner.md` (optional, U8)
+
+Agent type `conductor:cx-runner` (the last segment is the frontmatter `name`). Frontmatter:
+`name: cx-runner`, a description that says it is an internal stage runner used only when a
+workflow script or the policy names it, `tools: Bash`, `model: haiku`, `effort: low`,
+`maxTurns: 40`, `omitClaudeMd: true`; never `hooks`, `permissionMode` or `mcpServers` (ignored
+for plugin agents; a test fails if present). Body: run the one `RUN: <command>` line exactly
+as written, as one foreground Bash call outside the sandbox, adding nothing (no `cd`, pipes,
+redirections, `&&`); if it printed `JOB_ID <id>`, run `cx-job wait <id> --timeout 100s` and
+repeat while the exit is 75 (100 s fits the Bash tool's default 2-minute timeout); never sleep,
+poll `cx-job status`, kill or background anything; return `exit`, `job`, `result` (the last
+`CX_RESULT ` line verbatim), `signal`, `verify`; when the gate blocks a command, return `exit` 1
+and `blocked` with its reason and never rephrase it. A runner turn costs a small Haiku context;
+the Opus work happens in agy or Copilot. `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` and
+`CLAUDE_CODE_SUBAGENT_MODEL_FORCE` would override `haiku` (D32 !). The doctor never recommends
+denying it; a user who does makes `opus-pools` throw, and the main turn uses the hybrid.
+
+### 15.10 `hooks/gate.sh` (optional, U8; PreToolUse[0], matcher Bash, no `onFailure`)
+
+Ported from ghcp's `validate-delegate-bash.sh`, with `policy.sh`'s conventions: pure bash with
+builtins only, every line ending in ` #`, no heredocs or blank lines, `set -o pipefail` without
+`-u`, and a final `exit 2` backstop, so the only exits are 0 and 2.
+1. Read at most 1 MiB of stdin (`read -r -d '' -n 1048576 -t 5`). Exactly one
+   `"agent_type"[[:space:]]*:[[:space:]]*"([^"\\]*)"` match gives the type; no `"agent_type"` key
+   plus a `"tool_input"` key is the main session → exit 0; anything else (empty or non-object
+   payload, no `tool_input`, two or more `agent_type` keys) blocks everyone (ghcp's C16).
+2. Runner (`cx-runner` or any type ending in `:cx-runner`), gated even with option `policy`
+   off: exactly one `"command"` string with no JSON escape, no `"_host"` key, and the grammar
+   `^(cx-run|cx-job)( +ARG)*$` with `ARG` = `[A-Za-z0-9._/:@=,+%-]+` (`CX_GATE_SAFE`, repeated in
+   the workflow) or `'[^']*'`. `cx-job`: only `wait <id> [--timeout <n>(s|m)]`, `status <id>`,
+   `result <id>`. `cx-run`: must carry `--background`, `--finish <id>` or `--exec claude`; flags
+   only `--exec auto|agy|copilot|grok|claude`, `--mode write|read|review`, `--family
+   gemini|gpt`, `--effort low|medium|high|xhigh` (never `max`), `--task-file <absolute .md>`,
+   `--id`, `--repo <absolute>`, `--base`, `--timeout`, `--no-wait`, `--dry-run`, `--explain`;
+   `--repo`/`--task-file` never `/`, `$HOME` or an ancestor. Phase 3 adds `cx-gate <id>` and
+   `cx-fanout --plan <absolute .json> --background` / `--status <batch>`.
+3. Executor guard (`workflow-subagent`, `general-purpose`; only while option `policy` is on):
+   split on `;`, `&&`, `||`, `|`, `&`, `(`, `)`, newline and `$(`; skip `VAR=value`, `env` (with
+   `-u NAME`, `-i`), `command`, `exec`, `nohup`, `setsid`, `time`, `timeout` and its options;
+   block when the next word's basename is `agy`, `grok`, `copilot`, a `ghcp-*` or `agy-*`
+   wrapper, or `cx-wsl` followed by one ("run executors through cx-run --background (shared pool
+   slots), or return EXECUTOR_NEEDED"). It never matches inside arguments and lets a call through
+   when it cannot scan: it guards against races, not a security boundary.
+4. Every other agent type exits 0, `ghcp:ghcp-delegate` included. A block prints
+   `[conductor gate] blocked: <reason>` on stderr and never echoes the command.
+
+### 15.11 `workflows/opus-pools.js` → `/conductor:opus-pools` (optional, U8)
+
+Plain JavaScript, `meta` a pure literal (`name: 'opus-pools'`, phases Dispatch, Claude pool,
+Check). `args` is the `cx-fanout` plan object (§16.3) `{batch, repo, base, tasks: [{id,
+task_file, effort}]}`, passed as JSON, never as a string; ids match `^[a-z0-9][a-z0-9-]{0,40}$`,
+efforts `low|medium|high|xhigh` (max never leaves Claude, §6.3), every value the gate would
+refuse throws first. Per task (a `pipeline()`): a runner runs `cx-run --exec auto --mode write
+--background --effort E --task-file F --id ID --repo R --base B`; when no included pool
+delivered (exits 10–14, 21, 22, 26–28, 43) a Claude-pool agent works in a fresh conductor
+worktree (`cx-run --exec claude`, then a runner's `cx-run --finish`), at the task's effort,
+never with isolation; then a Claude Check stage runs the contract's acceptance tests read-only.
+Codes 15, 20, 23, 24 and 25 return to the main turn. `budget` is checked only before Claude
+stages (estimates `CLAUDE_POOL_TOKENS` 150,000 and `CHECK_TOKENS` 40,000 [assumption]) and
+never sizes executor fan-out; every task left `unplaced` or `unchecked` is logged; the result
+lists job ids, and after a lost runner the main turn runs `cx-job list`. An undocumented
+per-spawn `bashCommandClamp: ['Bash(cx-run:*)', 'Bash(cx-job:*)']` is used as defence in depth
+with a fallback when this build refuses it, and never appears in model-facing text. The Check
+stage is not the independent review (Opus on Opus); Phase 4 adds a Gemini review stage. Phase 3
+rewrites it to hand placement, failover and gating to `cx-fanout` and `cx-gate`. A
+`Workflow(conductor:opus-pools)` allow rule removes the launch prompt (D25).
 
 ## 16. Phase 3: `cx-gate`, conductor commit, `cx-fanout`, integration queue
 
@@ -2754,8 +3557,11 @@ Sources: plan §7.1, §7.4–§7.6, §9 (container hazards), docker-reader notes
 - Expiry-aware override (Copilot month end, Grok week end).
 - TokenEconomizer: shadow trial; borrow learned timeouts, stream-level loop detection, owned
   reversible settings writes. Never install it into Copilot.
-- Copilot cloud agent through REST tasks / Automations (`model`, `reasoning_effort`; 59-minute
-  cap).
+- Cloud threads as an executor host (setup-script installs and a `COPILOT_GITHUB_TOKEN` secret;
+  grok and agy device logins in a cloud sandbox are untested); a self-hosted runner inside WSL
+  as a Projects environment (`exec_host=local` already marks such a runner as this machine);
+  prompt-marker detection of relayed coordinator turns if a UserPromptSubmit hook returns. (The
+  Copilot cloud agent lane moved to Phase 2, §15 build order item 3.)
 - Image lane (agy `image-generator` once headless is confirmed; Grok `/imagine`; Copilot GPT
   Image).
 - A UserPromptSubmit nudge with a `nudge` option.
@@ -2802,8 +3608,37 @@ update the § it affects and drop its tag.
 | 32 | `claude plugin update` re-copies an unchanged version | unverified | Run it on a CRLF-corrupted cache copy | D3 fixes, §10.5 |
 | 33 | The kept D-Bus/XDG variables make keyring logins work through wsl.exe | unverified | L7 | §7.4, D15–D19, W9 |
 | 34 | `cygpath -w -l` expands 8.3 components; DrvFs resolution of short names | docs-only | L4 | §7.3 step 4 |
-| 35 | `agy-job status` prints `  state=running` while running | verified (read 2026-11-01), not a stable API | Re-read on every antigravity update | §12.2 wait one-liner |
-| 36 | How Claude Code 2.1.316 matches `Bash(...)` allow rules against commands that start with `env -u … VAR=1` and against multi-command steps | unverified | Add the prefixed rule, run one Phase 1 step, observe whether it prompts | D25, U2 |
+| 35 | `agy-job status` prints `  state=running` while running | verified (read 2026-11-01), not a stable API | Re-read on every antigravity update | skill hazards (no Phase 1 form waits on `agy-job`) |
+| 36 | How Claude Code 2.1.316 matches `Bash(...)` allow rules against commands that start with `env -u … VAR=1`, hold literal `$VAR` text, or form multi-line steps | unverified | Add the D25 rules, run one Phase 1 step of each kind, observe whether it prompts | D25, U2 |
+| 37 | `wslpath -w /` names the distribution in shells without `WSL_DISTRO_NAME` (ssh, `su -`, cron, systemd units) | unverified | Run it over ssh into WSL | §7.1 `CX_DISTRO`, D1 |
+| 38 | `cygpath -w` prints the extended-length `\\?\UNC\…` form for a `\\wsl.localhost` path over `MAX_PATH` | unverified | `cygpath -w -l` of a deep `//wsl.localhost/<D>/…` directory in Git Bash | §7.2 T3, §7.3 step 5 |
+| 39 | A forwarded call from a console gets a pty whose foreground group is wsl-entry.sh's (measured only under a Linux pty, not through wsl.exe) | unverified | L4 from Windows Terminal: `cx-wsl bash -c 'read -r x; echo "$x"'` | §7.4 step 8 |
+| 40 | **`claude remote-control` started inside WSL serves Work locally threads and loads the WSL user-scope plugins** (policy, skill, `cx-*` on PATH): the preferred Projects route (U7) | unverified (tool serving refuses WSL; no refusal found for Remote Control itself) | **L11, first** | §1.5, §7.1 `bridge`, D31, README |
+| 41 | The entrypoint of cloud threads and the coordinator; whether any host sets `CLAUDE_CODE_PROJECTS_SESSION` | unverified | L9 | D30 wording only |
+| 42 | The Windows desktop app hosts Work locally threads; which CLI version it bundles | unverified (no OS refusal in 2.1.316) | L10c | §7.1 `bridge` on Git Bash |
+| 43 | User-scope plugins and hooks load in bridge children | docs-only plus binary (no `--setting-sources`) | L10c, L11 | §1.7, §10 |
+| 44 | The Windows hook shell, and what `bash` in the hook command resolves to | binary: bash when Git Bash is found | L10 | §10.1, §10.2 (item 12) |
+| 45 | A `\\wsl.localhost` folder from the picker becomes a WSL session with no plugins; the same folder in the Remote Control folder list | docs-only | L10b | §1.5, W3, D30 |
+| 46 | Auto mode in Work locally threads versus U2's allow rules (spending, pushing, `cx-wsl`) | unverified | L12 | U2, D25 |
+| 47 | How the Projects instructions are injected (system text or first message) | docs silent | none needed: the template states its own precedence | §9.6 |
+| 48 | Shared projects (binary text) versus one user per project (docs) | conflicting | later docs | U2 for project members |
+| 49 | The SubagentStart matcher `workflow-subagent\|general-purpose` matches as alternation and the text reaches workflow agents before their first turn | binary (fires and injects); matcher syntax unverified (`subagent.sh` also filters on `agent_type`) | L16 | §10.1, §10.7 |
+| 50 | `onFailure` in a plugin's `hooks.json`: accepted by `claude plugin validate`; its behaviour on Windows without Git Bash | validate: measured 2026-11-01; runtime: binary | L13 (done); a Windows observation is optional | §10.1 |
+| 51 | `CLAUDE_CODE_SESSION_ATTENDED` in bridge children; whether `claude -p` waits for background Bash tasks | binary; unverified | L18 | `cx_attended`, `{ATTN}` |
+| 52 | Workflow PreToolUse payloads carry `agent_type: conductor:cx-runner` for `agentType` spawns; plugin-agent `effort: low` and `omitClaudeMd` apply in workflows | binary | L17 | §15.9, §15.10 |
+| 53 | `bashCommandClamp` syntax and stability | binary (undocumented) | L17 | §15.11 |
+| 54 | A `Workflow(conductor:opus-pools)` allow rule suppresses the launch prompt; the desktop card's "Always" covers plugin workflows | docs-only | L20 | D25 Phase 2 |
+| 55 | `git status` of the main checkout shows `.claude/worktrees/`; where `claude remote-control --spawn worktree` and the folder card's Worktree option put worktrees | unverified (the `trees` exclusion is harmless either way) | L14 | §12.2 `trees`, P60 |
+| 56 | The ultracode keyword typed in a Work locally thread triggers a workflow; `"ultracode": true` in machine settings starts new threads in ultracode; relayed coordinator briefs do not trigger | docs silent | L19 | §12.1, D32 |
+| 57 | `_host` and computer folders are refused for this user's Windows and WSL machines | binary (`windows` gate, platform text) | L15 | §1.7 (never routed) |
+| 58 | The default workflow-agent stall timeout against the runner's 100 s waits (`stallMs: 1200000`) | docs-only | L17 | §15.11 |
+| 59 | The `haiku` alias resolves to an available model on the user's plan | assumption | L17 | §15.9 |
+| 60 | SessionStart(`compact`) for a compacting subagent carries `agent_id` and `agent_type` | binary | optional L21 | §10.2 row 3 |
+| 61 | A desktop SSH session into WSL loads the WSL user-scope plugin (a forwarding-free alternative to Git Bash) | docs (SSH supports plugins); untested for WSL | optional L22 | §1.5, README |
+| 62 | Copilot CLI 1.0.105 signs in with `COPILOT_GITHUB_TOKEN` (a fine-grained PAT with "Copilot Requests") ahead of an unreachable keyring | docs-only | L7 with the token file: `cx-wsl ghcp-models --json` from Git Bash | §7.7, §8.5 |
+| 63 | `gh repo view --json url` resolves an SSH host alias (`git@github-work:…`) and, with several remotes, picks the repo `gh pr create` would | docs-only (gh translates remotes through `ssh -G`) | One run in a multi-account checkout | §12.2 step 1 |
+| 64 | `agy-delegate` and agy keep the inherited lock fd 9 for the whole run (so an orphaned agy still holds the agy lock) | bash and `timeout` keep inherited fds; the wrapper's internals are not a stable API | `ls -l /proc/<agy pid>/fd` during a run | §12.2 step 2a |
+| 65 | `ghcp-cloud create -R HOST/OWNER/REPO -` (`gh agent-task create`, a gh preview) accepts a host-qualified repo, and the agent's PR head is fetchable as `pull/<N>/head` | docs-only | One cloud task on a test repo | §12.2 step 5 |
 
 ## Appendix A. Spec revision log
 
@@ -2858,3 +3693,82 @@ Every item was checked against this file, the sibling sources (`ghcp-for-claude-
 | X2 | Found while revising: R5's `env -u …` prefixes stop `Bash(ghcp-delegate:*)`-style allow rules from matching, which U2's prompt-free autonomy relies on | D25 lists the prefixed rules; §20 item 36 |
 
 None of the 39 items was skipped.
+
+### A.2 Revision 2026-11-01c (Phase 1 code review, 28 findings, some duplicates)
+
+Each finding was reproduced or checked against the code before it was applied, and each fix
+came with a test that fails on the old code.
+
+| # | Topic | Action |
+|---|---|---|
+| C1 | A forwarded call from a console stopped on SIGTTIN (target in a background group) | §7.4 step 8: foreground in wsl-entry's group when it leads the terminal's foreground group; P16 pty case |
+| C2 | Missing-CLI doctor cases ran real CLIs from `$REAL_PATH` | §14.1: stub copy plus system-tool links; guard check |
+| C3 | cx-init wrote through committed `.cx`/`.github` symlinks; a file `.cx` left a partial bundle | §9.2 path checks before any write, `O_NOFOLLOW` |
+| C4 | agy and grok probes kept API keys and ran unpinned | §8.2 prefixes on every agy and grok probe |
+| C5 | An agy status envelope read as "logged in" | §4.4 `parse-models` slug rule, D18 |
+| C6 | Fix lines split paths with spaces; W6 skipped `bin/cx-wsl` and friends | `cx_shell_words`; W6 over `CX_SHIPPED_FILES` |
+| C7 | `policy.sh` accepted empty order segments that `cx_opt` rejects | §10.2 grammar; P21 agreement case |
+| C8 | Windows npm shims under `/mnt/c` became recorded CLIs | §7.6 PATH walk skips the automount root; wsl-resolve refuses it |
+| C9 | `bash -s` bootstrap misdetected when the WSL home holds a file `main` | §7.5 file-scope `BASH_SOURCE` |
+| C10 | `\\?\UNC\wsl.localhost\…` refused | §7.2 T3, four table rows |
+| C11 | `--json` printed plain text on a Git Bash forwarding failure | §8.1, §8.7 |
+| C12 | The CRLF fixes led with `core.autocrlf`, which cannot help the copies that reach them | §8.3 D3 fixes, §10.5 notice, P22b runs the notice's fix |
+| C13 | The Git Bash policy showed raw `agy`, `gh` and `ghcp-ci-debug` commands | §10.4 |
+| C14 | Shells without `WSL_DISTRO_NAME`, and an exported `CX_HOME`, split the host record silently | §7.1 `wslpath -w /`; D1 notes |
+| C15 | A CRLF `cx-wsl bash -s` step ran with CRs | §7.7 strip with a note |
+| C16 | Forwarded git had no ssh-agent or passphrase tty, unreported | D5 notes; a live `SSH_AUTH_SOCK` is kept (§7.4) |
+| C17 | Background calls are stopped at 30 minutes by default | §1.1, §10.3/§10.4, §12.2 `timeout: 7200000`; P20, P43 |
+| C18 | `agy-media` and `/antigravity:research` always pass `--yolo` yet were read-only lanes | §0.3: not Phase 1 lanes; §6.1, §6.2, §7.7, D25; P20, P43, P45 |
+| C19 | WRONG_TREE watched only the main checkout's porcelain status | §12.2 step 2a `trees` over every other worktree, with content |
+| C20 | An executor that switched branches got BASE gated | §12.2 step 3 `BRANCH_TAMPERED` and the exact-commit gate; §4.1 row 24 |
+| C21 | `ghcp-delegate --github` presented as a triage lane | §6.1, §6.2, §10.3, §12.2 step 5 |
+| C22 | DESIGN step 3 and `grok usage` drifted from the SKILL | §12.2 synced; P43 compares every bash line |
+| C23 | The policy did not forbid `grok-delegate` | §10.3; P20 |
+| C24 | D25's rules did not match the skill's command forms | D25 = `cxlib.D25_HOST_RULES`; step 5 uses `gh … -R "$REPO"`; P43 checks every command |
+| C25 | "Run cx-doctor from a WSL terminal" named a command a plain terminal lacks | the runtime copy's `cx-doctor` in every message, §7.6, §7.7, §8.5 |
+| C26 | Wall time alone failed the suite | §14.1 informational, `CX_TEST_STRICT_TIME=1` |
+
+None of the 28 findings was skipped (C1 and C6 each merge two findings).
+
+### A.3 Revision 2026-11-01d (Claude Code Projects and ultracode, Phase 1 parts)
+
+Sources: the Projects (beta) research note and its Projects + ultracode addendum (2026-11-01,
+kept outside the repo), adjusted for two user decisions: every Project thread runs as a Work
+locally thread (U7) and ultracode is normally off (U8).
+
+| # | Change | Where |
+|---|---|---|
+| R1 | Session kinds `local`, `bridge`, `cloud`, `byoc` and the attended flag, decided before the host; never the entrypoint | §1.7, §7.1, `detect.sh` |
+| R2 | Cloud safety net: the cloud notice instead of any policy, step 0a exit 43 in every `cx-*` (BYOC with `exec_host=local` runs locally), ✗ D30 | §7.3, §10.2, §10.6, §8.3 |
+| R3 | SubagentStart guard for `workflow-subagent` and `general-purpose`: subagents never run executors in Phase 1; a compacting subagent gets the guard again, never the main policy; both hooks `onFailure: continue` | §10.1, §10.2, §10.7 |
+| R4 | Policy: a Workflows line (ultracode changes thoroughness, not who executes; one agy run at a time across sessions and threads) and `{ATTN}` for unattended runs; limit 2,800 rendered | §10.2–§10.4 |
+| R5 | `templates/projects-instructions.md` rewritten for local-only threads; README and SKILL say where it goes and what wins | §9.6, §12.1 |
+| R6 | Doctor D30, D31, D32, W10, W11, the D24 workflow note, the desktop WSL-session warning, W3 drive case info, `session` in the header, `CX_HOST`, `CX_DOCTOR` and `--json` | §8 |
+| R7 | `trees` snapshots exclude `.claude/worktrees` | §12.2, P60 |
+| R8 | Phase 2 order: shared slots first (every executor path, `cx-wsl` included), then `cx-run`/`cx-job`/adapters, the Copilot cloud agent lane, and the optional runner agent, gate and `opus-pools` workflow | §15 |
+| R9 | Live checks L8–L22 with `claude remote-control` in WSL (L11) first; §20 items 40–61 | §14.4, §20 |
+
+### A.4 Revision 2026-11-01e (final Phase 1 review, 18 findings)
+
+Each finding was reproduced against the code or the skill text first; every one held and was
+applied (some in the form the finding offered as its alternative). F2 and F9, and F3 and F10,
+overlap and were applied together.
+
+| # | Finding | Change | Where |
+|---|---|---|---|
+| F1 | The Windows-side filter matched the whole automount root (`root = /` hid every CLI) and `/mnt/data` | Only drive directories `<root><letter>/` and `/mnt/<letter>/`, in `on_windows_side`, `record_path` and `wsl-resolve` | §7.6, §7.7; doctor and wsl-resolve cases |
+| F2, F9 | The agy job form had no registration, no snapshots and no lock; the hybrid recipe sent agy work there while other lanes wrote the same repo | No agy job form in Phase 1; agy runs as step 2a's background call; non-agy dispatches mark their worktree `running` and `trees` leaves marked worktrees out | §12.1, §12.2; P43, P60 |
+| F3, F10 | The Claude lane and the claude-pool script had no Windows form; the Git Bash policy said `bash -s` where the skill said `bash -c` | Step 2d and the claude-pool `wt_win` prompt: file tools on the `\\wsl.localhost` path, commands through `cx-wsl bash -c`; the WSL path quoted; the guard and the Git Bash policy say the same | §10.4, §10.7, §12.1, §12.2; P55, P57, P61 |
+| F4 | `policy.sh` exempted only kind `byoc` with `exec_host=local` | Any non-empty kind but `bridge` with `exec_host=local` gets the normal policy | §7.1, §10.2 row 4; P46 |
+| F5 | `REPO` from the origin URL kept SSH host aliases and ports, which `gh -R` cannot resolve | `REPO` from `gh repo view` (aliases resolved), the URL with `:port` stripped as the fallback; D25 `Bash(gh repo view:*)` | §8.3 D25, §12.2 steps 1 and 5 |
+| F6 | The Git Bash lite readers were quadratic (seconds on a 70 KB settings file) | Split at quotes once; key searches by `${x%%"KEY"*}`; W10 and W11 share one parse | §5.2, §8.6; P7 |
+| F7 | A false cloud verdict on the user's own computer would switch the conductor off | `cx_session` and `policy.sh` never answer cloud or byoc on Git Bash or WSL | §1.7, §7.1, §10.2; P46, P48, P49 |
+| F8 | `trees` keyed its `.claude/worktrees` exclusion on `TOP` and its remedy said "restore that tree" | The exclusion keys on the main checkout (TOP itself stays in); `running` marks; the remedy reports and never restores a tree the task did not create | §12.2 step 2a; P60 |
+| F11 | U7 invited `ghcp-cloud`, which `cx-wsl` refused and no recipe covered | `cx-wsl`, `CX_WSL_KEYS` and D25 allow `ghcp-cloud`; step 5 has the recipe and the PR gate; Grok remote sessions are the user's | §7.7, §8.3, §12.2 step 5, §15 item 3; P45 |
+| F12 | "One agy run at a time" had no mechanism | Every agy step takes `flock -w 4800` on `~/.conductor/locks/agy` first (`AGY_BUSY`, exit 28) | §12.2; P43 |
+| F13 | `ghcp-ci-debug --apply` left `$WT` on `ghcp/ci-fix-*`, so step 3 exited 24 | Step 5's hand-back: switch to `cx/<id>`, delete the fix branch, append the new `BASE` | §12.2 step 5; P43 |
+| F14 | D5 told a Windows user to move the repo into WSL | Forwarded: an info line with W3's wording | §8.3 D5 |
+| F15 | D13's install fix needed marketplaces that were never added; forwarded fixes looked like Git Bash commands | `claude plugin install NAME --marketplace SOURCE`; README prerequisites; the forwarded report's header note | §8.2, §8.3 D13, §13.2 |
+| F16 | The token file was read by nothing in Phase 1 | `cx-wsl ghcp-*` exports `COPILOT_GITHUB_TOKEN` from a 0600 file for that call only | §7.7, §8.5; P45 |
+| F17 | `Bash(cx-wsl:*)` was presented as the U2 rule without its scope | D25 always prints the scope line; README names the narrower rules | §8.3 D25 |
+| F18 | Messages sent WSL-only users to a runtime copy they may not have | `/conductor:doctor` in a Claude Code session in WSL first, the runtime copy with `--install-runtime` second | §7.7, §8.5, `common.sh`, D30 |

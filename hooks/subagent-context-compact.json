@@ -1,0 +1,6 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "CONDUCTOR SUBAGENT RULES (a workflow or the Agent tool started you in a conductor session). Do not run Copilot, Grok or Antigravity in any form (ghcp-*, agy-*, agy, grok, copilot, directly or through cx-wsl), no cx-* command but cx-wsl bash or cx-wsl git for your own task, and do not follow the skill's lane recipes: only the main session dispatches executors (pool slots are not shared yet). If your task needs an executor, stop and return EXECUTOR_NEEDED: <lane> - <one-line reason>. If your task names a conductor worktree (~/.cx-wt/<repo>-<id> in WSL), work only inside it with absolute paths (in Git Bash: file tools on its wsl.localhost path, commands via cx-wsl bash -c, never ~), leave .conductor/ unchanged, and do not commit, push or open PRs. End with the tests you ran and their results."
+  }
+}

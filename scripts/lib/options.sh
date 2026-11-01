@@ -242,68 +242,163 @@ cx_opt() {
 
 # _cx_lite_span TEXT: TEXT starts with "{"; prints TEXT up to its matching "}" (brace counting
 # outside JSON strings; a quote toggles string state unless preceded by an odd number of
-# backslashes). rc 1 when the braces do not balance.
+# backslashes). rc 1 when the braces do not balance. Linear time: TEXT is split at its quotes
+# once, like cx_lite_top.
 _cx_lite_span() {
-  local s="$1" n i c depth=0 instr=0 bs=0
-  n=${#s}
-  for ((i = 0; i < n; i++)); do
-    c="${s:i:1}"
-    if [ "$c" = "\\" ]; then
-      bs=$((bs + 1))
+  local LC_ALL=C depth=0 instr=0 o="" k n seg pre c t brace="[{}]*"
+  local -a parts=()
+  IFS='"' read -r -d '' -a parts <<< "$1"
+  n=${#parts[@]}
+  for ((k = 0; k < n; k++)); do
+    seg="${parts[k]}"
+    [ $((k + 1)) -lt "$n" ] || seg="${seg%$'\n'}"     # the here-string's newline
+    if [ "$instr" = 1 ]; then
+      o+="$seg"
+      [ $((k + 1)) -lt "$n" ] || break
+      o+='"'
+      t="${seg##*[!\\]}"
+      [ $((${#t} % 2)) -eq 0 ] && instr=0
       continue
     fi
-    if [ "$c" = '"' ] && [ $((bs % 2)) -eq 0 ]; then
-      instr=$((1 - instr))
-    fi
-    bs=0
-    [ "$instr" = 1 ] && continue
-    case "$c" in
-      '{') depth=$((depth + 1)) ;;
-      '}')
+    while :; do
+      # shellcheck disable=SC2295  # $brace is a pattern on purpose
+      pre="${seg%%$brace}"
+      o+="$pre"
+      [ "${#pre}" -lt "${#seg}" ] || break
+      c="${seg:${#pre}:1}"
+      seg="${seg:${#pre}+1}"
+      o+="$c"
+      if [ "$c" = '{' ]; then
+        depth=$((depth + 1))
+      else
         depth=$((depth - 1))
         if [ "$depth" -eq 0 ]; then
-          printf '%s' "${s:0:i+1}"
+          printf '%s' "$o"
           return 0
-        fi ;;
-    esac
+        fi
+      fi
+    done
+    [ $((k + 1)) -lt "$n" ] || break
+    o+='"'
+    instr=1
   done
   return 1
+}
+
+# _cx_lite_obj KEY TEXT: the object value of the first "KEY" in TEXT that is followed by
+# ": {", from its "{" to the matching "}" (through _cx_lite_span), or rc 1. Every search is a
+# longest-suffix match (${x%%"KEY"*}), which bash does in linear time; the shortest-prefix form
+# (${x#*"KEY"}) is quadratic and took seconds on a 70 KB settings file.
+_cx_lite_obj() {
+  local key="\"$1\"" rest="$2" pre
+  while :; do
+    pre="${rest%%"$key"*}"
+    [ "${#pre}" -lt "${#rest}" ] || return 1
+    rest="${rest:${#pre}+${#key}}"
+    if [[ $rest =~ ^[[:space:]]*:[[:space:]]*\{ ]]; then
+      rest="${rest:${#BASH_REMATCH[0]}-1}"
+      _cx_lite_span "$rest"
+      return
+    fi
+  done
 }
 
 # cx_opt_lite NAME FILE (Git Bash; pure bash; for exec_host and wsl_distro only): the value of
 # option NAME inside FILE's pluginConfigs entry for the conductor, or nothing (DESIGN section
 # 5.2). A heuristic: cx-doctor --windows cross-checks it against a real parse (W7).
 cx_opt_lite() {
-  local name="$1" file="$2" text rest span opts anchor='"conductor@conductor-for-claude-code"'
+  local name="$1" file="$2" text span opts
   [ -n "$file" ] && [ -f "$file" ] && [ -r "$file" ] || return 0
   text="$(< "$file")" || return 0
   text="${text#$'\xef\xbb\xbf'}"
   text="${text//$'\r'/}"
-  rest="$text"
-  span=""
-  while [[ $rest == *"$anchor"* ]]; do
-    rest="${rest#*"$anchor"}"
-    if [[ $rest =~ ^[[:space:]]*:[[:space:]]*\{ ]]; then
-      rest="${rest#"${BASH_REMATCH[0]%\{}"}"
-      span="$(_cx_lite_span "$rest")" || span=""
-      break
-    fi
-  done
+  span="$(_cx_lite_obj conductor@conductor-for-claude-code "$text")" || span=""
   [ -n "$span" ] || return 0
   # Inside that entry: the "options" object, scanned to its own matching brace.
-  rest="${span:1}"
-  opts=""
-  while [[ $rest == *'"options"'* ]]; do
-    rest="${rest#*\"options\"}"
-    if [[ $rest =~ ^[[:space:]]*:[[:space:]]*\{ ]]; then
-      rest="${rest#"${BASH_REMATCH[0]%\{}"}"
-      opts="$(_cx_lite_span "$rest")" || opts=""
-      break
-    fi
-  done
+  opts="$(_cx_lite_obj options "${span:1}")" || opts=""
   [ -n "$opts" ] || return 0
   if [[ $opts =~ \"$name\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9._-]*)\" ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+  return 0
+}
+
+# cx_lite_top FILE [OBJKEY] (Git Bash; pure bash; DESIGN section 8.6 W10, W11): reads FILE's
+# top-level JSON object into CX_LITE_TOP with every nested object and array cut out, and, with
+# OBJKEY, the text of that top-level key's object value into CX_LITE_OBJ. A UTF-8 BOM and every
+# CR are stripped; a quote toggles string state unless preceded by an odd number of backslashes.
+# Both are empty when FILE is missing or unreadable. A heuristic, like cx_opt_lite. Linear time:
+# the text is split at its quotes once and only the parts outside strings are scanned for
+# brackets (a settings file with a long permissions list is tens of KB).
+cx_lite_top() {
+  local LC_ALL=C text depth=0 instr=0 o="" want="${2:-}" cap=0 obj="" k n seg pre c t brace="[][{}]*"
+  local -a parts=()
+  CX_LITE_TOP=""
+  CX_LITE_OBJ=""
+  [ -n "${1:-}" ] && [ -f "$1" ] && [ -r "$1" ] || return 0
+  text="$(< "$1")" || return 0
+  text="${text#$'\xef\xbb\xbf'}"
+  text="${text//$'\r'/}"
+  IFS='"' read -r -d '' -a parts <<< "$text"
+  n=${#parts[@]}
+  for ((k = 0; k < n; k++)); do
+    seg="${parts[k]}"
+    [ $((k + 1)) -lt "$n" ] || seg="${seg%$'\n'}"     # the here-string's newline
+    if [ "$instr" = 1 ]; then
+      [ "$depth" -le 1 ] && o+="$seg"
+      [ "$cap" = 1 ] && obj+="$seg"
+      [ $((k + 1)) -lt "$n" ] || break
+      [ "$depth" -le 1 ] && o+='"'
+      [ "$cap" = 1 ] && obj+='"'
+      t="${seg##*[!\\]}"
+      [ $((${#t} % 2)) -eq 0 ] && instr=0
+      continue
+    fi
+    while :; do
+      # shellcheck disable=SC2295  # $brace is a pattern on purpose
+      pre="${seg%%$brace}"
+      [ "$depth" -le 1 ] && o+="$pre"
+      [ "$cap" = 1 ] && obj+="$pre"
+      [ "${#pre}" -lt "${#seg}" ] || break
+      c="${seg:${#pre}:1}"
+      seg="${seg:${#pre}+1}"
+      case "$c" in
+        '{'|'[')
+          depth=$((depth + 1))
+          if [ "$cap" = 1 ]; then
+            obj+="$c"
+          elif [ "$depth" -le 1 ]; then
+            o+="$c"
+          elif [ "$depth" -eq 2 ] && [ -n "$want" ] && [ "$c" = '{' ] && [[ $o =~ \"$want\"[[:space:]]*:[[:space:]]*$ ]]; then
+            cap=1
+            obj="$c"
+          fi ;;
+        *)
+          [ "$cap" = 1 ] && obj+="$c"
+          if [ "$depth" -eq 2 ] && [ "$cap" = 1 ]; then
+            CX_LITE_OBJ="$obj"
+            cap=0
+          fi
+          [ "$depth" -le 1 ] && o+="$c"
+          depth=$((depth - 1)) ;;
+      esac
+    done
+    [ $((k + 1)) -lt "$n" ] || break
+    [ "$depth" -le 1 ] && o+='"'
+    [ "$cap" = 1 ] && obj+='"'
+    instr=1
+  done
+  CX_LITE_TOP="$o"
+  return 0
+}
+
+# cx_lite_value TEXT KEY: the scalar value of "KEY" in TEXT (true, false, null, an integer, or a
+# string without quotes or backslashes, printed without its quotes), or nothing.
+cx_lite_value() {
+  if [[ $1 =~ \"$2\"[[:space:]]*:[[:space:]]*(true|false|null|-?[0-9]+|\"[^\"\\]*\") ]]; then
+    local v="${BASH_REMATCH[1]}"
+    v="${v#\"}"
+    printf '%s\n' "${v%\"}"
   fi
   return 0
 }

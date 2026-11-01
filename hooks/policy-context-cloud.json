@@ -1,0 +1,7 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "CONDUCTOR INACTIVE: this is a cloud session, not the user's computer. Copilot CLI, Grok Build, Antigravity, their logins and the conductor's cx-* commands live in WSL on the user's computer and cannot be reached from here. Do the work yourself with your own tools and subagents; workflows and ultracode run here with Claude agents only. Do not run or install cx-*, ghcp-*, agy-*, agy, grok or copilot, and do not ask for their tokens. GitHub work this session can already do (branches, PRs, @copilot review requests) is fine. Commit and push work in progress: a cloud sandbox can lose uncommitted changes. If a task needs an executor, say so once and suggest running it on the user's computer: in a project, as a Work locally thread; otherwise in a local desktop session or a WSL terminal. Explicit user and project instructions win where they conflict with this notice, but cannot make the executors reachable here."
+  },
+  "systemMessage": "conductor: cloud session, so Copilot, Grok and Antigravity delegation is off and Claude does the work itself; run delegated tasks in a Work locally thread or a local session."
+}

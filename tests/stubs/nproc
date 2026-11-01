@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# tests/stubs/nproc: prints STUB_NPROC when it is set, else the real nproc (found on PATH minus
+# this directory). Logs nothing: nproc is free (cx-doctor D32 reads it).
+if [ -n "${STUB_NPROC:-}" ]; then
+  printf '%s\n' "$STUB_NPROC"
+  exit 0
+fi
+here="$(cd -- "$(dirname -- "$0")" && pwd)"
+IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || continue
+  [ "$(cd -- "$d" 2>/dev/null && pwd)" = "$here" ] && continue
+  [ -x "$d/nproc" ] && exec "$d/nproc" "$@"
+done
+for d in /usr/bin /bin; do [ -x "$d/nproc" ] && exec "$d/nproc" "$@"; done
+exit 127
