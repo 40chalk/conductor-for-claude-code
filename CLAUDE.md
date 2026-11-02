@@ -237,7 +237,7 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
 - **Adapter or lane**: `scripts/adapters/<lane>.sh` and its header, `adapter.sh`'s options,
   `normalize.py` (`PARSERS`, the lane's facts), the stub's scenarios (`STUB_*_RUN` in
   `tests/stubs/*`), the A1 help fixture (`tests/fixtures/real/*/help.txt`; agy's is
-  `tests/fixtures/agy-help.synthetic.txt` until `agy --help` is captured), `cx-run`'s
+  the captured `tests/fixtures/real/agy/help.txt`), `cx-run`'s
   `lane_args`/`lane_adapter`, DESIGN §15.2, the skill's lane rows.
 - **Option**: `plugin.json`, `CX_OPT_DEFAULTS` and `CX_OPT_NAMES`, `cx_opt_check` and
   `cxlib.check_option`, DESIGN §5.1, README table, `OPT_EXPECT` in the tests.
@@ -302,7 +302,7 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   forwarded target's environment, cwd and argv.
 - `tests/fixtures/` is marked `-text` (intentional CRLF and UTF-16LE bytes); its README labels
   each file verified or synthetic (`real/` holds the captured help texts and ghcp's real Copilot
-  recordings; agy's help is synthetic). Some checks are timing-based (agy hang with
+  recordings, and agy 1.4.12's help). Some checks are timing-based (agy hang with
   `CX_PROBE_TIMEOUT=2`, INT cancellation within 6 s, cx-job kill's KILL after 10 s, the adapter's
   KILL grace, the slot waits) and could flake on a loaded machine.
 
@@ -319,6 +319,7 @@ exit code; the `Task(...)`/`Agent(...)` deny-rule syntax and how env-prefixed al
 children's `CLAUDE_CODE_SESSION_ATTENDED`, and what a compacting subagent's SessionStart payload
 holds (DESIGN §20 items 40–61); that Copilot signs in with `COPILOT_GITHUB_TOKEN`, that
 `gh repo view` resolves SSH host aliases, and `ghcp-cloud`'s host-qualified `-R` (items 62–65);
-agy's raw flags (`--add-dir`, `--print-timeout`, `--output-format stream-json`,
-`--disable-slash-commands`, `--new-project`: docs-only, `agy --help` is not captured), its
-stream-json events, grok's JSON result fields and claude -p's result shape (§20).
+agy's stream-json events, whether `--effort xhigh|max` applies to the Opus slugs and whether
+its `-p /model|/usage|/config` slash forms cost quota (items 67, 68; its flags themselves are
+verified against the captured 1.4.12 help), grok's JSON result fields and claude -p's result
+shape (§20).

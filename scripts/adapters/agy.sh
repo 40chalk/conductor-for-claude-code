@@ -4,8 +4,8 @@
 # mode (default: the agy CLI itself, which alone shows the served model) or wrapper mode
 # (agy-delegate), and agy-gemini (always agy-delegate: digests, research, reviews).
 # The raw flags (--add-dir, --print-timeout, --output-format stream-json,
-# --disable-slash-commands, --new-project) are [docs-only] until `agy --help` is captured
-# (DESIGN section 20 item 4); A1 checks them against tests/fixtures/agy-help.synthetic.txt.
+# --disable-slash-commands, --new-project) are verified against `agy --help` 1.4.12 (DESIGN
+# section 20 item 4); A1 checks them against tests/fixtures/real/agy/help.txt.
 #
 # Usage: agy.sh probe|argv|run|parse [OPTIONS]   (the options of scripts/lib/adapter.sh)
 #        agy.sh -h|--help | --version

@@ -2555,9 +2555,9 @@ for f in "$FIX"/real/ghcp/print-command-*.txt; do
   b="$(flags_in "$AD/a1/pc.argv" "$FIX/real/copilot/help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [${f##*/}: $b]"
 done
 ad -- agy argv --out "$AD/a1/agy" --wt "$AD/wt-t1"
-b="$(flags_in "$AD/a1/agy/agy.argv" "$FIX/agy-help.synthetic.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [agy raw: $b]"
+b="$(flags_in "$AD/a1/agy/agy.argv" "$FIX/real/agy/help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [agy raw: $b]"
 printf '%s\0' agy --new-project --output-format json -p /model > "$AD/a1/reg.argv"
-b="$(flags_in "$AD/a1/reg.argv" "$FIX/agy-help.synthetic.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [agy registration: $b]"
+b="$(flags_in "$AD/a1/reg.argv" "$FIX/real/agy/help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [agy registration: $b]"
 ad -- agy argv --out "$AD/a1/agyw" --wt "$AD/wt-t1" --mode review --model 'Gemini 4 Argon (High)' --add-dir "$AD"
 b="$(flags_in "$AD/a1/agyw/agy.argv" "$FIX/real/antigravity/agy-delegate-help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [agy-delegate: $b]"
 ad -- claude argv --out "$AD/a1/cl" --wt "$AD/wt-t1" --headless

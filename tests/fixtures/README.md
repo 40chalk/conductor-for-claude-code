@@ -20,7 +20,7 @@ Each file is labelled **verified** (captured from the real CLI, sanitized as in 
 | `settings/options*.json` | synthetic | option loader (P4) |
 | `settings/win-bom-crlf.json` | synthetic (a Windows-edited file: UTF-8 BOM and CRLF) | P5, P7 |
 | `settings/enabled-first.json` | synthetic (`enabledPlugins` lists the conductor before its `pluginConfigs` entry; braces and quotes inside strings; foreign blocks before and after) | P7 |
-| `agy-help.synthetic.txt` | **synthetic** (the agy flags DESIGN documents [docs-only]; `agy --help` was not capturable) | A1 (agy adapter argv) |
+| `real/agy/help.txt` | **verified** (`agy --help`, agy 1.4.12, captured 2026-11-02 on the user's machine, relayed through chat) | A1 (agy adapter argv) |
 
 
 ## Real captures (`tests/fixtures/real/`)
