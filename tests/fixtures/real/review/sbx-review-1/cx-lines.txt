@@ -1,0 +1,1 @@
+CX_SIGNAL {"status": "EMPTY_OUTPUT", "exit": 3, "reason": "nothing to review (empty diff)", "retry": null, "cmd": "cx-run"}
