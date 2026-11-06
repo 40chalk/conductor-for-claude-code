@@ -1,0 +1,1 @@
+{"type":"error","message":"Internal error: \"reqwest error stream: error sending request for url (https://cli-chat-proxy.grok.com/v1/responses)\"","cwd":"/home/cstelum/.cx-wt/textutil-ca-grok-1"}

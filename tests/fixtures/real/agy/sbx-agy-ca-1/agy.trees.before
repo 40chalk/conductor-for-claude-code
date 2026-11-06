@@ -1,0 +1,33 @@
+== /mnt/c/ai-scratch/cx-live/textutil
+HEAD 36712314523c3e4d0a39079e105d3d83bfe2870a refs/heads/main
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+== /home/cstelum/.conductor/gate/ca-copilot-1.1
+link 701ebb06ace906c7503119df00ec9b18d913ba42d6cd4b4b8af0c9f7a4ef542e
+HEAD fb21f511a4e1e427fe8c53c16160f9742efa8c2f 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+ignored-dir __pycache__/
+ignored-dir tests/__pycache__/
+== /home/cstelum/.cx-wt/textutil-ca-copilot-1
+link 0a169a2e24a42f63eaeeaeab3e3664608062a30a0a99dc574f62da1b0819d288
+HEAD fb21f511a4e1e427fe8c53c16160f9742efa8c2f refs/heads/cx/ca-copilot-1
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+ignored-dir .conductor/
+== /mnt/c/ai-scratch/cx-live/textutil/.git#repo
+stash
+config
+924470d3b71309538d6fa583fcdc0f284333b98c020c2d6c20c5d03c29f85333  -
+exclude 0a910108621a19413e98397d543d64a309ff054436e6baf114a73939caa998dd  -
+0223497a0b8b033aa58a3a521b8629869386cf7ab0e2f101963d328aa62193f7  hooks/applypatch-msg.sample
+efc1401b0e99d1ff51494d154d98b46c1e99059bcd8bf9f73cecde19fd3eb23b  hooks/commit-msg.sample
+9159720099ad5595b8e66645cbfd47763c1e920f46e0b50ae75e642bbec57ef0  hooks/fsmonitor-watchman.sample
+81765af2daef323061dcbc5e61fc16481cb74b3bac9ad8a174b186523586f6c5  hooks/post-update.sample
+e15c5b469ea3e0a695bea6f2c82bcf8e62821074939ddd85b77e0007ff165475  hooks/pre-applypatch.sample
+57185b7b9f05239d7ab52db045f5b89eb31348d7b2177eab214f5eb872e1971b  hooks/pre-commit.sample
+d3825a70337940ebbd0a5c072984e13245920cdf8898bd225c8d27a6dfc9cb53  hooks/pre-merge-commit.sample
+ecce9c7e04d3f5dd9d8ada81753dd1d549a9634b26770042b58dda00217d086a  hooks/pre-push.sample
+4febce867790052338076f4e66cc47efb14879d18097d1d61c8261859eaaa7b3  hooks/pre-rebase.sample
+a4c3d2b9c7bb3fd8d1441c31bd4ee71a595d66b44fcf49ddb310252320169989  hooks/pre-receive.sample
+e9ddcaa4189fddd25ed97fc8c789eca7b6ca16390b2392ae3276f0c8e1aa4619  hooks/prepare-commit-msg.sample
+a53d0741798b287c6dd7afa64aee473f305e65d3f49463bb9d7408ec3b12bf5f  hooks/push-to-checkout.sample
+44ebfc923dc5466bc009602f0ecf067b9c65459abfe8868ddc49b78e6ced7a92  hooks/sendemail-validate.sample
+8d5f2fa83e103cf08b57eaa67521df9194f45cbdbcb37da52ad586097a14d106  hooks/update.sample

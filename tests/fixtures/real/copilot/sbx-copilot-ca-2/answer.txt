@@ -1,0 +1,4 @@
+- **Finding:** `textutil.py:4` defines `slugify(text)`. It currently only raises `NotImplementedError` (`textutil.py:10`).
+- **Intended behavior:** The docstring (`textutil.py:5-8`) describes keeping lowercase ASCII letters/digits, replacing other character runs with one hyphen, and trimming edge hyphens.
+
+DIGEST: `slugify` is defined at `textutil.py:4` but is not implemented.

@@ -1,0 +1,1 @@
+{"version": 1, "rc": 0, "started_at": "2026-11-06T16:31:15Z", "finished_at": "2026-11-06T16:31:27Z", "duration_s": 12, "sid": "500950", "cancelled": false, "timed_out": false, "host": "wsl", "slot": "/home/cstelum/.conductor/locks/copilot.1", "cli_version": "1.0.105"}

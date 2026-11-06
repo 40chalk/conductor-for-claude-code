@@ -1,0 +1,16 @@
+Fix PEP 8 spacing (two blank lines before the function):
+I implemented `slugify` in `textutil.py`, and all 3 tests now pass.
+
+**What changed** (only [textutil.py](file:///home/cstelum/.cx-wt/textutil-ca-agy-1/textutil.py)):
+- [textutil.py:3-7](file:///home/cstelum/.cx-wt/textutil-ca-agy-1/textutil.py#L3-L7): added imports for `re` and `string`, plus two module-level helpers. `_ASCII_LOWER` turns `A-Z` into lowercase, and `_NON_SLUG_RUN` matches any run of characters other than `a-z0-9`.
+- [textutil.py:16-19](file:///home/cstelum/.cx-wt/textutil-ca-agy-1/textutil.py#L16-L19): replaced `raise NotImplementedError` with the real logic. It lowercases ASCII letters, turns each run of other characters into a single `-`, and strips hyphens from both ends.
+
+**What I ran:**
+- `cx-route test` → `Ran 3 tests ... OK`. My first run happened at the same time as the edits, so I reran it twice after the edits finished; both passed.
+- `git status` → only `textutil.py` is modified.
+
+**Open issues:**
+- One judgement call: only ASCII `A-Z` is lowercased. Python's built-in `str.lower()` can turn some non-ASCII characters into ASCII letters (for example, the Kelvin sign `K` becomes `k`). With my version those characters become hyphens instead, which is my reading of the docstring ("Lowercase ASCII letters and digits are kept"). If you'd rather use full Unicode lowercasing, change line 18.
+- The tests don't cover non-ASCII input.
+
+DIGEST: Implemented `slugify` in textutil.py (ASCII-only lowercasing, runs of other characters become one hyphen, hyphens stripped from both ends) and `cx-route test` passes all 3 tests, with only textutil.py modified.

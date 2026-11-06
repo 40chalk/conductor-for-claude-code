@@ -1,0 +1,10 @@
+{
+ "permissions": {
+  "allow": [
+   "write_file(/home/cstelum/.cx-wt/textutil-ca-agy-1)",
+   "command(cx-route)",
+   "command(git status)",
+   "command(ls)"
+  ]
+ }
+}
