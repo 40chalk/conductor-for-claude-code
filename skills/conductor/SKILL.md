@@ -163,12 +163,14 @@ with the repo's `setup` and `commands` from `.cx/routes.json` (written by `cx-in
 
 **Checks run only through `cx-route`.** At dispatch `cx-run` snapshots the task's commands,
 named from `.cx/routes.json` (`test`, `lint`, `typecheck`, ...), into the run's
-`~/.conductor/out/<id>/bin/cx-route`, which is on every executor's PATH: `cx-route test` runs
-that snapshot (an edit of the worktree's `routes.json` changes nothing), `cx-route` alone lists
-the names. Executors may run only `cx-route <name>` and `git status`, `git diff`, `git log`,
-`git show` (agy also `ls`): agy gets exactly these as per-run `--settings` grants (its first
-other command ends the run), Copilot as `--allow-shell` rules, and grok runs inside its
-repository's sandbox profile. Name the checks in the contract as `cx-route <name>`.
+`~/.conductor/routes/<id>/cx-route`, which is on every executor's PATH: `cx-route test` runs
+that snapshot in a clean bash (an edit of the worktree's `routes.json` changes nothing, and a
+caller's `BASH_ENV` or exported functions never run), `cx-route` alone lists the names.
+Executors may run only `cx-route <name>` and `git status` (agy also `ls`): agy gets exactly
+these as per-run `--settings` grants (its first other command ends the run), Copilot as
+`--allow-shell` rules, and grok runs inside its repository's sandbox profile. Never `git diff`,
+`git log` or `git show`: their `--output=<path>` writes any file, and a prefix rule cannot
+forbid an option. Name the checks in the contract as `cx-route <name>`.
 `cx-init --user-grants` (optional, from inside the repo) writes that repository's grok profile
 ahead of its first grok run and removes the invalid profile conductor 0.2.0 wrote; agy needs no
 user-level grant any more. Never use the yolo / skip-permissions flags (`--yolo`,
@@ -195,8 +197,8 @@ Files and pointers (paths, functions). No pasted file contents beyond short exce
 Only paths matching: `src/feature/**`. Lockfiles: no.
 ## Allowed commands
 Run checks only through cx-route: `cx-route test` (`npm test`), snapshotted from .cx/routes.json
-at dispatch (`cx-route` alone lists them). Also allowed: git status, git diff, git log, git show.
-No other shell command.
+at dispatch (`cx-route` alone lists them). Also allowed: git status. Read files, and your own
+changes, with your file tools. No other shell command.
 ## Forbidden
 Editing .conductor/task.md, the tests listed above, CI config, .cx/routes.json or git hooks;
 installing, upgrading or patching dependencies; committing, pushing or branching; starting
@@ -639,7 +641,7 @@ result` and `wait` relay the job's `CX_*` lines and exit with its code.
 | 21 | MODEL_MISMATCH | Served model differs from the requested one (incl. `GHCP_FALLBACK` on a Fusion lane) |
 | 22 | WRONG_TREE | Files changed outside the task's worktree |
 | 23 | SPEC_TAMPERED | `.conductor/task.md` hash mismatch |
-| 24 | TAMPERED | A protected path changed, or the executor left the task branch (`BRANCH_TAMPERED`) |
+| 24 | TAMPERED | A protected path changed (`cx-run`: the worktree's `.git` was rewritten during the run; run no git there, remove the worktree with `rm -rf`), or the executor left the task branch (`BRANCH_TAMPERED`) |
 | 25 | ENV_FAILED | The repo's `setup` command failed (not charged to the executor) |
 | 26 | VERSION_MISMATCH | Flag contract: the CLI's live help lacks a flag the lane emits; lane refused before running |
 | 27 | PARTIAL | Partial output (agy print timeout expired with rc 0) |
@@ -697,13 +699,22 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
   with `--reuse-worktree`.
 - **Exit 23 `SPEC_TAMPERED`** from `cx-run`: the executor edited `.conductor/task.md`; do not
   commit; fail over (Step 3).
+- **Exit 24 `TAMPERED`** from `cx-run`: the executor rewrote the worktree's `.git` link (the
+  note names where it points). No git ran there, so do not run any (its git configuration could
+  run commands): report it, remove the worktree with `rm -rf`, then `git worktree prune` in the
+  repository, and dispatch again with a new id.
+- **grok refused with exit 2** ("cannot apply its sandbox", "holds .grok/sandbox.toml", "cannot
+  write the grok sandbox profile"): grok approves every tool inside its sandbox, so the lane
+  never runs without it. `cx-doctor` D17 names the cause (Landlock and bubblewrap on Linux and
+  WSL; a second definition of the repository's profile in `~/.grok/sandbox.toml`); use another
+  lane meanwhile.
 - **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
   checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing
   was committed or gated; fail over after the reset. After a CI fix in apply mode
   (`ghcp-ci-debug --apply --dir "$WT"`), hand its edits back to `cx/<id>` first (Step 5).
 - **`CX_DENIED`** (exit 15): read its `commands` and `hint`. agy and Copilot may run only
-  `cx-route <name>` and the git reads: a check the task needs belongs in `.cx/routes.json`
+  `cx-route <name>` and `git status` (agy also `ls`): a check the task needs belongs in `.cx/routes.json`
   (then re-dispatch), any other command means the task asked for too much.
 - **`permission required:`** on Grok's stderr: a denied tool (even with rc 0), outside its
   sandbox profile (writes go to the worktree and `/tmp` only). Change the task; never widen to `--always-approve` on a

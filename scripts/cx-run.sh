@@ -64,11 +64,12 @@
 #
 # Checks (cx-route): at dispatch the task's commands are snapshotted, named from .cx/routes.json
 # (test, lint, typecheck, other keys; cmd-1... for the task's own), into $OUT/routes.json and the
-# generated $OUT/bin/cx-route, which is on the worker's PATH. The prompts and the contract tell
-# every executor to run checks only as cx-route <name>; it runs nothing else, and an edit of the
-# worktree's .cx/routes.json never reaches it. Copilot may approve only cx-route and git status,
-# diff, log and show; agy gets the same as per-run --settings grants; grok runs in its
-# repository's sandbox profile (extends strict).
+# generated $CX_HOME/routes/<id>/cx-route, which is on the worker's PATH (the only directory of
+# the run grok's sandbox profile may read). The prompts and the contract tell every executor to
+# run checks only as cx-route <name>; it runs nothing else (in a clean bash: no BASH_ENV or
+# exported functions of its caller), and an edit of the worktree's .cx/routes.json never reaches
+# it. Copilot may approve only cx-route and git status; agy gets those and ls as per-run
+# --settings grants; grok runs in its repository's sandbox profile (extends strict).
 #
 # Output: stdout = the digest, then "VERIFY THIS: <what to check>" and the diffstat (the claude
 # dispatch: its JSON). stderr = notes, CX_DENIED, CX_NOTE, CX_RESULT, then CX_SIGNAL (any exit
@@ -81,7 +82,8 @@
 # .claude/worktrees/ without --repo); 2 FAILED; 3 EMPTY_OUTPUT (write mode: no diff; read: no
 # answer); 10 QUOTA_EXHAUSTED; 11 AUTH_REQUIRED; 12 TIMEOUT; 13 CLI_MISSING; 14
 # MODEL_UNAVAILABLE; 15 PERMISSION_DENIED; 16 SANDBOX_BLOCKED; 20 GATE_FAILED (--finish of the
-# cloud lane: a gate check failed); 21 MODEL_MISMATCH; 22 WRONG_TREE; 23 SPEC_TAMPERED; 25
+# cloud lane: a gate check failed); 21 MODEL_MISMATCH; 22 WRONG_TREE; 23 SPEC_TAMPERED; 24
+# TAMPERED (the worktree's .git no longer links to its own git directory: no git ran there); 25
 # ENV_FAILED (the repo's setup failed; not charged to the executor); 26 VERSION_MISMATCH (the
 # flag contract: the CLI's live help lacks a flag the lane emits; no version is pinned); 27
 # PARTIAL; 28 NO_CAPACITY (no slot within CX_SLOT_WAIT_SECS, a pool disabled in routes.json, cap
@@ -591,15 +593,22 @@ stop_result() {
 }
 
 write_checks() {  # post-run facts of a write run (section 15.1 post-checks)
-  local spec=1 notes=()
+  local spec=1 notes=() why=""
   cx_task_hash_ok "$OUT" "$WT" || spec=0
-  cx_wt_changes "$WT" "$BASE" "$OUT"
-  if [ -n "$CX_WT_BRANCH" ] && [ "$CX_WT_BRANCH" != "cx/$ID" ]; then
+  # Git runs in the worktree only through its own git directory (worktree.sh): a .git the
+  # executor rewrote is TAMPERED (24), and nothing reads it.
+  cx_wt_changes "$TOP" "$WT" "$BASE" "$OUT"
+  if [ "$CX_WT_LINK" = 0 ]; then
+    why="the worktree's .git was rewritten during the run, so no git ran in it: do not run git there; remove the worktree with rm -rf, then git worktree prune in the repository"
+    cx_note "$CX_WT_WHY"
+  elif [ -n "$CX_WT_BRANCH" ] && [ "$CX_WT_BRANCH" != "cx/$ID" ]; then
     notes+=("the executor left cx/$ID (now on $CX_WT_BRANCH): Step 3 stops with BRANCH_TAMPERED")
   elif [ -z "$CX_WT_BRANCH" ]; then
     notes+=("the worktree's HEAD is detached: Step 3 stops with BRANCH_TAMPERED")
   fi
-  norm obj spec_ok:bool "$spec" diff:bool "$CX_WT_DIFF" diffstat "$CX_WT_DIFFSTAT" commit:json null \
+  [ -z "$CX_WT_ADD_ERR" ] || notes+=("git add could not index every file of the worktree ($CX_WT_ADD_ERR); the other files are in the diff")
+  norm obj spec_ok:bool "$spec" git_link_ok:bool "$CX_WT_LINK" git_link_why "$why" diff:bool "$CX_WT_DIFF" \
+    diffstat "$CX_WT_DIFFSTAT" commit:json null \
     branch "${CX_WT_BRANCH:-}" base "$BASE" gate:json null finished:bool "${1:-0}" cancelled:bool "$CANCELLED" \
     notes:json "$(norm json-list "${notes[@]+"${notes[@]}"}")" > "$OUT/checks.json"
   [ -n "$CX_WT_DIFFSTAT" ] || return 0
@@ -814,7 +823,7 @@ if [ -n "$DRY" ]; then
   if [ "$EXEC" != copilot-cloud ]; then
     RS_ARGS=()
     for c in "${CMDS[@]+"${CMDS[@]}"}"; do RS_ARGS+=(--cmd "$c"); done
-    printf 'cx-route (%s/bin/cx-route, snapshotted at dispatch): %s\n' "$OUT" \
+    printf 'cx-route (%s/routes/%s/cx-route, snapshotted at dispatch): %s\n' "$CXH" "$ID" \
       "$(norm route-snapshot --dry-run --routes "$TOP/.cx/routes.json" --out "$OUT" --dir "${WT:-$TOP}" --id "$ID" "${RS_ARGS[@]+"${RS_ARGS[@]}"}" | sed 's/$/;/' | tr '\n' ' ' | sed 's/; $//')"
   fi
   for c in "${EXPLAIN_LINES[@]+"${EXPLAIN_LINES[@]}"}"; do printf 'explain: %s\n' "$c"; done
@@ -874,14 +883,16 @@ else
 fi
 
 # The run's cx-route (DESIGN section 15.1): the task's checks, named from .cx/routes.json as it is
-# now, into $OUT/routes.json and $OUT/bin/cx-route (the worker's PATH has $OUT/bin). The worker
+# now, into $OUT/routes.json and $CX_HOME/routes/<id>/cx-route (the worker's PATH has that
+# directory; grok's profile reads $CX_HOME/routes, never another run's out directory). The worker
 # runs checks only through it; an edit of the worktree's routes.json never reaches it.
-rm -rf -- "${OUT:?}/bin" "${OUT:?}/routes.json"
+RBIN="$CXH/routes/$ID"
+rm -rf -- "${OUT:?}/bin" "${OUT:?}/routes.json" "${RBIN:?}"
 if [ -n "$DIR" ]; then
   RS_ARGS=()
   for c in "${CMDS[@]+"${CMDS[@]}"}"; do RS_ARGS+=(--cmd "$c"); done
-  norm route-snapshot --routes "$TOP/.cx/routes.json" --out "$OUT" --dir "$DIR" --id "$ID" "${RS_ARGS[@]+"${RS_ARGS[@]}"}" \
-    || { unmark; cx_signal FAILED 2 "cannot write the run's cx-route snapshot into $OUT"; }
+  norm route-snapshot --routes "$TOP/.cx/routes.json" --out "$OUT" --bin "$RBIN" --bash "$BASH" --dir "$DIR" --id "$ID" "${RS_ARGS[@]+"${RS_ARGS[@]}"}" \
+    || { unmark; cx_signal FAILED 2 "cannot write the run's cx-route snapshot into $OUT and $RBIN"; }
 fi
 
 PROMPT=""

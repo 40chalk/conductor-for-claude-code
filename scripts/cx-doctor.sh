@@ -1196,6 +1196,25 @@ d15_d19() {
       chk warn D17 "$S_LOG" "grok models (rc $rc): $(first_line "$T/grok-models.all")"
       [ "${n:-0}" -ge 1 ] || GROK_IDS=""
     fi
+    # Every grok run approves every tool inside its sandbox, so the sandbox must apply here
+    # (grok 1.0.70 refuses to start when it cannot apply a profile; its README says it may
+    # instead warn and go on unconfined). Free: grok models under the built-in strict profile.
+    local why=""
+    probe grok-sandbox 30 "${GROK_ENV[@]}" GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false \
+      GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false "$B_grok" --sandbox strict models
+    rc=$?
+    cat "$T/grok-sandbox.out" "$T/grok-sandbox.err" > "$T/grok-sandbox.all" 2>/dev/null
+    why="$(grep -m 1 -iE "sandbox could not be applied|could not apply the '[^']*' sandbox profile|refusing to start with (its protections missing|denied paths unprotected)|without (sandbox )?enforcement" "$T/grok-sandbox.all" 2>/dev/null | head -c 200)"
+    if killed "$rc"; then
+      chk warn D17 "$S_LOG" "grok --sandbox strict models hung and was killed"
+    elif [ -n "$why" ]; then
+      chk fail D17 "$S_LOG" "grok cannot apply its sandbox here ($why): every grok run is refused" \
+        "on Linux and WSL grok needs Landlock (kernel 5.13 or newer, enabled) and bubblewrap: sudo apt install -y bubblewrap"
+    elif [ "$rc" -eq 0 ]; then
+      chk ok D17 "$S_LOG" "grok applies its sandbox here (grok --sandbox strict models)"
+    else
+      chk warn D17 "$S_LOG" "grok --sandbox strict models (rc $rc): $(first_line "$T/grok-sandbox.all")"
+    fi
     if [ "${1:-}" = full ] && [ -n "$GROK_IDS" ]; then
       local bulk
       bulk="$(cx_opt grok_bulk_model)"
@@ -1230,6 +1249,16 @@ d15_d19() {
             chk ok D17 "$S_LOG" "bubblewrap (bwrap) is installed (grok's sandbox may need it)"
           else
             chk warn D17 "$S_LOG" "bubblewrap (bwrap) is not installed: grok refuses to start a sandbox profile with deny lists without it" "sudo apt install -y bubblewrap"
+          fi
+          if [ "$PY" = 1 ]; then
+            local ll
+            ll="$(cx_py landlock 2>/dev/null)" || ll="unknown"
+            case "$ll" in
+              abi\ *) chk ok D17 "$S_LOG" "the kernel offers Landlock (ABI ${ll#abi }), which grok's sandbox uses" ;;
+              none\ *) chk warn D17 "$S_LOG" "the kernel offers no Landlock (${ll#none }): grok cannot confine its process here" \
+                         "Linux 5.13 or newer with Landlock enabled (a current WSL kernel: wsl --update)" ;;
+              *) chk info D17 "$S_LOG" "Landlock: ${ll#unknown }" ;;
+            esac
           fi ;;
       esac
     fi
@@ -1276,7 +1305,7 @@ d15_d19() {
       if g="$(cx_py agy-grants "$gf" 2>/dev/null)"; then
         chk info D18 "$S_LOG" "$gf holds global agy grants ($g), likely from conductor 0.2.0's cx-init --user-grants: conductor runs no longer need them (each raw agy run gets its own --settings grants) and they apply to every agy session of yours; remove them if you do not want them"
       else
-        chk info D18 "$S_LOG" "agy grants are per run (the raw lane passes --settings with write_file(<worktree>) and command() for cx-route and the git reads); no global grant is needed"
+        chk info D18 "$S_LOG" "agy grants are per run (the raw lane passes --settings with write_file(<worktree>) and command() for cx-route, git status and ls); no global grant is needed"
       fi
     fi
   fi

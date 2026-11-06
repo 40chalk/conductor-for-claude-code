@@ -34,10 +34,10 @@
 # CANCELLED. Every exit outside {0, 1} prints one CX_SIGNAL line, last, unless CX_SIGNAL_OWNER
 # is set (cx-run sets it: the caller then prints the single signal of the whole run).
 #
-# Worker environment (section 15.6): CX_WORKER=1; PATH = the worker shims, then $OUT/bin (the
-# run's cx-route, which runs only the task's routes.json checks as cx-run snapshotted them), then
-# the host record's path; COPILOT_AUTO_UPDATE=false GROK_DISABLE_AUTOUPDATER=1
-# AGY_CLI_DISABLE_AUTO_UPDATE=true NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 (no __pycache__ in the
+# Worker environment (section 15.6): CX_WORKER=1; PATH = the worker shims, then
+# $CX_HOME/routes/<id> (the run's cx-route, which runs only the task's routes.json checks as
+# cx-run snapshotted them), then the host record's path; COPILOT_AUTO_UPDATE=false
+# GROK_DISABLE_AUTOUPDATER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 (no __pycache__ in the
 # worktree when the checks run Python); ANTHROPIC_API_KEY XAI_API_KEY GEMINI_API_KEY
 # GOOGLE_API_KEY and every CLAUDE_PLUGIN_OPTION_* unset (the siblings read option variables of
 # their own); executors by absolute path from the host record; cwd the worktree or gate checkout.
@@ -261,9 +261,9 @@ cxa_worker_env() {
   cxa_set PYTHONDONTWRITEBYTECODE 1
 }
 
-# cxa_route_bin: the run's $OUT/bin, where cx-run puts cx-route (a dry run without --out names
-# the out directory a run of that id would use).
-cxa_route_bin() { printf '%s/bin\n' "${A_OUT:-$CXA_HOME/out/${A_ID:-<id>}}"; }
+# cxa_route_bin: $CX_HOME/routes/<id>, where cx-run puts the run's cx-route (the id is --id, else
+# the basename of --out; grok's sandbox profile reads $CX_HOME/routes, not the out directories).
+cxa_route_bin() { printf '%s/routes/%s\n' "$CXA_HOME" "${A_ID:-<id>}"; }
 
 # cxa_env_args: CXA_ENV as env(1) arguments in CXA_ENVARGS (-u NAME, NAME=VALUE), plus every
 # CLAUDE_PLUGIN_OPTION_* present now (a job runner may carry other ones than argv saw).

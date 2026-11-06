@@ -517,18 +517,24 @@ spec left open.
 
 ## 0.2.1 (2026-11-06): choices the live-probe decisions left open
 
-1. **`cx-route` is generated, self-contained bash** (`$OUT/bin/cx-route`, written by
+1. **`cx-route` is generated, self-contained bash** (`$CX_HOME/routes/<id>/cx-route`, written by
    `normalize.py route-snapshot` with the commands inlined), not a shipped script reading a
    snapshot: grok's `strict` profile reads only the worktree, system paths and its `read_only`
    grants, so the command must need no runtime file and no python. Its own refusals exit 127
    (a name not in the snapshot, any argument after the name); every other status is the
-   check's. Names: the `.cx/routes.json` key holding the command, else `cmd-N`.
-2. **The grok profile grants `$CX_HOME/out` read-only** besides the git common directory: a
-   per-repository profile cannot name a per-run directory, and each run's `cx-route` lives
-   there. Other runs' outputs (digests, task files, diffs) become readable to grok writers;
-   `$CX_HOME/secrets` and the ledger stay outside.
-3. **`$OUT/bin` comes right after the worker shims on PATH**, so the shims still win over any
-   CLI name and nothing on the record path can shadow `cx-route`.
+   check's. Names: the `.cx/routes.json` key holding the command, else `cmd-N`. Its shebang is
+   `#!/bin/bash -p` (else cx-run's own bash), and it hands the check the caller's exported
+   variables through `env -i` minus the shell startup ones and `BASH_FUNC_*`: whoever calls it
+   controls its environment, but a full `env -i` would break checks that need toolchain
+   variables.
+2. **The grok profile grants `$CX_HOME/routes` read-only** besides the git common directory: a
+   per-repository profile cannot name a per-run directory, so each run's `cx-route` lives in its
+   own `$CX_HOME/routes/<id>/` (only the script: the checks' commands and paths), never in the
+   out directory. Other runs' digests, task files and diffs, `$CX_HOME/secrets` and the ledger
+   stay unreadable to grok writers (until the 2026-11-06 review the profile granted all of
+   `$CX_HOME/out`). `$OUT/routes.json` stays in the out directory: only the conductor reads it.
+3. **`$CX_HOME/routes/<id>` comes right after the worker shims on PATH**, so the shims still win
+   over any CLI name and nothing on the record path can shadow `cx-route`.
 4. **The flag contract is cached with the probe** (10 minutes) and keyed by the argv's flags
    and the binaries' resolved path, mtime and size, so a CLI that updated itself is checked
    again on the next run, while a help text change without a new binary waits for the cache.
@@ -540,3 +546,32 @@ spec left open.
    the default, carries the per-run grants; the Gemini review lane only reads.
 7. **The review prompt is lane-aware**: agy (agy-delegate, no grants) is told to read with its
    own file tools and run no shell command; the other executors may run `cx-route <name>`.
+
+### The 2026-11-06 security review (choices it left open)
+
+8. **`git diff`, `git log` and `git show` are out of every grant** (agy, Copilot, the headless
+   Claude worker), against decisions 3 and 5 of the probes: their `--output=<path>` writes any
+   file and `git diff --no-index` reads any file, and neither agy's token-prefix rules nor
+   Copilot's first-level-subcommand approvals can forbid an option. `git status` (and agy's
+   `ls`) stay; executors read their own changes with their file tools. Whether Copilot's path
+   verification would have caught `--output=/abs` is not tested (moot now).
+9. **A rewritten worktree `.git` is `tampered` (24)**, the §4.1 row for "a protected path
+   changed": the closest existing status, and no new exit code. The conductor-side git keeps
+   the user's global and system git configuration (only the worktree's own link is untrusted:
+   grok cannot write `~/.gitconfig`, and the lanes without an OS sandbox can already run any
+   code through the repository's checks), overriding only the keys that run programs
+   (`core.fsmonitor`, `core.hooksPath`, `core.pager`, `core.sshCommand`) and never entering
+   submodules or embedded repositories (`-c diff.ignoreSubmodules=all`, which git passes on to
+   every git it starts, and `--ignore-submodules=all` for status and diff).
+10. **The grok profile name is conductor's own**: any `[profiles.<name>]` table outside the
+    markers is replaced (a writer may have stripped them); with tomllib (Python 3.11 and
+    newer) the parsed profile must then equal the rendered one, else the run is refused
+    (dotted keys or an inline table defining it again). Without tomllib only the tables are
+    swept. A worktree `.grok/sandbox.toml` refuses a grok write run outright, since which
+    definition grok prefers is unverified (DESIGN §20 item 73).
+11. **grok's sandbox is checked with grok itself**: the preflight runs `grok --sandbox strict
+    models` (free) and refuses the lane (2 `FAILED`, not a new code) on a line saying the
+    sandbox was not applied; a run's stderr with that line is 2 as well, with a reason saying
+    it ran unconfined when grok went on. The doctor also reports the Landlock ABI
+    (`cxlib.py landlock`; a warning when the kernel has none), but grok's own answer decides
+    the lane.

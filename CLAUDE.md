@@ -177,7 +177,8 @@ environment variable, forwarded from Git Bash; `CX_KILL_GRACE_SECS` (10) and
 
 0 ok · 1 usage (no `CX_SIGNAL`) · 2 FAILED · 3 EMPTY_OUTPUT · 4 CHECKS_FAILED · 5 EXISTS ·
 10–16 as ghcp · 20 GATE_FAILED (`cx-run --finish` of the cloud lane) · 21 MODEL_MISMATCH · 22
-WRONG_TREE (agy paused) · 23 SPEC_TAMPERED · 24 BRANCH_TAMPERED (the skill's Step 3) · 25
+WRONG_TREE (agy paused) · 23 SPEC_TAMPERED · 24 TAMPERED (cx-run: the worktree's `.git`
+rewritten; the skill's Step 3: BRANCH_TAMPERED) · 25
 ENV_FAILED · 26 VERSION_MISMATCH · 27 PARTIAL · 28 NO_CAPACITY (slots, cap 0, agy paused) · 40
 FORWARD_FAILED · 41 RUNTIME_MISSING · 42 PATH_UNMAPPABLE · 43 HOST_UNSUPPORTED · 44 CRLF_CORRUPT ·
 75 RUNNING (`cx-job`) · 126 worker shim · 130 CANCELLED. `cx-run` owns the single signal of a
@@ -223,6 +224,13 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   `CLAUDE_CODE_ENTRYPOINT`, never read `CLAUDE_CODE_VERSION` or `CLAUDE_PROJECT_DIR` in scripts
   (`[P62]`; D30's wording lines are allow-listed).
 - Nothing conductor-specific is ever written into a repo's `CLAUDE.md` or `.claude/`.
+- The scripts' git in a worktree an executor wrote runs only through `worktree.sh`'s
+  `cx_wt_git` (the git directory from the main repository's admin files, never the worktree's
+  own `.git`; `CX_WT_GITC`: no fsmonitor, hooks, pager, textconv or submodules), never
+  `git -C "$WT"`; a rewritten link is 24 `tampered` (the skill's Step 3 runs only after an ok
+  run, so after that check). Executors get only `cx-route <name>` and
+  `git status` (agy also `ls`), never `git diff`/`log`/`show` (`--output=` writes any file);
+  the run's `cx-route` lives in `$CX_HOME/routes/<id>/` (grok's profile reads only that root).
 - Executors run only inside `cx-run` (the adapters) and, for the hand steps and Windows tool
   calls, `cx-wsl`; both take the pool slot. Never put a secret on a command line (argv is
   world-readable in `/proc`): the Copilot token travels in the environment only. An adapter's

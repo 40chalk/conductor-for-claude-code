@@ -18,14 +18,15 @@ version is pinned any more.
   free probe) on any version; the raw invalid-model probe runs only on 1.0.105.
 - **`cx-route`.** At dispatch `cx-run` snapshots the task's checks, named from `.cx/routes.json`
   (`test`, `lint`, `typecheck`, other keys; `cmd-N` for a task's own command), into
-  `$OUT/routes.json` and a generated, self-contained `$OUT/bin/cx-route` on the worker's PATH.
+  `$OUT/routes.json` and a generated, self-contained `$CX_HOME/routes/<id>/cx-route` on the
+  worker's PATH.
   `cx-route <name>` runs only that snapshot (an edit of the worktree's `routes.json` never reaches
   it), its exit status passes through, an unknown name or any extra argument exits 127. The task
   template, the default prompt and the review prompt tell every executor to run checks only as
   `cx-route <name>`.
 - **agy**: each raw run passes `--settings $OUT/agy-settings.json` (session-only): `write_file(<the
-  worktree>)` and `command()` for `cx-route`, `git status`, `git diff`, `git log`, `git show` and
-  `ls`, never `--dangerously-skip-permissions`; its prompt says to read with agy's own file tools
+  worktree>)` and `command()` for `cx-route`, `git status` and `ls`, never
+  `--dangerously-skip-permissions`; its prompt says to read with agy's own file tools
   and that any other command ends the run (one denial ends a headless run). `cx-init
   --user-grants` writes no agy grant any more (a note, and `cx-doctor` D18, name the global grants
   0.2.0 left). The parser reads agy's real stream-json (`{"event": "init"|"step_update"|"result"}`)
@@ -34,7 +35,7 @@ version is pinned any more.
   routes edit as the fix for an agy denial.
 - **grok**: writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
   `~/.grok/sandbox.toml` (extends `strict`; `read_only` the repository's git directory and
-  `~/.conductor/out`), written idempotently under a lock by the lane (or `cx-init
+  `~/.conductor/routes`), written idempotently under a lock by the lane (or `cx-init
   --user-grants`), with `--sandbox <it> --always-approve` instead of `--permission-mode
   acceptEdits` and `--allow` rules (acceptEdits denied the first edit headless);
   `GIT_CONFIG_GLOBAL=/dev/null` in its worker environment. Option `grok_sandbox_profile` now
@@ -42,16 +43,46 @@ version is pinned any more.
   `cx-workspace` block (glob deny paths) is removed from `sandbox.toml`. Served-model alias:
   `grok-4.7` served as `grok-4.7-build` is accepted (an explicit suffix table); anything else
   stays 21. `cx-doctor` D17 checks for bubblewrap on Linux and WSL.
-- **Copilot**: `--allow-shell cx-route` plus `git status`, `git diff`, `git log`, `git show`
-  (Copilot approves a shell call by its command name, so `shell(python3 -m unittest …)` never
-  matched and the real run's tests were denied); never `shell(python3)` or `shell(:*)`.
+- **Copilot**: `--allow-shell cx-route` plus `git status` (Copilot approves a shell call by its
+  command name, so `shell(python3 -m unittest …)` never matched and the real run's tests were
+  denied); never `shell(python3)` or `shell(:*)`.
 - `PYTHONDONTWRITEBYTECODE=1` in every worker environment (Python checks left `__pycache__` in
   the worktree).
+- **Security review fixes** (2026-11-06, before release):
+  - The conductor's own git never finds the repository from a worktree an executor wrote (a
+    worker could repoint `.git` at a git directory whose `core.fsmonitor` ran a command as the
+    conductor on `git add -A`): `worktree.sh` takes the worktree's git directory from the main
+    repository's admin files and runs git with `--git-dir`/`--work-tree`, no fsmonitor, hooks,
+    pager, textconv or submodules (also in agy's tree snapshots, which now hash each worktree's
+    `.git` link). A rewritten link ends the run 24 `TAMPERED` (no git runs there) and
+    `--reuse-worktree` refuses it; an embedded repository without a commit no longer hides the
+    rest of the change (`git add --ignore-errors`, a note).
+  - grok's profile `cx-<repo>-<hash>` is conductor's own: a `[profiles.<name>]` outside the
+    cx:begin/cx:end lines (a grok writer may rewrite `~/.grok/sandbox.toml`) is replaced
+    instead of being left as "the user's", and a file that still defines it another way, or a
+    `.grok/sandbox.toml` in the worktree, refuses the run.
+  - `git diff`, `git log` and `git show` left every grant (agy's `--settings`, Copilot's
+    `--allow-shell`, the Claude worker's settings) and the contract: their `--output=<path>`
+    writes any file and `diff --no-index` reads any file, which no prefix rule can forbid.
+  - `cx-route` runs under `#!/bin/bash -p` and passes the check its caller's exported
+    variables through `env -i` without `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `CDPATH`,
+    `GLOBIGNORE` and exported functions.
+  - grok approves every tool inside its sandbox, so its preflight runs `grok --sandbox strict
+    models` (free) and refuses the lane (2) when grok says the sandbox was not applied; such a
+    line in a run's stderr fails the run (2). `cx-doctor` D17 runs the same probe and reports
+    the kernel's Landlock ABI (`cxlib.py landlock`).
+  - The run's `cx-route` moved from `$OUT/bin` to `$CX_HOME/routes/<id>/`, and the grok profile
+    grants `$CX_HOME/routes` instead of all of `$CX_HOME/out` (other runs' tasks, diffs and
+    digests).
 - Tests: the parsers on every real run directory (`tests/fixtures/real/*/sbx-*`), A1 against the
   real agy 1.4.12 and 1.5.1, grok 1.0.70, Copilot 1.0.105 and `copilot help permissions` texts,
   the flag contract refusing a stub help without a flag, `cx-route` refusing anything outside the
   snapshot; new fixtures `real/agy/help-1.5.1.txt`, `real/copilot/help-permissions.txt` and
-  `real/ghcp/print-command-cx-route.txt`.
+  `real/ghcp/print-command-cx-route.txt` (recaptured without the git diff, log and show rules);
+  regressions for each review fix (a repointed `.git` with `core.fsmonitor`, an embedded
+  repository, the agy snapshot over both, a stripped or dotted grok profile, a worktree
+  `.grok/sandbox.toml`, `cx-route` under `BASH_ENV` and an exported function, grok's sandbox
+  refusal in the probe, the run and D17, and its fail-open warning).
 
 ## 0.2.0 — 2026-11-01
 

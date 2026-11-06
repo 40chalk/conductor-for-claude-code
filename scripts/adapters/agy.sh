@@ -18,9 +18,11 @@
 #                  --print-timeout <T> --output-format stream-json --disable-slash-commands
 #                  -p <prompt>
 #   grants (raw):  $OUT/agy-settings.json, session-only (agy never saves it): permissions.allow
-#                  write_file(<WT>) and command() for cx-route, git status, git diff, git log,
-#                  git show and ls (each simple command of a compound line must match one; one
-#                  denial ends a headless run). Reads inside the workspace need no grant. Never
+#                  write_file(<WT>) and command() for cx-route, git status and ls (each simple
+#                  command of a compound line must match one; one denial ends a headless run;
+#                  never git diff, log or show: a prefix rule would also allow their
+#                  --output=<path>, a write anywhere, and diff --no-index, a read anywhere, and
+#                  agy has no filesystem sandbox). Reads inside the workspace need no grant. Never
 #                  --dangerously-skip-permissions, never a global grant. The default prompt tells
 #                  agy to read with its own file tools and that any other command ends the run.
 #   wrapper argv:  <agy-delegate> --model <M> --dir <WT> [--dir <DIR>...] --timeout <T> --digest <prompt>
@@ -60,11 +62,13 @@ CX_ADAPTER=agy
 CX_PROG=adapter-agy
 # shellcheck source=../lib/adapter.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/../lib/adapter.sh"
+# shellcheck source=../lib/worktree.sh
+declare -F cx_wt_git >/dev/null 2>&1 || . "$CX_LIB/worktree.sh"
 
 AGY_PAUSED="$CXA_HOME/state/agy-paused"
 # The raw lane's default prompt: agy ends a headless run at its first denied tool call, so it is
 # told which commands its per-run grants allow.
-AGY_TASK_PROMPT='Read .conductor/task.md in the working directory and do exactly what it says. Read and search files only with your own file tools (view_file, list_dir, grep_search, find_by_name), never with cat, find or grep. Run checks only as cx-route <name> (cx-route alone lists them); the only other shell commands allowed are git status, git diff, git log, git show and ls, and any other command ends the run unfinished. Do not spawn subagents. End with the DIGEST: line it specifies.'
+AGY_TASK_PROMPT='Read .conductor/task.md in the working directory and do exactly what it says. Read and search files only with your own file tools (view_file, list_dir, grep_search, find_by_name), never with cat, find or grep. Run checks only as cx-route <name> (cx-route alone lists them); the only other shell commands allowed are git status and ls (see your own changes with git status and your file tools, never git diff, git log or git show), and any other command ends the run unfinished. Do not spawn subagents. End with the DIGEST: line it specifies.'
 
 lane_setup() {
   CXA_EXECUTOR=agy CXA_SLOT_POOL=agy
@@ -148,55 +152,73 @@ lane_prepare() {
 lane_dry_extra() {
   [ "$CXA_VARIANT" = raw ] || return 0
   printf 'agy grants (--settings %s, session-only): %s\n' "$(agy_settings_file)" \
-    "write_file(${A_WT:-$PWD}) command(cx-route) command(git status) command(git diff) command(git log) command(git show) command(ls)"
+    "write_file(${A_WT:-$PWD}) command(cx-route) command(git status) command(ls)"
 }
 
 # agy_trees FILE: a snapshot of every other worktree of the repo and of the repository's shared
 # state, so agy writing, committing or planting anything outside its worktree shows (DESIGN
-# section 15.2, WRONG_TREE). Per worktree ("== <path>"): HEAD, its branch, status with untracked
-# files, the hash of git diff HEAD, the hashes of untracked files and of ignored files (git
-# ls-files -o -i --directory: an ignored directory such as node_modules/ is one entry, its
-# contents are not read). The repository ("== <common dir>#repo"): every branch and tag that no
-# worktree has checked out (a checked-out branch moves with its worktree's HEAD, so a marked
-# worktree's own commits are no alarm), the stash, git config without the branch.* keys (git push
-# -u writes those), info/exclude and the hooks. Left out: the task's own worktree, and Claude
-# Code's isolation worktrees under the main checkout's .claude/worktrees (unless it is --repo,
-# the task's own checkout), in every list too.
+# section 15.2, WRONG_TREE). Per worktree ("== <path>"): the hash of its .git link file, HEAD,
+# its branch, status with untracked files, the hash of git diff HEAD, the hashes of untracked
+# files and of ignored files (git ls-files -o -i --directory: an ignored directory such as
+# node_modules/ is one entry, its contents are not read). The repository ("== <common dir>#repo"):
+# every branch and tag that no worktree has checked out (a checked-out branch moves with its
+# worktree's HEAD, so a marked worktree's own commits are no alarm), the stash, git config without
+# the branch.* keys (git push -u writes those), info/exclude and the hooks. Left out: the task's
+# own worktree, and Claude Code's isolation worktrees under the main checkout's .claude/worktrees
+# (unless it is --repo, the task's own checkout), in every list too. Git never finds a repository
+# from a worktree here (any executor may have rewritten a worktree's .git): the common directory
+# comes from --repo (else from the task's worktree at the first snapshot, before agy ran), each
+# worktree's git directory from the repository's admin files, and every call runs with
+# worktree.sh's CX_WT_GITC (no fsmonitor, hooks or textconv; no submodule or embedded repository).
+AGY_GCD=""
 agy_trees() {
-  local out="$1" wt="${A_WT:-$PWD}" wtp main d gcd
+  local out="$1" wt="${A_WT:-$PWD}" wtp main d gd bare=""
   wtp="$(cd -- "$wt" 2>/dev/null && pwd -P)"
-  main="$(git -C "$wt" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
-  gcd="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  if [ -z "$AGY_GCD" ]; then
+    if [ -n "${A_REPO:-}" ] && cx_wt_gcd "$A_REPO"; then AGY_GCD="$CX_WT_GCD"
+    elif cx_wt_gcd "$wt"; then AGY_GCD="$CX_WT_GCD"
+    fi
+  fi
+  [ -n "$AGY_GCD" ] || { : > "$out"; return 0; }
+  main="$(git --git-dir="$AGY_GCD" "${CX_WT_GITC[@]}" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+  [ "$(git --git-dir="$AGY_GCD" config --bool core.bare 2>/dev/null)" = true ] && bare=1
   {
-    git -C "$wt" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r d; do
+    git --git-dir="$AGY_GCD" "${CX_WT_GITC[@]}" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r d; do
       { [ "$d" = "$wt" ] || [ "$d" = "$wtp" ]; } && continue
       if [ "$d" != "${A_REPO:-}" ]; then
         case "$d" in "$main"/.claude/worktrees/*) continue ;; esac
       fi
       [ -d "$d" ] || continue
+      if [ "$d" = "$main" ]; then
+        [ -z "$bare" ] || continue   # a bare repository has no work tree of its own
+        gd="$AGY_GCD"
+      elif cx_wt_admin "$AGY_GCD" "$d"; then gd="$CX_WT_GITDIR"
+      else printf '== %s\nno-admin-entry\n' "$d"; continue
+      fi
       printf '== %s\n' "$d"
-      printf 'HEAD %s %s\n' "$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null)" "$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null)"
-      git -C "$d" status --porcelain=v1 --untracked-files=all -- . ':!.claude/worktrees'
-      git -C "$d" diff HEAD | sha256sum
-      (cd -- "$d" && git ls-files -z -o --exclude-standard -- . ':!.claude/worktrees' | xargs -0r sha256sum)
-      (cd -- "$d" && git ls-files -z -o -i --exclude-standard --directory -- . ':!.claude/worktrees' \
+      if [ "$gd" != "$AGY_GCD" ]; then
+        printf 'link %s\n' "$( { [ -L "$d/.git" ] && echo symlink; } || { [ -f "$d/.git" ] && head -c 4097 -- "$d/.git" | sha256sum | cut -c1-64; } || echo not-a-file)"
+      fi
+      printf 'HEAD %s %s\n' "$(cx_wt_git "$gd" "$d" rev-parse -q --verify HEAD 2>/dev/null)" "$(cx_wt_git "$gd" "$d" symbolic-ref -q HEAD 2>/dev/null)"
+      cx_wt_git "$gd" "$d" status --porcelain=v1 --untracked-files=all --ignore-submodules=all -- . ':!.claude/worktrees'
+      cx_wt_git "$gd" "$d" diff --no-ext-diff --no-textconv --ignore-submodules=all HEAD | sha256sum
+      (cd -- "$d" && cx_wt_git "$gd" "$d" ls-files -z -o --exclude-standard -- . ':!.claude/worktrees' | xargs -0r sha256sum)
+      (cd -- "$d" && cx_wt_git "$gd" "$d" ls-files -z -o -i --exclude-standard --directory -- . ':!.claude/worktrees' \
          | while IFS= read -r -d '' f; do
              case "$f" in */) printf 'ignored-dir %s\n' "$f" ;; *) printf 'ignored %s\n' "$(sha256sum -- "$f" 2>/dev/null | cut -c1-64)  $f" ;; esac
            done)
     done
-    if [ -n "$gcd" ] && [ -d "$gcd" ]; then
-      printf '== %s#repo\n' "$gcd"
-      git -C "$wt" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags \
-        | awk 'FILENAME == ARGV[1] { co[$0] = 1; next } !($1 in co)' \
-            <(git -C "$wt" worktree list --porcelain 2>/dev/null | sed -n 's/^branch //p') -
-      printf 'stash\n'
-      git -C "$wt" stash list --format='%H %gs' 2>/dev/null
-      printf 'config\n'
-      git config --file "$gcd/config" --list 2>/dev/null | grep -v '^branch\.' | sha256sum
-      printf 'exclude '
-      sha256sum < "$gcd/info/exclude" 2>/dev/null || printf 'none\n'
-      (cd -- "$gcd" 2>/dev/null && find hooks -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do sha256sum -- "$f"; done)
-    fi
+    printf '== %s#repo\n' "$AGY_GCD"
+    git --git-dir="$AGY_GCD" "${CX_WT_GITC[@]}" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags \
+      | awk 'FILENAME == ARGV[1] { co[$0] = 1; next } !($1 in co)' \
+          <(git --git-dir="$AGY_GCD" "${CX_WT_GITC[@]}" worktree list --porcelain 2>/dev/null | sed -n 's/^branch //p') -
+    printf 'stash\n'
+    git --git-dir="$AGY_GCD" "${CX_WT_GITC[@]}" stash list --format='%H %gs' 2>/dev/null
+    printf 'config\n'
+    git --git-dir="$AGY_GCD" config --file "$AGY_GCD/config" --list 2>/dev/null | grep -v '^branch\.' | sha256sum
+    printf 'exclude '
+    sha256sum < "$AGY_GCD/info/exclude" 2>/dev/null || printf 'none\n'
+    (cd -- "$AGY_GCD" 2>/dev/null && find hooks -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do sha256sum -- "$f"; done)
   } > "$out" 2>/dev/null
 }
 

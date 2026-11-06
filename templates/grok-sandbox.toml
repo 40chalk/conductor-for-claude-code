@@ -1,10 +1,12 @@
 # conductor: the grok sandbox profile of the repository {{repo}}: every conductor grok
 # writer there runs under it (docs/DESIGN.md section 15.7). cx-run's grok lane and cx-init
 # --user-grants write it; the lines between cx:begin and cx:end are rewritten when they
-# differ, so put your own profiles outside them. It extends grok's strict profile (reads the
-# working directory and system paths, writes it, /tmp and ~/.grok, no child network) with
-# read-only access to the repository's git directory (git status and git log in a worktree)
-# and to the conductor's out directories (each run's cx-route).
+# differ, and any other [profiles.{{name}}] in this file is replaced (the name is
+# conductor's own), so put your own profiles outside them, under other names. It extends
+# grok's strict profile (reads the working directory and system paths, writes it, /tmp and
+# ~/.grok, no child network) with read-only access to the repository's git directory (git
+# status in a worktree) and to the conductor's routes directory (each run's cx-route; never
+# the out directories, which hold other runs' tasks, diffs and digests).
 [profiles.{{name}}]
 extends = "strict"
 read_only = {{read_only}}

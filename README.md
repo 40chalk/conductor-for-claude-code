@@ -75,14 +75,23 @@ cx-run --finish t4 --pr 42                                             # ... who
 - **agy's tree check.** After an agy run every other worktree of the repo, its refs, config,
   hooks and ignored files are compared with a snapshot; a change there ends the run 22
   `WRONG_TREE` and pauses agy dispatch until `cx-job unpause agy`.
+- **The worktree's `.git` is the executor's to rewrite, so the conductor never trusts it.** Its
+  own git (the change of a run, the agy snapshots) takes each worktree's git directory from the
+  repository's own records and runs no configured program (fsmonitor, hooks, textconv,
+  submodules). A rewritten link ends the run 24 `TAMPERED`: run no git in that worktree, remove
+  it with `rm -rf`.
 
 - **Checks run only through `cx-route`.** At dispatch `cx-run` snapshots the task's checks from
-  `.cx/routes.json` into the run's `~/.conductor/out/<id>/bin/cx-route` (`cx-route test`,
+  `.cx/routes.json` into the run's `~/.conductor/routes/<id>/cx-route` (`cx-route test`,
   `cx-route lint`, ...; `cx-route` alone lists them; editing the worktree's `routes.json`
-  changes nothing). Executors may run only that and `git status`, `git diff`, `git log`,
-  `git show`: agy gets exactly these as per-run `--settings` grants (one denied command ends a
-  headless agy run), Copilot as `--allow-shell` rules (it matches a shell call by its command
-  name), and grok runs in its repository's sandbox profile.
+  changes nothing; the check runs in a clean bash, so a caller's `BASH_ENV` or exported
+  functions never run). Executors may run only that and `git status` (agy also `ls`): agy gets
+  exactly these as per-run `--settings` grants (one denied command ends a headless agy run),
+  Copilot as `--allow-shell` rules (it matches a shell call by its command name), and grok runs
+  in its repository's sandbox profile. Never `git diff`, `git log` or `git show`: their
+  `--output=<path>` writes any file, and a prefix rule cannot forbid an option. agy and Copilot
+  have no OS sandbox: their grants keep an executor to the routes, but the routes run the
+  repository's own code, so they do not contain a hostile executor; grok's sandbox does.
 - **No version pins.** Before every run each lane checks that the CLI's live `--help` (and
   `copilot help permissions`) still lists every flag it is about to pass; a missing one refuses
   the lane with exit 26 before anything runs. `cx-doctor` shows the versions the lanes were last
@@ -90,7 +99,12 @@ cx-run --finish t4 --pr 42                                             # ... who
 
 Grok writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
 `~/.grok/sandbox.toml` (extends grok's `strict`; read-only access to the repository's git
-directory and `~/.conductor/out`), which the first grok run of a repository writes. `cx-init
+directory and `~/.conductor/routes`, never the out directories), which the first grok run of a
+repository writes. The name is conductor's own: grok may write `~/.grok`, so before each run any
+other definition of it is replaced, and a file that would still define it another way (or a
+`.grok/sandbox.toml` in the worktree) refuses the run. Every grok run approves every tool inside
+its sandbox, so its preflight first checks that grok can apply one here (`grok --sandbox strict
+models`, free; on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17). `cx-init
 --user-grants` (optional, from inside the repository) writes it ahead of time and removes the
 invalid `cx-workspace` profile 0.2.0 wrote, with a `.cx-bak` backup (`--dry-run` shows what it
 would change). agy needs no global grant any more: remove the `write_file(...)` and
@@ -115,7 +129,8 @@ already keep git checkouts LF). Never install ghcp, antigravity or grok-build on
 side: their policies would send Claude to run their wrappers in Git Bash, bypassing WSL.
 
 Prerequisites, all in WSL: python3 ≥ 3.8, bash ≥ 4.4, coreutils and util-linux (`timeout`,
-`setsid`, `flock`, `sha256sum`), git ≥ 2.31, bubblewrap (`bwrap`) for grok's sandbox; Copilot
+`setsid`, `flock`, `sha256sum`), git ≥ 2.31, bubblewrap (`bwrap`) and a kernel with Landlock
+(Linux 5.13 or newer; a current WSL kernel) for grok's sandbox; Copilot
 CLI, grok, agy, gh (any version whose help still lists the flags the lanes use; last verified:
 Copilot 1.0.105, grok 1.0.70, agy 1.5.1); Claude
 Code itself, logged in (`claude auth login`; the sibling plugins install into it, also when you
@@ -308,7 +323,7 @@ path, commands through `cx-wsl bash -c`). `cx-doctor` reports the workflow setti
 | 14 | `MODEL_UNAVAILABLE` | Model, slug or effort refused before any model call |
 | 15 | `PERMISSION_DENIED` | A denied write, or a denial with no answer or diff |
 | 16 | `SANDBOX_BLOCKED` | Claude Code's Bash sandbox blocks the executor: rerun outside it |
-| 20–28 | `GATE_FAILED` … `NO_CAPACITY` | Gate red (`cx-run --finish` of the cloud lane; `cx-gate` in Phase 3), model mismatch (21), wrong tree (22, agy paused until `cx-job unpause agy`), task contract edited (23), tampering (24, the skill's Step 3 `BRANCH_TAMPERED`), the repo's setup failed (25), flag contract (26: the CLI's help lacks a flag the lane passes), partial output (27), no capacity (28: a pool full for `CX_SLOT_WAIT_SECS`, disabled or paused) |
+| 20–28 | `GATE_FAILED` … `NO_CAPACITY` | Gate red (`cx-run --finish` of the cloud lane; `cx-gate` in Phase 3), model mismatch (21), wrong tree (22, agy paused until `cx-job unpause agy`), task contract edited (23), tampering (24: the worktree's `.git` rewritten during a run, or the skill's Step 3 `BRANCH_TAMPERED`), the repo's setup failed (25), flag contract (26: the CLI's help lacks a flag the lane passes), partial output (27), no capacity (28: a pool full for `CX_SLOT_WAIT_SECS`, disabled or paused) |
 | 40 | `FORWARD_FAILED` | `wsl.exe` missing or failed, distribution missing, or the WSL VM stopped |
 | 41 | `RUNTIME_MISSING` | No runtime copy in WSL (or a version mismatch): `cx-doctor --install-runtime` |
 | 42 | `PATH_UNMAPPABLE` | A path (or the working directory) has no equivalent on the other side |

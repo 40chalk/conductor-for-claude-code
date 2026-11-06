@@ -17,7 +17,8 @@
 #                  auto; any other value names a profile of your own): extends grok's strict
 #                  profile (reads the worktree and system paths only, writes it, /tmp and
 #                  ~/.grok, no child network) plus read_only access to the git directory (git
-#                  status, git log in a worktree) and $CX_HOME/out (the run's cx-route). The
+#                  status in a worktree) and $CX_HOME/routes (each run's cx-route; never the out
+#                  directories, which hold other runs' tasks, diffs and digests). The
 #                  sandbox is the boundary, so every tool is approved inside it (a headless run
 #                  cannot ask: acceptEdits denied the first edit, measured 2026-11-02).
 #   read/review:   --sandbox read-only --always-approve --no-subagents --json-schema <schema>
@@ -27,14 +28,22 @@
 #                  GIT_CONFIG_GLOBAL=/dev/null (the strict profile cannot read ~/.gitconfig),
 #                  XAI_API_KEY and GROK_SANDBOX unset.
 #   probe (free):  grok --version (recorded only), grok models (the -m id must be listed: an
-#                  unlisted id silently drops --effort), grok --help (the flag contract: 26 when
-#                  it lacks a flag of the argv).
+#                  unlisted id silently drops --effort), grok --sandbox strict models (grok's
+#                  sandbox must apply here: a "sandbox could not be applied" or "Refusing to start"
+#                  line refuses the lane, 2), grok --help (the flag contract: 26 when it lacks a
+#                  flag of the argv).
 #   run:           writes the profile into ~/.grok/sandbox.toml when it is missing or differs
-#                  (under $CX_HOME/locks/grok-sandbox.lock; a profile of your own of that name is
-#                  left alone), writes the prompt file, runs grok, then grok usage <uuid> (free).
+#                  (under $CX_HOME/locks/grok-sandbox.lock). The name is conductor's own: any other
+#                  definition of it (one a grok writer left there without the cx:begin/cx:end
+#                  lines: strict lets grok write ~/.grok) is replaced, and a file that would then
+#                  not parse or still define it another way refuses the run (2), as does a
+#                  per-project .grok/sandbox.toml in the worktree. Then it writes the prompt
+#                  file, runs grok, then grok usage <uuid> (free).
 #   parse:         JSON text / sessionId / modelUsage / usage / stopReason [docs-only]; any
 #                  "permission required:" on stderr -> 15; a modelUsage key other than the model
-#                  or its -build alias -> 21. Slot pool: grok (cap_grok).
+#                  or its -build alias -> 21; a stderr line saying the sandbox was not applied
+#                  -> 2 (and, when grok went on anyway, a reason saying it ran unconfined). Slot
+#                  pool: grok (cap_grok).
 #
 # Exit codes: as scripts/lib/adapter.sh (0, 1, 2, 11, 13, 14, 26, 28, 130).
 
@@ -74,7 +83,9 @@ grok_profile() {
     ""|auto|cx-workspace) ;;
     *) GROK_PROFILE="$opt" GROK_PROFILE_AUTO=0; return 0 ;;
   esac
-  for d in "${A_WT:-$PWD}" "${A_REPO:-}"; do
+  # The task's checkout (--repo) first: an earlier executor may have rewritten a reused
+  # worktree's .git, and the common directory it names would become a read grant.
+  for d in "${A_REPO:-}" "${A_WT:-$PWD}"; do
     [ -n "$d" ] && [ -d "$d" ] || continue
     gcd="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && [ -d "$gcd" ] && break
     gcd=""
@@ -116,7 +127,7 @@ lane_dry_extra() {
   [ "$A_MODE" = write ] || return 0
   [ -n "$GROK_PROFILE" ] || grok_profile
   if [ "$GROK_PROFILE_AUTO" = 1 ]; then
-    printf 'sandbox profile: %s (extends strict; read_only %s and %s/out; added to %s before the run when missing)\n' \
+    printf 'sandbox profile: %s (extends strict; read_only %s and %s/routes; added to %s before the run when missing)\n' \
       "$GROK_PROFILE" "$GROK_GCD" "$CXA_HOME" "$(grok_sandbox_file)"
   else
     printf 'sandbox profile: %s (yours, or a built-in; used as it is)\n' "$GROK_PROFILE"
@@ -126,17 +137,23 @@ lane_dry_extra() {
 # lane_prepare (run, after the preflight, before the slot): the repository's profile in
 # ~/.grok/sandbox.toml, written under a lock when it is missing or differs.
 lane_prepare() {
-  local out rc i sb=""
+  local out rc i sb="" wt="${A_WT:-$PWD}"
   [ "$A_MODE" = write ] || return 0
+  # grok also reads a per-project .grok/sandbox.toml, which a writer may leave in its worktree:
+  # it could redefine the run's profile (which definition wins is unverified), so none may exist.
+  if [ -e "$wt/.grok/sandbox.toml" ] || [ -L "$wt/.grok/sandbox.toml" ]; then
+    cxa_fail 2 FAILED "the worktree holds .grok/sandbox.toml (a per-project grok sandbox file that could redefine the run's profile): remove it, or use another lane"
+  fi
   for ((i = 1; i < ${#CXA_ARGV[@]} - 1; i++)); do
     [ "${CXA_ARGV[i]}" = --sandbox ] && sb="${CXA_ARGV[i + 1]}"
   done
   [ -n "$GROK_PROFILE" ] || grok_profile
   # Only the profile the argv names, and only when it is the repository's own.
   [ "$GROK_PROFILE_AUTO" = 1 ] && [ "$sb" = "$GROK_PROFILE" ] || return 0
-  mkdir -p -- "$CXA_HOME/locks"
+  # grok refuses a profile whose read_only names no directory: both exist before it starts.
+  mkdir -p -- "$CXA_HOME/locks" "$CXA_HOME/routes"
   out="$(cx_py grok-profile --gcd "$GROK_GCD" --sandbox "$(grok_sandbox_file)" --template "$CX_ROOT/templates/grok-sandbox.toml" \
-           --out-root "$CXA_HOME/out" --lock "$CXA_HOME/locks/grok-sandbox.lock" 2>&1)"
+           --routes-root "$CXA_HOME/routes" --lock "$CXA_HOME/locks/grok-sandbox.lock" 2>&1)"
   rc=$?
   [ "$rc" = 0 ] || cxa_fail 2 FAILED "cannot write the grok sandbox profile $GROK_PROFILE into $(grok_sandbox_file): ${out:-rc $rc}"
   case "$out" in same*|"") ;; *) cx_note "$out" ;; esac
@@ -158,14 +175,18 @@ lane_postrun() {
 }
 
 lane_probe() {
-  local t="$CXA_PROBE_TMP" mrc
+  local t="$CXA_PROBE_TMP" mrc src
   cxa_probe_cmd "$t/version" "$CXA_BIN" --version
   cxa_probe_cmd "$t/models" "$CXA_BIN" models
   mrc=$?
+  # grok's sandbox must apply on this host: every grok run approves every tool inside it.
+  cxa_probe_cmd "$t/sandbox" "$CXA_BIN" --sandbox strict models
+  src=$?
   cxa_help grok "$CXA_BIN" --help
   cxa_contract_argv grok
   cxa_py probe --lane grok --bin "$CXA_BIN" --version-out "$t/version" --verified "$CX_VERIFIED_GROK" \
-    --models-cli grok --models-out "$t/models" --models-rc "$mrc" --model "$CXA_MODEL" "${CXA_CONTRACT[@]}"
+    --models-cli grok --models-out "$t/models" --models-rc "$mrc" --model "$CXA_MODEL" \
+    --sandbox-out "$t/sandbox" --sandbox-rc "$src" "${CXA_CONTRACT[@]}"
 }
 
 cxa_main "$@"

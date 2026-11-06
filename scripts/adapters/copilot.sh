@@ -8,13 +8,14 @@
 #        copilot.sh -h|--help | --version
 #
 #   argv (write):  <ghcp-delegate> --model <copilot_opus_id> --effort <E> --dir <WT> --write
-#                  --allow-shell cx-route --allow-shell 'git status' --allow-shell 'git diff'
-#                  --allow-shell 'git log' --allow-shell 'git show' --timeout <T>s --digest -- <prompt>
+#                  --allow-shell cx-route --allow-shell 'git status' --timeout <T>s --digest -- <prompt>
 #                  Copilot approves a shell call by its command name (and git's first-level
 #                  subcommand), so shell(python3 -m unittest ...) never matches and shell(python3)
 #                  would allow python3 -c: the routes commands run through the run's cx-route
 #                  (ghcp turns each --allow-shell into --allow-tool 'shell(<it>)'). Never
-#                  shell(python3), never shell(:*).
+#                  shell(python3), never shell(:*), and not git diff, log or show either: Copilot
+#                  approves git by its first-level subcommand, so shell(git diff) would allow git
+#                  diff --output=<path> (a write) and --no-index (a read) of any file.
 #   Fusion:        --fusion standard|max instead of --model/--effort
 #   read/review:   no --write; --add-dir <DIR> for each --add-dir (the diff's directory); the same
 #                  --allow-shell list
@@ -83,9 +84,11 @@ lane_env() {
   cxa_copilot_token
 }
 
-# The shell commands a Copilot run may approve (decision 5 of the 2026-11-06 probes): the run's
-# cx-route and the read-only git subcommands; the routes commands themselves only through cx-route.
-COPILOT_SHELL=(cx-route 'git status' 'git diff' 'git log' 'git show')
+# The shell commands a Copilot run may approve (decision 5 of the 2026-11-06 probes, narrowed): the
+# run's cx-route and git status; the routes commands themselves only through cx-route. git diff,
+# log and show stay out: Copilot approves git by its first-level subcommand, and their
+# --output=<path> writes any file (diff --no-index reads any file).
+COPILOT_SHELL=(cx-route 'git status')
 
 # The ghcp-delegate arguments after the binary (shared by argv and the dry run's --print-command).
 copilot_args() {

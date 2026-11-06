@@ -11,12 +11,12 @@
 #   dispatch (default): run prints {"dispatch": "claude-subagent", "id", "worktree",
 #                  "host_path", "prompt", "effort", "task_file", "cx_route"} on stdout (also in
 #                  $OUT/claude.dispatch.json); parse gives status "dispatched", exit 0. The
-#                  prompt names the run's cx-route by its path ($OUT/bin/cx-route: the
-#                  subagent's PATH is the session's).
+#                  prompt names the run's cx-route by its path ($CX_HOME/routes/<id>/cx-route:
+#                  the subagent's PATH is the session's).
 #   --headless:    cd <WT> && <claude> -p --model claude-opus-5-5 --effort <E> --output-format
 #                  json --session-id <uuid> --permission-mode acceptEdits --settings
 #                  $OUT/cx-worker.json -- <prompt>; cx-worker.json = templates/cx-worker.json (allow
-#                  cx-route and the git reads; deny every agent CLI, sibling wrapper and cx-* bin)
+#                  cx-route and git status; deny every agent CLI, sibling wrapper and cx-* bin)
 #                  plus Bash(<cmd>) per --allow.
 #                  Environment: the worker environment with every name of CLAUDE_WORKER_SCRUB
 #                  (the hosted-session, entrypoint and effort variables of DESIGN section 15

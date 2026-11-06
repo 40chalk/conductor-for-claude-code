@@ -15,7 +15,9 @@ Files of one run in OUT ($CX_HOME/out/<id>), for adapter L (copilot grok agy cla
   L.meta.json            what was requested (adapter argv)
   L.out L.err rc         the executor's stdout, stderr and exit status (adapter run)
   L.run.json             run facts: times, sids, cancelled, timed_out, agy init/result/tree facts
-  checks.json            optional post-run facts from cx-run: spec_ok, diff, diffstat, commit,
+  checks.json            optional post-run facts from cx-run: spec_ok, git_link_ok and
+                         git_link_why (false: the worktree's .git was rewritten -> tampered, 24),
+                         diff, diffstat, commit,
                          branch, base, gate (green|red), cancelled, timed_out, finished (cx-run
                          --finish: a dispatched claude task is classified, not "dispatched"),
                          stop ({status, reason}: the run stopped before the executor, e.g.
@@ -55,11 +57,12 @@ Subcommands:
               [--cmd CMD]... [--snapshot OUT/routes.json]
                                     a free-text task wrapped into templates/task.md (checks named
                                     as cx-route <name> from the snapshot)
-  route-snapshot --routes F --out OUT --dir D --id ID [--cmd CMD]...
-                                    OUT/routes.json and OUT/bin/cx-route: the task's checks,
-                                    named from .cx/routes.json at dispatch (cx-route)
+  route-snapshot --routes F --out OUT --dir D --id ID [--cmd CMD]... [--bin BIN] [--bash B]
+                                    OUT/routes.json and BIN/cx-route (cx-run: $CX_HOME/routes/<id>;
+                                    default OUT/bin): the task's checks, named from .cx/routes.json
+                                    at dispatch (cx-route)
   agy-settings --out F --wt DIR...  the agy raw lane's per-run --settings file (write_file of the
-                                    worktree, command() of cx-route and the git reads)
+                                    worktree, command() of cx-route, git status and ls)
 """
 
 import argparse
@@ -170,6 +173,20 @@ POOLS = {"agy-opus": "google-claude-bucket", "agy-gemini": "google-gemini",
 QUOTA_RE = re.compile(r"rate.?limit|quota|\b429\b|resource.?exhausted|credits balance is too low|insufficient credits|usage limit", re.I)
 AUTH_RE = re.compile(r"You are not authenticated|not (?:logged|signed) in|unauthenticated|unauthorized|please (?:sign in|authenticate|run /login)|No authentication information found|Invalid API key|\breauth", re.I)
 SANDBOX_RE = re.compile(r"Read-only file system|os error 30|EROFS", re.I)
+# grok's own sandbox not applied: "warning: sandbox could not be applied: <cause>", then "error:
+# could not apply the '<p>' sandbox profile; ... Refusing to start with its protections missing."
+# (grok 1.0.70, measured 2026-11-06, a profile with a file in read_only, rc 1) and "Refusing to
+# start with denied paths unprotected" (no bubblewrap, rc 1); grok's README says that where the
+# sandbox cannot be applied (no Landlock) it "logs a warning and continues without enforcement".
+GROK_NOSANDBOX_RE = re.compile(r"(?im)^.*(?:sandbox could not be applied|could not apply the '[^'\n]*' sandbox profile"
+                               r"|refusing to start with (?:its protections missing|denied paths unprotected)"
+                               r"|without (?:sandbox )?enforcement).*$")
+
+
+def grok_nosandbox(text):
+    """The first line of TEXT saying grok's sandbox was not applied, else None."""
+    m = GROK_NOSANDBOX_RE.search(text or "")
+    return CX.sanitize(m.group(0).strip(), 200) if m else None
 MODEL_RE = re.compile(r"model .{0,80}(?:not available|not found|unknown|unsupported|is not supported)|unknown model|invalid model", re.I)
 PARTIAL_RE = re.compile(r"print timeout after .*returning partial output", re.I)
 
@@ -478,6 +495,13 @@ def parse_grok(out_dir, meta, run, rc):
                 f["notes"].append("grok served %s for %s: its build alias (accepted, DESIGN section 15.2)" % (f["served"], req))
     elif rc == 0 and nonblank(f["answer"]):
         f["notes"].append("served model unverified: no modelUsage in grok's JSON")
+    nosb = grok_nosandbox(err)
+    if nosb:
+        if rc == 0 or nonblank(f["answer"]):
+            flag(f, "failed", "grok ran without its sandbox (%s): every tool was approved and nothing confined it; "
+                              "inspect the worktree and the files it could reach before anything else (cx-doctor D17)" % nosb)
+        else:
+            flag(f, "failed", "grok could not apply its sandbox profile and did not start (%s; cx-doctor D17)" % nosb)
     if rc not in (0, None) and rc not in (124, 137, 130):
         if error is not None and not f["session"]:
             flag(f, "failed", "grok exited %d with an error object and no sessionId: %s" % (rc, CX.sanitize(json.dumps(error), 120)))
@@ -806,7 +830,7 @@ PARSERS = {"copilot": parse_copilot, "grok": parse_grok, "agy": parse_agy, "clau
            "copilot-cloud": parse_copilot_cloud}
 
 # DESIGN section 15.1, first match wins (13 missing slots in before failed).
-ORDER = ("wrong_tree", "spec_tampered", "cancelled", "timeout", "sandbox", "missing", "auth",
+ORDER = ("wrong_tree", "spec_tampered", "tampered", "cancelled", "timeout", "sandbox", "missing", "auth",
          "model_unavailable", "quota", "model_mismatch", "denied", "partial", "failed")
 
 
@@ -819,6 +843,8 @@ def classify(f, checks, meta, run, rc):
         flags.pop("dispatched", None)
     if checks.get("spec_ok") is False:
         flags.setdefault("spec_tampered", ".conductor/task.md changed during the run")
+    if checks.get("git_link_ok") is False:
+        flags.setdefault("tampered", str(checks.get("git_link_why") or "the worktree's .git was rewritten during the run"))
     if run.get("cancelled") or checks.get("cancelled") or rc == 130:
         flags.setdefault("cancelled", "interrupted (INT, TERM or HUP, or cx-job kill)")
     if run.get("timed_out") or checks.get("timed_out"):
@@ -919,11 +945,11 @@ def deny_hint(executor, kinds):
     hints = []
     if "shell" in kinds:
         if executor == "agy":
-            hints.append("agy may run only cx-route <name>, git status, git diff, git log, git show and ls (its per-run --settings), "
+            hints.append("agy may run only cx-route <name>, git status and ls (its per-run --settings), "
                          "and its first other command ends the run: name the check in the task (cx-route <name>), add a missing "
                          "check to .cx/routes.json commands, then re-dispatch")
         else:
-            hints.append("only cx-route <name> (the task's .cx/routes.json checks) and git status, git diff, git log, git show may run: "
+            hints.append("only cx-route <name> (the task's .cx/routes.json checks) and git status may run: "
                          "add a missing check to .cx/routes.json commands, or narrow the task")
     if "write" in kinds:
         if executor == "agy":
@@ -1148,6 +1174,11 @@ def cmd_probe(a):
             logged = a.auth_rc == 0
     if a.model_ok is not None:
         mok = a.model_ok == "true"
+    sandbox = None
+    if a.sandbox_out and os.path.exists(a.sandbox_out):
+        why = grok_nosandbox(read(a.sandbox_out))
+        sandbox = {"ok": False if why else (True if a.sandbox_rc == 0 else None), "detail": why or (
+            None if a.sandbox_rc == 0 else "grok --sandbox strict models exited %s" % a.sandbox_rc)}
     if a.version_ok is not None:
         vok = a.version_ok == "true"
     try:
@@ -1164,7 +1195,7 @@ def cmd_probe(a):
         return 1
     res = {"lane": a.lane, "bin": a.bin or None, "version": version, "version_ok": vok,
            "verified": a.verified or None, "logged_in": logged, "models": models, "model": a.model or None,
-           "model_ok": mok, "contract": contract, "cached": False, "paused": bool(a.paused),
+           "model_ok": mok, "contract": contract, "sandbox": sandbox, "cached": False, "paused": bool(a.paused),
            "wrapper": a.wrapper or None, "detail": detail}
     CX.out(json.dumps(res, ensure_ascii=False) + "\n")
     return 0
@@ -1435,8 +1466,8 @@ def cmd_json_list(a):
 def verdict(p):
     """The probe's verdict for adapter run (DESIGN section 15.1 free preflight): "<exit> <STATUS>
     <reason>", first match: binary missing 13, flag contract 26 (the live help lacks a flag the
-    lane is about to emit; never the version: nothing is pinned), agy paused 28, login 11,
-    model 14."""
+    lane is about to emit; never the version: nothing is pinned), agy paused 28, grok's sandbox
+    not applicable here 2, login 11, model 14."""
     lane = p.get("lane")
     c = p.get("contract") if isinstance(p.get("contract"), dict) else None
     if p.get("bin") is None and p.get("version_ok") is not True:
@@ -1451,6 +1482,10 @@ def verdict(p):
             lane, p.get("version") or "(version unknown)", why)
     elif p.get("paused"):
         line = "28 NO_CAPACITY agy dispatch is paused after a wrong_tree result: inspect the changed tree, then run cx-job unpause agy"
+    elif isinstance(p.get("sandbox"), dict) and p["sandbox"].get("ok") is False:
+        line = ("2 FAILED %s cannot apply its sandbox on this host (%s): it runs with --always-approve inside it, so the lane is "
+                "refused (on Linux and WSL it needs Landlock, kernel 5.13 or newer, and bubblewrap; cx-doctor D17)" % (
+                    lane, p["sandbox"].get("detail") or "grok --sandbox strict models"))
     elif p.get("logged_in") is False:
         line = "11 AUTH_REQUIRED %s is not logged in (cx-doctor --login-help %s)" % (lane, lane)
     elif p.get("model_ok") is False:
@@ -1500,8 +1535,11 @@ def cmd_worker_settings(a):
 # The agy raw lane's per-run grants (DESIGN section 15.2, agy row; measured 2026-11-06 on agy
 # 1.5.1: --settings is session-only, command(<rule>) matches each simple command of a compound
 # line as a token prefix, write_file(<dir>) grants writes beneath <dir>, reads inside the
-# workspace need no grant, and one denial ends a headless run).
-AGY_ALLOW_COMMANDS = ("cx-route", "git status", "git diff", "git log", "git show", "ls")
+# workspace need no grant, and one denial ends a headless run). agy has no filesystem sandbox, and
+# a token-prefix rule cannot forbid an option: command(git diff) would also allow git diff
+# --output=<any path> (a write anywhere) and git diff --no-index <any file> (a read anywhere),
+# git log and git show likewise, so agy reads its own changes with its file tools and git status.
+AGY_ALLOW_COMMANDS = ("cx-route", "git status", "ls")
 
 
 def agy_settings(wts):
@@ -1516,7 +1554,7 @@ def agy_settings(wts):
 
 def cmd_agy_settings(a):
     """$OUT/agy-settings.json for agy --settings: write_file(<worktree>) (and its physical path
-    when that differs) plus command() for cx-route and the git reads. Never a skip-permissions
+    when that differs) plus command() for cx-route, git status and ls. Never a skip-permissions
     switch, never a global grant."""
     try:
         CX.atomic_write(a.out, json.dumps(agy_settings(a.wt or []), ensure_ascii=False, indent=1) + "\n", 0o600)
@@ -1602,7 +1640,9 @@ def cmd_routes(a):
 
 
 ROUTE_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
-CX_ROUTE_ALSO = ("git status", "git diff", "git log", "git show")
+# The one shell command besides cx-route every executor may run (git diff, log and show take
+# --output=<path>, a write anywhere, and diff --no-index reads any file; DESIGN section 15.1).
+CX_ROUTE_ALSO = ("git status",)
 
 
 def route_names(routes_file, cmds):
@@ -1634,10 +1674,23 @@ def route_names(routes_file, cmds):
     return out
 
 
-def cx_route_script(task_id, out_dir, run_dir, routes):
-    """The text of $OUT/bin/cx-route: self-contained (no runtime file, no python), so it also
-    runs inside grok's strict sandbox, which reads only the worktree, system paths and the
-    read_only grants of its profile."""
+def _route_bash(path):
+    """The absolute bash cx-route runs under (its shebang, with -p): /bin/bash (a system path, which
+    grok's strict profile reads), else the caller's bash (--bash, cx-run's $BASH)."""
+    for b in ("/bin/bash", path or "", "/usr/bin/bash"):
+        if b.startswith("/") and re.fullmatch(r"[A-Za-z0-9._/+-]+", b) and os.access(b, os.X_OK):
+            return b
+    return "/bin/bash"
+
+
+def cx_route_script(task_id, out_dir, run_dir, routes, bash=""):
+    """The text of the run's cx-route ($CX_HOME/routes/<id>/cx-route): self-contained (no runtime
+    file, no python), so it also runs inside grok's strict sandbox, which reads only the
+    worktree, system paths and the read_only grants of its profile. Whoever calls it controls its
+    environment, so nothing from there runs but the snapshotted command: bash -p (no BASH_ENV,
+    SHELLOPTS, BASHOPTS or imported functions), and the check gets the caller's exported
+    variables through env -i without BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE,
+    and without the BASH_FUNC_* strings exported functions travel in."""
     q = CX.shell_quote
     lst = ["  printf '%%s\\n' %s" % q("cx-route: the checks of task %s (run one as: cx-route <name>):" % task_id)]
     for name, c in routes:
@@ -1646,7 +1699,8 @@ def cx_route_script(task_id, out_dir, run_dir, routes):
         lst.append("  printf '%%s\\n' %s" % q("  (none: .cx/routes.json defines no check for this task)"))
     arms = ["  %s) cmd=%s ;;" % (name, q(c)) for name, c in routes]
     return "\n".join([
-        "#!/usr/bin/env bash",
+        "#!%s -p" % _route_bash(bash),
+        "# shellcheck disable=SC2016  # the snapshotted commands are data, single-quoted on purpose",
         "# cx-route - the checks of conductor task %s, as cx-run snapshotted them from .cx/routes.json" % CX.sanitize(task_id, 80),
         "# at dispatch (%s/routes.json; docs/DESIGN.md section 15.1). Editing the worktree's" % CX.sanitize(out_dir, 4000),
         "# .cx/routes.json changes nothing here. Generated by cx-run; do not edit.",
@@ -1675,26 +1729,36 @@ def cx_route_script(task_id, out_dir, run_dir, routes):
         "    list >&2",
         "    exit 127 ;;",
         "esac",
+        "# A clean shell for the check: nothing of the caller's shell setup runs (bash -p here and",
+        "# below; env -i drops BASH_FUNC_* and the startup variables for every process it starts).",
+        "keep=()",
+        "for n in $(compgen -e); do",
+        '  case "$n" in BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE) ;; *) keep+=("$n=${!n}") ;; esac',
+        "done",
         "cd -- %s || exit 127" % q(run_dir),
-        'exec bash -o pipefail -c "$cmd"',
+        'exec /usr/bin/env -i "${keep[@]+"${keep[@]}"}" "$BASH" -p -o pipefail -c "$cmd"',
         "",
     ])
 
 
 def cmd_route_snapshot(a):
-    """$OUT/routes.json and $OUT/bin/cx-route for one run (DESIGN section 15.1, cx-route): the
-    task's commands named from .cx/routes.json at dispatch. The worker runs checks only through
-    cx-route <name>; a later edit of the worktree's routes.json never reaches it."""
+    """$OUT/routes.json and BIN/cx-route for one run (DESIGN section 15.1, cx-route; BIN is
+    $CX_HOME/routes/<id>, the one directory of the run that grok's profile may read, default
+    $OUT/bin): the task's commands named from .cx/routes.json at dispatch. The worker runs
+    checks only through cx-route <name>; a later edit of the worktree's routes.json never
+    reaches it."""
     routes = route_names(a.routes, a.cmd or [])
     if a.dry_run:
         CX.out("".join("%s: %s\n" % (n, c) for n, c in routes))
         return 0
     snap = {"version": 1, "id": a.id, "dir": a.dir, "source": a.routes, "created_at": CX.iso(CX.utc_now()),
             "routes": [{"name": n, "command": c} for n, c in routes], "also": list(CX_ROUTE_ALSO)}
+    bindir = a.bin or os.path.join(a.out, "bin")
     try:
-        os.makedirs(os.path.join(a.out, "bin"), exist_ok=True)
+        os.makedirs(a.out, exist_ok=True)
+        os.makedirs(bindir, exist_ok=True)
         CX.atomic_write(os.path.join(a.out, "routes.json"), json.dumps(snap, ensure_ascii=False, indent=1) + "\n")
-        CX.atomic_write(os.path.join(a.out, "bin", "cx-route"), cx_route_script(a.id, a.out, a.dir, routes), 0o755)
+        CX.atomic_write(os.path.join(bindir, "cx-route"), cx_route_script(a.id, a.out, a.dir, routes, a.bash), 0o755)
     except OSError as e:
         CX.err("normalize: cannot write the cx-route snapshot in %s: %s\n" % (a.out, e))
         return 1
@@ -1823,6 +1887,8 @@ def main(argv):
     s.add_argument("--auth-kind", default="")
     s.add_argument("--auth-rc", type=int, default=None)
     s.add_argument("--paused", action="store_true")
+    s.add_argument("--sandbox-out", default="", help="grok --sandbox strict models output (grok's sandbox applies here)")
+    s.add_argument("--sandbox-rc", type=int, default=None)
     s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("cache-get")
     s.add_argument("--key", required=True)
@@ -1905,6 +1971,8 @@ def main(argv):
     s.add_argument("--dir", required=True, help="where the checks run (the worktree or gate checkout)")
     s.add_argument("--id", required=True)
     s.add_argument("--cmd", action="append")
+    s.add_argument("--bin", default="", help="the directory of the run's cx-route ($CX_HOME/routes/<id>; default OUT/bin)")
+    s.add_argument("--bash", default="", help="cx-run's bash, when /bin/bash is missing")
     s.add_argument("--dry-run", action="store_true", help="print name: command lines, write nothing")
     s.set_defaults(fn=cmd_route_snapshot)
     a = ap.parse_args(argv)

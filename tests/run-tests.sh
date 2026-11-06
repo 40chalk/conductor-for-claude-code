@@ -1140,6 +1140,7 @@ doc_bg agy119 STUB_AGY_VERSION=1.1.9 -- --no-record
 doc_bg agy1111 STUB_AGY_VERSION=1.1.11 -- --no-record
 doc_bg grok-unauth STUB_GROK_AUTH=0 -- --no-record
 doc_bg grok-net STUB_GROK_MODELS_FAIL=network -- --no-record
+doc_bg grok-nosb STUB_GROK_SANDBOX=refuse -- --no-record
 doc_bg ghcp-auth STUB_GHCP_MODELS=auth -- --no-record
 doc_bg ghcp-sandbox STUB_GHCP_MODELS=sandbox -- --no-record
 doc_bg ghcp-timeout STUB_GHCP_MODELS=timeout -- --no-record
@@ -1435,6 +1436,9 @@ check "[P26] grok unauthenticated: cross D17 naming grok login --device-auth" ev
 doc_use grok-net
 check "[P26] grok models rc 1 with a network error and no ids: ! D17 with that line (not ok)" \
   eval 'd_warn D17 "network is unreachable" && ! d_ok D17 "grok is logged in"'
+doc_use grok-nosb
+check "[X]   grok cannot apply its sandbox (grok --sandbox strict models: 'sandbox could not be applied'): cross D17, every grok run refused, the Landlock and bubblewrap fix" \
+  eval 'rc_is 4 && d_fail D17 "grok cannot apply its sandbox here (warning: sandbox could not be applied" && out_has "needs Landlock" && d_ok D17 "grok is logged in"'
 doc_use ghcp-auth
 check "[P26] ghcp-models rc 11: cross D16 with the copilot login fix" eval 'rc_is 4 && d_fail D16 "copilot is not logged in" && out_has "fix: copilot login"'
 doc_use ghcp-sandbox
@@ -2544,7 +2548,7 @@ check "[X]   grok probe: the section 15.2 keys, version 1.0.70 recorded (verifie
   eval 'rc_is 0 && [ "$(out_json version)" = 1.0.70 ] && outj_is verified 1.0.70 && outj_is version_ok true && outj_is logged_in true && outj_is model_ok true && outj_is contract.ok true && [ "$(out_json contract.checked)" -ge 8 ] && outj_is cached false && out_json lane >/dev/null && out_json bin >/dev/null && out_json models >/dev/null && grep -q "^grok	.*argv: --help$" "$ADL"'
 ad -- grok probe
 check "[X]   ... a second probe within 10 minutes answers from \$CX_HOME/state/preflight.json (cached true, no CLI call)" \
-  eval 'rc_is 0 && outj_is cached true && [ "$(grep -c "^grok	" "$ADL")" = 3 ]'
+  eval 'rc_is 0 && outj_is cached true && [ "$(grep -c "^grok	" "$ADL")" = 4 ]'
 ad -- copilot probe
 check "[X]   copilot probe: copilot --version, ghcp-models --json (an absolute GHCP_COPILOT_BIN), claude-opus-5.5 listed; the flag contract: ghcp-delegate --help, copilot --help against ghcp-delegate --print-command's argv, copilot help permissions" \
   eval 'rc_is 0 && outj_is version_ok true && outj_is logged_in true && outj_is model_ok true && outj_is contract.ok true && grep -q "^ghcp-models	.*copilot_bin=$STUBS/copilot" "$ADL" && grep -q "^copilot	.*argv: help permissions$" "$ADL" && grep -q "^ghcp-delegate	.*argv: --print-command .*--allow-shell cx-route" "$ADL" && grep -q "^ghcp-delegate	.*argv: --help$" "$ADL"'
@@ -2604,20 +2608,60 @@ check "[X]   agy offers no xhigh (next pool): exit 1" eval 'rc_is 1 && no_signal
 adr grok "$O1" STUB_GROK_RUN=ok "${SCRUB_PROBE[@]}" GROK_SANDBOX=off STUB_ENV_FILE="$AD/env.grok" -- --wt "$AD/wt-t1" --allow 'npm test'
 check "[A2]  grok success: run exit 0, parse '0 ok', result.json v1 with lane, pool xai-weekly, model served = requested, session = the -s uuid, usage tokens, digest" \
   eval '[ "$ADR_RC" = 0 ] && [ "$PR" = "0 ok" ] && rj_is version 1 && rj_is lane grok && rj_is pool xai-weekly && rj_is model_served grok-4.7 && [ "$(rj session)" = "$("$REAL_PY" -I "$NORM" field "$O1/grok.meta.json" session_hint)" ] && rj_is usage.input 900 && grep -q "DIGEST:" "$O1/answer.txt" && [ -f "$AD/wt-t1/.conductor/prompt.txt" ] && [ -s "$O1/grok.usage.txt" ]'
-check "[A14] worker environment (grok): worker-shims first on PATH, then the run's \$OUT/bin (cx-route), CX_WORKER=1, PYTHONDONTWRITEBYTECODE=1, GIT_CONFIG_GLOBAL=/dev/null, the GROK_* values; XAI_API_KEY, GROK_SANDBOX, ANTHROPIC_API_KEY and CLAUDE_PLUGIN_OPTION_* absent" \
-  eval 'sed -n "/^== grok$/,/^== /p" "$AD/env.grok" > "$AD/env.grok.1"; grep -qx "PATH=$ROOT/worker-shims:$O1/bin:$STUBS:.*" "$AD/env.grok.1" && grep -qx PYTHONDONTWRITEBYTECODE=1 "$AD/env.grok.1" && grep -qx GIT_CONFIG_GLOBAL=/dev/null "$AD/env.grok.1" && grep -qx CX_WORKER=1 "$AD/env.grok.1" && grep -qx GROK_CLAUDE_HOOKS_ENABLED=false "$AD/env.grok.1" && grep -qx NO_COLOR=1 "$AD/env.grok.1" && ! grep -Eq "^(XAI_API_KEY|GROK_SANDBOX|ANTHROPIC_API_KEY|CLAUDE_PLUGIN_OPTION_[A-Z_]*)=" "$AD/env.grok.1"'
+check "[A14] worker environment (grok): worker-shims first on PATH, then the run's \$CX_HOME/routes/<id> (cx-route), CX_WORKER=1, PYTHONDONTWRITEBYTECODE=1, GIT_CONFIG_GLOBAL=/dev/null, the GROK_* values; XAI_API_KEY, GROK_SANDBOX, ANTHROPIC_API_KEY and CLAUDE_PLUGIN_OPTION_* absent" \
+  eval 'sed -n "/^== grok$/,/^== /p" "$AD/env.grok" > "$AD/env.grok.1"; grep -qx "PATH=$ROOT/worker-shims:$AD/home/.conductor/routes/t1:$STUBS:.*" "$AD/env.grok.1" && grep -qx PYTHONDONTWRITEBYTECODE=1 "$AD/env.grok.1" && grep -qx GIT_CONFIG_GLOBAL=/dev/null "$AD/env.grok.1" && grep -qx CX_WORKER=1 "$AD/env.grok.1" && grep -qx GROK_CLAUDE_HOOKS_ENABLED=false "$AD/env.grok.1" && grep -qx NO_COLOR=1 "$AD/env.grok.1" && ! grep -Eq "^(XAI_API_KEY|GROK_SANDBOX|ANTHROPIC_API_KEY|CLAUDE_PLUGIN_OPTION_[A-Z_]*)=" "$AD/env.grok.1"'
 GP_NAME="$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "$REPO/.git" && pwd -P)")"
-check "[X]   grok write run: the repository's sandbox profile $GP_NAME (extends strict; read_only the git common dir and \$CX_HOME/out) is written to ~/.grok/sandbox.toml before grok starts, and grok ran with --sandbox $GP_NAME --always-approve (no --permission-mode, no --allow)" \
-  eval 'grep -qx "\[profiles.$GP_NAME\]" "$AD/home/.grok/sandbox.toml" && grep -qx "extends = \"strict\"" "$AD/home/.grok/sandbox.toml" && grep -Fqx "read_only = [\"$(cd -- "$REPO/.git" && pwd -P)\", \"$AD/home/.conductor/out\"]" "$AD/home/.grok/sandbox.toml" && grep -q "^grok	.*--sandbox $GP_NAME --always-approve --no-subagents --max-turns 60" "$ADL" && ! grep "^grok	.*--prompt-file" "$ADL" | grep -Eq -- "--permission-mode|--allow "'
+check "[X]   grok write run: the repository's sandbox profile $GP_NAME (extends strict; read_only the git common dir and \$CX_HOME/routes, never \$CX_HOME/out) is written to ~/.grok/sandbox.toml before grok starts, and grok ran with --sandbox $GP_NAME --always-approve (no --permission-mode, no --allow)" \
+  eval 'grep -qx "\[profiles.$GP_NAME\]" "$AD/home/.grok/sandbox.toml" && grep -qx "extends = \"strict\"" "$AD/home/.grok/sandbox.toml" && grep -Fqx "read_only = [\"$(cd -- "$REPO/.git" && pwd -P)\", \"$AD/home/.conductor/routes\"]" "$AD/home/.grok/sandbox.toml" && [ -d "$AD/home/.conductor/routes" ] && grep -q "^grok	.*--sandbox $GP_NAME --always-approve --no-subagents --max-turns 60" "$ADL" && ! grep "^grok	.*--prompt-file" "$ADL" | grep -Eq -- "--permission-mode|--allow "'
 "$REAL_PY" -I "$NORM" emit --out "$O1" 2> "$AD/emit.err"
 check "[A2]  emit: one CX_RESULT line (single-line json.dumps, ASCII) with path and status ok; no CX_DENIED for a clean run" \
   eval '[ "$(tj count "$AD/emit.err" CX_RESULT)" = 1 ] && tj linejson "$AD/emit.err" CX_RESULT && [ "$(tj line "$AD/emit.err" CX_RESULT status)" = ok ] && [ "$(tj line "$AD/emit.err" CX_RESULT path)" = "$O1/result.json" ] && ! grep -q "^CX_DENIED" "$AD/emit.err"'
 "$REAL_PY" -I "$NORM" report --out "$O1" > "$AD/report.out"
 check "[A2]  report: the digest, then a VERIFY THIS line naming the commands" \
   eval 'grep -q "^DIGEST: created cx-grok.txt.$" "$AD/report.out" && grep -q "^VERIFY THIS: .*npm test" "$AD/report.out"'
+# A grok writer may rewrite ~/.grok/sandbox.toml (strict lets it write ~/.grok): stripping the
+# cx:begin/cx:end lines never turns a widened profile of conductor's name into "the user's".
+"$REAL_PY" -I - "$AD/home/.grok/sandbox.toml" "$GP_NAME" <<'PY'
+import re, sys
+p, n = sys.argv[1], sys.argv[2]
+t = open(p, encoding="utf-8").read()
+t = re.sub(r"(?ms)^# cx:begin %s\n.*?^# cx:end %s\n" % (re.escape(n), re.escape(n)), '[profiles.%s]\nextends = "workspace"\nread_write = ["/"]\n' % n, t)
+open(p, "w", encoding="utf-8").write(t)
+PY
+cp "$AD/home/.grok/sandbox.toml" "$AD/sbx.tampered"
+adr grok "$O1" STUB_GROK_RUN=ok -- --wt "$AD/wt-t1"
+check "[X]   ... a sandbox.toml whose $GP_NAME lost its cx:begin/cx:end lines and was widened (extends workspace, read_write /) gets conductor's profile back before grok starts, with a note; the widened table is gone" \
+  eval '[ "$PR" = "0 ok" ] && grep -q "^\[profiles.$GP_NAME\]" "$AD/sbx.tampered" && ! grep -q "^# cx:begin $GP_NAME" "$AD/sbx.tampered" && grep -qx "# cx:begin $GP_NAME" "$AD/home/.grok/sandbox.toml" && ! grep -q "extends = \"workspace\"" "$AD/home/.grok/sandbox.toml" && ! grep -Fq "read_write" "$AD/home/.grok/sandbox.toml" && [ "$(grep -c "^\[profiles.$GP_NAME\]" "$AD/home/.grok/sandbox.toml")" = 1 ] && err_has "replaced it with conductor'"'"'s own profile of that name"'
+printf 'profiles.%s.read_write = ["/"]\n' "$GP_NAME" | cat - "$AD/home/.grok/sandbox.toml" > "$AD/sbx.dotted"
+cp "$AD/sbx.dotted" "$AD/home/.grok/sandbox.toml"
+adr grok "$O1" STUB_GROK_RUN=ok -- --wt "$AD/wt-t1"
+check "[X]   ... a second definition of $GP_NAME by dotted keys (sandbox.toml would not parse, or would not hold exactly the profile) refuses the run before grok starts (2 FAILED), and nothing is written" \
+  eval '[ "$ADR_RC" = 2 ] && one_signal FAILED && err_has "cannot write the grok sandbox profile $GP_NAME" && cmp -s "$AD/sbx.dotted" "$AD/home/.grok/sandbox.toml" && [ ! -s "$O1/grok.out" ]'
+"$REAL_PY" -I - "$AD/home/.grok/sandbox.toml" <<'PY'
+import sys
+p = sys.argv[1]
+t = open(p, encoding="utf-8").read().split("\n", 1)[1]
+open(p, "w", encoding="utf-8").write(t)
+PY
+mkdir -p "$AD/wt-t1/.grok"; printf '[profiles.%s]\nextends = "workspace"\n' "$GP_NAME" > "$AD/wt-t1/.grok/sandbox.toml"
+adr grok "$O1" STUB_GROK_RUN=ok -- --wt "$AD/wt-t1"
+check "[X]   ... a per-project .grok/sandbox.toml in the worktree (a writer may leave one; it could redefine the run's profile) refuses the grok write run before grok starts (2 FAILED)" \
+  eval '[ "$ADR_RC" = 2 ] && one_signal FAILED && err_has "the worktree holds .grok/sandbox.toml" && [ ! -s "$O1/grok.out" ]'
+rm -rf "$AD/wt-t1/.grok"
+# grok approves every tool inside its sandbox (--always-approve), so the sandbox must apply: the
+# free probe runs grok --sandbox strict models, and a run's own warning fails it.
+ad STUB_GROK_SANDBOX=refuse -- grok probe --refresh --wt "$AD/wt-t1"
+check "[X]   grok probe: grok --sandbox strict models says 'sandbox could not be applied' -> sandbox.ok false, with that line" \
+  eval 'rc_is 0 && outj_is sandbox.ok false && grep -q "^grok	.*argv: --sandbox strict models$" "$ADL" && grep -q "sandbox could not be applied" "$O"'
+adr grok "$O1" STUB_GROK_RUN=ok STUB_GROK_SANDBOX=refuse -- --wt "$AD/wt-t1" --refresh
+check "[X]   ... and the grok run is refused before grok starts: 2 FAILED naming the sandbox and Landlock (cx-doctor D17), no prompt run" \
+  eval '[ "$ADR_RC" = 2 ] && one_signal FAILED && err_has "grok cannot apply its sandbox on this host" && err_has "Landlock" && [ ! -s "$O1/grok.out" ]'
+adr grok "$O1" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_RUN=warn -- --wt "$AD/wt-t1" --refresh
+check "[X]   grok warns that its sandbox could not be applied and goes on (the fail-open grok's README describes): parse '2 failed', the reason says it ran unconfined" \
+  eval '[ "$ADR_RC" = 0 ] && [ "$PR" = "2 failed" ] && rj reason | grep -q "grok ran without its sandbox (warning: sandbox could not be applied"'
 adr copilot "$O1" STUB_GHCP_RUN=ok "${SCRUB_PROBE[@]}" COPILOT_MODEL=gpt-x COPILOT_ALLOW_ALL=1 GH_TOKEN=t STUB_ENV_FILE="$AD/env.cop" -- --wt "$AD/wt-t1" --allow 'npm test'
-check "[A2]  copilot success through ghcp-delegate (never raw copilot): ok, lane copilot-opus, served claude-opus-5.5, ai_credits 1.5; ghcp-delegate got --write --allow-shell cx-route and the four git reads, never the routes command itself" \
-  eval '[ "$PR" = "0 ok" ] && rj_is lane copilot-opus && rj_is model_served claude-opus-5.5 && rj_is cost.ai_credits 1.5 && grep -q "^ghcp-delegate	.*run=ok.*--write --allow-shell cx-route --allow-shell git\\\\ status --allow-shell git\\\\ diff --allow-shell git\\\\ log --allow-shell git\\\\ show --timeout 1800s --digest" "$ADL" && ! grep "^ghcp-delegate	.*run=ok" "$ADL" | grep -q "npm\\\\ test"'
+check "[A2]  copilot success through ghcp-delegate (never raw copilot): ok, lane copilot-opus, served claude-opus-5.5, ai_credits 1.5; ghcp-delegate got --write --allow-shell cx-route and git status only (never git diff, log or show: their --output=<path> writes any file), never the routes command itself" \
+  eval '[ "$PR" = "0 ok" ] && rj_is lane copilot-opus && rj_is model_served claude-opus-5.5 && rj_is cost.ai_credits 1.5 && grep -q "^ghcp-delegate	.*run=ok.*--write --allow-shell cx-route --allow-shell git\\\\ status --timeout 1800s --digest" "$ADL" && ! grep "^ghcp-delegate	.*run=ok" "$ADL" | grep -Eq "npm\\\\ test|git\\\\ (diff|log|show)"'
 check "[A14] worker environment (copilot): COPILOT_MODEL, COPILOT_ALLOW_ALL, GH_TOKEN unset; GHCP_COPILOT_BIN = the recorded copilot; GHCP_USAGE_LOG under \$CX_HOME" \
   eval 'sed -n "/^== ghcp-delegate$/,/^== /p" "$AD/env.cop" > "$AD/env.cop.1"; ! grep -Eq "^(COPILOT_MODEL|COPILOT_ALLOW_ALL|GH_TOKEN)=" "$AD/env.cop.1" && grep -qx "GHCP_COPILOT_BIN=$STUBS/copilot" "$AD/env.cop.1" && grep -qx "GHCP_USAGE_LOG=$AD/home/.conductor/raw-usage.log" "$AD/env.cop.1" && grep -qx CX_WORKER=1 "$AD/env.cop.1"'
 adr claude "$O1" -- --wt "$AD/wt-t1" --effort max --id t1
@@ -2919,8 +2963,8 @@ RJ="$RR/sbx-review-2/result.json"
 { [ "$(cat "$RR/sbx-review-2.pr")" = "0 ok" ] && rj_is model_served gpt-6.1-sol && rj_is cost.ai_credits 5.3197 && rj_is mode review; } \
   || RR_BAD="$RR_BAD [sbx-review-2: $(cat "$RR/sbx-review-2.pr")]"
 check "[X]   the parsers on every real run directory (fixtures/real/*/sbx-*): agy 15 (the real stream-json: init, step_update, result with denied_actions; session, usage), copilot 0 (19.5569 credits), grok 15 (the edit denied headless; grok-4.7-build accepted as grok-4.7's alias, no longer 21), the copilot review 0; the review stopped on an empty diff has nothing to parse${RR_BAD:+:$RR_BAD}" test -z "$RR_BAD"
-check "[X]   ... the real agy denial names the command it stopped (step_update tool_info.parameters.CommandLine) in CX_DENIED.commands, with an agy hint (cx-route, the git reads; never a skip-permissions flag or a routes --allow fix)" \
-  eval '[ "$(tj line "$RR/sbx-agy-1.emit" CX_DENIED count)" = 1 ] && tj line "$RR/sbx-agy-1.emit" CX_DENIED commands | grep -Fq "git status --short; find . -path ./.git -prune" && tj line "$RR/sbx-agy-1.emit" CX_DENIED hint | grep -q "agy may run only cx-route <name>, git status, git diff, git log, git show and ls" && ! grep -Eq "dangerously|always-approve|--allow\\)" "$RR/sbx-agy-1.emit"'
+check "[X]   ... the real agy denial names the command it stopped (step_update tool_info.parameters.CommandLine) in CX_DENIED.commands, with an agy hint (cx-route, git status and ls; never a skip-permissions flag or a routes --allow fix)" \
+  eval '[ "$(tj line "$RR/sbx-agy-1.emit" CX_DENIED count)" = 1 ] && tj line "$RR/sbx-agy-1.emit" CX_DENIED commands | grep -Fq "git status --short; find . -path ./.git -prune" && tj line "$RR/sbx-agy-1.emit" CX_DENIED hint | grep -q "agy may run only cx-route <name>, git status and ls" && ! grep -Eq "dangerously|always-approve|--allow\\)" "$RR/sbx-agy-1.emit"'
 check "[X]   ... the real grok denial's hint names grok's sandbox profile (never --always-approve on a writer or a routes edit)" \
   eval 'tj line "$RR/sbx-grok-1.emit" CX_DENIED hint | grep -q "grok may write only inside the task" && ! grep -q "cx-init --user-grants" "$RR/sbx-grok-1.emit"'
 # the grok alias table is explicit: only <requested>-build; another served model stays 21.
@@ -2958,11 +3002,12 @@ grep -qzx -- "$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "
 ad -- copilot argv --out "$AD/r1/cop" --wt "$AD/wt-t1" --allow 'python3 -m unittest discover -s tests'
 b="$(flags_in "$AD/r1/cop/copilot.argv" "$FIX/real/ghcp/ghcp-delegate-help.txt")"; [ -z "$b" ] || R1_BAD="$R1_BAD [ghcp-delegate: $b]"
 ! grep -qz -- 'python3' "$AD/r1/cop/copilot.argv" || R1_BAD="$R1_BAD [copilot: a routes command reached --allow-shell]"
+! grep -qzE -- '^git (diff|log|show)$' "$AD/r1/cop/copilot.argv" || R1_BAD="$R1_BAD [copilot: git diff, log or show approved (their --output=<path> writes any file)]"
 for f in shell write; do grep -Fq "$f(" "$FIX/real/copilot/help-permissions.txt" || R1_BAD="$R1_BAD [copilot help permissions lacks $f(]"; done
 shell_argv "$FIX/real/ghcp/print-command-cx-route.txt" "$AD/r1/pc.argv"
 b="$(flags_in "$AD/r1/pc.argv" "$FIX/real/copilot/help.txt")"; [ -z "$b" ] || R1_BAD="$R1_BAD [print-command-cx-route: $b]"
-grep -qzx -- 'shell(cx-route)' "$AD/r1/pc.argv" && grep -qzx -- 'shell(git status)' "$AD/r1/pc.argv" && ! grep -qz -- 'shell(python3' "$AD/r1/pc.argv" || R1_BAD="$R1_BAD [print-command-cx-route: the shell() rules]"
-check "[A1]  the 0.2.1 argv on the real helps: agy raw (--settings \$OUT/agy-settings.json, never --dangerously-skip-permissions) in agy 1.4.12 (both captures) and 1.5.1; grok write (--sandbox <the repository's profile> --always-approve, no --permission-mode or --allow) in grok 1.0.70; ghcp-delegate --allow-shell cx-route and the git reads only, and ghcp's real --print-command of it (shell(cx-route), shell(git status)) in Copilot 1.0.105 --help, whose help permissions documents shell() and write()${R1_BAD:+:$R1_BAD}" test -z "$R1_BAD"
+grep -qzx -- 'shell(cx-route)' "$AD/r1/pc.argv" && grep -qzx -- 'shell(git status)' "$AD/r1/pc.argv" && ! grep -qzE -- 'shell\((python3|git (diff|log|show))' "$AD/r1/pc.argv" || R1_BAD="$R1_BAD [print-command-cx-route: the shell() rules]"
+check "[A1]  the 0.2.1 argv on the real helps: agy raw (--settings \$OUT/agy-settings.json, never --dangerously-skip-permissions) in agy 1.4.12 (both captures) and 1.5.1; grok write (--sandbox <the repository's profile> --always-approve, no --permission-mode or --allow) in grok 1.0.70; ghcp-delegate --allow-shell cx-route and git status only, and ghcp's real --print-command of it (shell(cx-route), shell(git status), no shell(git diff|log|show)) in Copilot 1.0.105 --help, whose help permissions documents shell() and write()${R1_BAD:+:$R1_BAD}" test -z "$R1_BAD"
 
 # --- the adapter log is free of billable calls; no bytecode written into the plugin
 check "[P30] adapters: no stub logged BILLABLE (every executor run carried a scenario knob)" eval '! grep -q "^BILLABLE" "$ADL"'
@@ -3000,8 +3045,8 @@ adr agy "$O1" STUB_AGY_RUN=denied -- --wt "$AD/wt-t1"
 check "[A3]  agy: denied_actions in the result event (rc 0) -> 15 denied, kind write${A3_BAD:+:$A3_BAD}" test -z "$A3_BAD"
 # --- the per-run grants (the 2026-11-06 probes, decision 3): --settings, never a global grant
 adr agy "$O1" STUB_AGY_RUN=ok STUB_AGY_SETTINGS_COPY="$AD/agy-settings.seen" -- --wt "$AD/wt-t1" --repo "$REPO"
-check "[X]   agy raw: --settings \$OUT/agy-settings.json (session-only), which agy read: write_file(<the worktree>) and command() for cx-route, git status, git diff, git log, git show and ls; the prompt names agy's own file tools and cx-route; no global agy settings written" \
-  eval '[ "$PR" = "0 ok" ] && [ "$(tj get "$AD/agy-settings.seen" permissions.allow.0)" = "write_file($AD/wt-t1)" ] && tj get "$AD/agy-settings.seen" permissions.allow | grep -Fq "\"command(cx-route)\", \"command(git status)\", \"command(git diff)\", \"command(git log)\", \"command(git show)\", \"command(ls)\"]" && grep -q -- "--settings $O1/agy-settings.json --print-timeout" "$ADL" && grep -q "your own file tools (view_file, list_dir, grep_search, find_by_name)" "$O1/agy.meta.json" && grep -q "cx-route <name>" "$O1/agy.meta.json" && [ ! -e "$AD/home/.gemini/antigravity-cli/settings.json" ] && ! grep -q -- "--dangerously-skip-permissions" "$ADL"'
+check "[X]   agy raw: --settings \$OUT/agy-settings.json (session-only), which agy read: write_file(<the worktree>) and command() for cx-route, git status and ls (never git diff, log or show: their --output=<path> writes, and diff --no-index reads, any file); the prompt names agy's own file tools and cx-route; no global agy settings written" \
+  eval '[ "$PR" = "0 ok" ] && [ "$(tj get "$AD/agy-settings.seen" permissions.allow.0)" = "write_file($AD/wt-t1)" ] && tj get "$AD/agy-settings.seen" permissions.allow | grep -Fq "\"command(cx-route)\", \"command(git status)\", \"command(ls)\"]" && grep -q -- "--settings $O1/agy-settings.json --print-timeout" "$ADL" && grep -q "your own file tools (view_file, list_dir, grep_search, find_by_name)" "$O1/agy.meta.json" && grep -q "cx-route <name>" "$O1/agy.meta.json" && [ ! -e "$AD/home/.gemini/antigravity-cli/settings.json" ] && ! grep -q -- "--dangerously-skip-permissions" "$ADL"'
 adr agy "$O1" STUB_AGY_RUN=replay -- --wt "$AD/wt-t1" --repo "$REPO"
 "$REAL_PY" -I "$NORM" emit --out "$O1" 2> "$AD/emit-replay.err"
 check "[X]   agy replaying the REAL 1.4.12 run (sbx-agy-1: one run_command auto-denied, result SUCCESS, rc 0): the watcher reads the real init event (served claude-opus-5-5-high), 15 denied, the command named in result.json and in CX_DENIED.commands" \
@@ -3044,7 +3089,7 @@ rm -f "$AD/home/.conductor/state/agy-paused"
 local WT_BAD="" agt="$AD/agt"
 mkdir -p "$agt"
 agy_snap() {  # NAME: the adapter's agy_trees on wt-t1 (the repo's other trees and its shared state)
-  env A_WT="$AD/wt-t1" A_REPO="$REPO" bash -c 'eval "$(sed -n "/^agy_trees() {/,/^}/p" "$1")"; agy_trees "$2"' _ "$ADP/agy.sh" "$agt/$1"
+  env A_WT="$AD/wt-t1" A_REPO="$REPO" bash -c '. "$3"; eval "$(sed -n "/^agy_trees() {/,/^}/p" "$1")"; agy_trees "$2"' _ "$ADP/agy.sh" "$agt/$1" "$ROOT/scripts/lib/worktree.sh"
 }
 agy_diff() { "$REAL_PY" -I "$NORM" trees-diff "$agt/$1" "$agt/$2" > "$agt/$1.changed"; }
 agy_snap b1; git -C "$REPO" branch -q side; agy_snap a1
@@ -3062,6 +3107,26 @@ rm -f "$REPO/.env"
 agy_snap b5; git -C "$REPO" config branch.cx/t9.remote origin; git -C "$AD/wt-t1" -c user.email=t@x -c user.name=t commit -q --allow-empty -m own; agy_snap a5
 agy_diff b5 a5 || WT_BAD="$WT_BAD [the task's own commit or git push -u's branch.* config flagged: $(cat "$agt/b5.changed")]"
 check "[A5]  the agy snapshot sees a moved or new branch, a planted hook, core.hooksPath and an ignored .env outside the worktree, but not the task's own commit or the branch.* keys git push -u writes${WT_BAD:+:$WT_BAD}" test -z "$WT_BAD"
+# Another worktree's .git repointed at a git directory with core.fsmonitor, and a committed
+# embedded repository with its own core.fsmonitor: the snapshot sees the link change and runs
+# neither (git there only through the repository's admin files, CX_WT_GITC, no submodules).
+WT_BAD=""
+git -C "$REPO" worktree add -q -b cx/snap "$AD/wt-snap"
+git init -q --bare "$agt/evil"; git -C "$agt/evil" config core.bare false; git -C "$agt/evil" config core.fsmonitor "touch $agt/pwned-link"
+cp "$AD/wt-snap/.git" "$agt/snap.git"
+agy_snap b6; printf 'gitdir: %s\n' "$agt/evil" > "$AD/wt-snap/.git"; agy_snap a6
+agy_diff b6 a6 && WT_BAD="$WT_BAD [a repointed .git not seen]"
+grep -qx "$AD/wt-snap" "$agt/b6.changed" || WT_BAD="$WT_BAD [the change does not name wt-snap: $(cat "$agt/b6.changed")]"
+cp "$agt/snap.git" "$AD/wt-snap/.git"
+mkdir -p "$AD/wt-snap/sub"; git -C "$AD/wt-snap/sub" init -q; git -C "$AD/wt-snap/sub" -c user.email=t@x -c user.name=t commit -q --allow-empty -m s
+git -C "$AD/wt-snap" add sub 2>/dev/null; git -C "$AD/wt-snap" -c user.email=t@x -c user.name=t commit -qm sub
+git -C "$AD/wt-snap/sub" config core.fsmonitor "touch $agt/pwned-sub"; printf 'dirty\n' > "$AD/wt-snap/sub/d"
+agy_snap b7; agy_snap a7
+[ ! -e "$agt/pwned-link" ] || WT_BAD="$WT_BAD [the snapshot ran the repointed git directory's core.fsmonitor]"
+[ ! -e "$agt/pwned-sub" ] || WT_BAD="$WT_BAD [the snapshot ran the embedded repository's core.fsmonitor]"
+git -C "$REPO" worktree remove --force --force "$AD/wt-snap" 2>/dev/null || rm -rf "$AD/wt-snap"
+git -C "$REPO" worktree prune; git -C "$REPO" branch -q -D cx/snap 2>/dev/null
+check "[X]   the agy snapshot sees another worktree's .git repointed, and runs no git configuration a worktree controls (a repointed git directory's or an embedded repository's core.fsmonitor)${WT_BAD:+:$WT_BAD}" test -z "$WT_BAD"
 # Running marks: only a live run's (its cx-run holds .run.lock) or a finished ok/dispatched task's
 # count; a failed task's mark or a dead cx-run's is stale.
 local MK="$AD/home/.conductor/out" MK_BAD=""
@@ -3184,7 +3249,7 @@ check "[A2]  ... one ledger line: result.json without raw and notes; [A28] it ca
   eval '[ "$(wc -l < "$L")" = 1 ] && [ "$(tj get "$AD/ledger.last" id)" = g1 ] && [ "$(tj get "$AD/ledger.last" claude_session)" = sess-a2 ] && [ "$(tj get "$AD/ledger.last" claude_effort)" = xhigh ] && ! grep -q "\"raw\"" "$AD/ledger.last" && ! grep -q "\"notes\"" "$AD/ledger.last"'
 cr STUB_GHCP_RUN=ok -- "$CXRUN" --exec copilot --effort high --id c1 'Add a file'
 a2_keep c1
-check "[A2]  cx-run --exec copilot: ok, lane copilot-opus through ghcp-delegate (--write, --dir the worktree, --allow-shell cx-route and the git reads), served claude-opus-5.5, CX_NOTE same_family_as_conductor" \
+check "[A2]  cx-run --exec copilot: ok, lane copilot-opus through ghcp-delegate (--write, --dir the worktree, --allow-shell cx-route and git status), served claude-opus-5.5, CX_NOTE same_family_as_conductor" \
   eval 'rc_is 0 && line_is CX_RESULT lane copilot-opus && line_is CX_RESULT model_served claude-opus-5.5 && line_is CX_NOTE same_family_as_conductor true && grep "^ghcp-delegate	" "$ADL" | grep -q -- "--dir $AD/home/.cx-wt/repo-c1 --write --allow-shell cx-route --allow-shell git\\\\ status"'
 cr STUB_AGY_RUN=ok -- "$CXRUN" --exec agy --id a1 'Add a file'
 a2_keep a1
@@ -3226,27 +3291,42 @@ done
 check "[A2]  every lane through cx-run (grok, copilot, agy raw, agy wrapper, claude --headless, the claude dispatch once finished; the cloud lane: its section): result.json carries every section 15.4 field with its type, the one CX_RESULT is result.json without raw, notes and models_seen plus path and host_path, the ledger line is result.json without raw and notes, stdout ends with the VERIFY THIS line and the diffstat${A2_BAD:+:$A2_BAD}" test -z "$A2_BAD"
 
 # --- cx-route (the 2026-11-06 probes, decision 2): the run's checks, snapshotted at dispatch
-local RREPO="$AD/rrepo" RWT RO
+local RREPO="$AD/rrepo" RWT RO RB
 mkdir -p "$RREPO/.cx"; git -C "$RREPO" init -q; printf 'hi\n' > "$RREPO/README.md"
 printf '{"version": 1, "setup": null, "commands": {"test": "echo snapshot-test; exit 7", "lint": "true", "typecheck": null}}\n' > "$RREPO/.cx/routes.json"
 commit_all "$RREPO"
 CR_CWD="$RREPO" cr STUB_GROK_RUN=route -- "$CXRUN" --exec grok --id rt1 'Run the tests'
-RO="$AD/home/.conductor/out/rt1" RWT="$AD/home/.cx-wt/rrepo-rt1"
-check "[X]   cx-run writes the run's cx-route snapshot: \$OUT/routes.json names the checks from .cx/routes.json (test, lint) and \$OUT/bin/cx-route is executable; the task contract says to run checks only through cx-route <name>" \
-  eval 'rc_is 0 && [ "$(tj get "$RO/routes.json" routes.0.name)" = test ] && [ "$(tj get "$RO/routes.json" routes.1.name)" = lint ] && [ -x "$RO/bin/cx-route" ] && grep -Fq -- "- Must pass: \`cx-route test\` (" "$RWT/.conductor/task.md" && grep -Fq "Run checks only through cx-route: \`cx-route test\`" "$RWT/.conductor/task.md"'
+RO="$AD/home/.conductor/out/rt1" RWT="$AD/home/.cx-wt/rrepo-rt1" RB="$AD/home/.conductor/routes/rt1"
+check "[X]   cx-run writes the run's cx-route snapshot: \$OUT/routes.json names the checks from .cx/routes.json (test, lint) and \$CX_HOME/routes/<id>/cx-route is executable (nothing in \$OUT/bin: grok's profile reads only \$CX_HOME/routes); the task contract says to run checks only through cx-route <name>" \
+  eval 'rc_is 0 && [ "$(tj get "$RO/routes.json" routes.0.name)" = test ] && [ "$(tj get "$RO/routes.json" routes.1.name)" = lint ] && [ -x "$RB/cx-route" ] && [ ! -e "$RO/bin" ] && grep -Fq -- "- Must pass: \`cx-route test\` (" "$RWT/.conductor/task.md" && grep -Fq "Run checks only through cx-route: \`cx-route test\`" "$RWT/.conductor/task.md"'
 check "[X]   ... the executor finds cx-route on its PATH and it runs the snapshot, not the worktree's edited routes.json (the check's own exit 7 passes through); a name outside the snapshot exits 127 and runs nothing" \
   eval 'grep -qx snapshot-test "$RWT/cx-route.out" && grep -qx rc=7 "$RWT/cx-route.out" && ! grep -q HACKED "$RWT/cx-route.out" && grep -q "no check named .nope." "$RWT/cx-route.out" && grep -qx rc=127 "$RWT/cx-route.out" && grep -q HACKED "$RWT/.cx/routes.json"'
 local CXR_BAD="" cxr_rc
-(cd / && "$RO/bin/cx-route" test x) > "$AD/cxr.out" 2>&1; cxr_rc=$?
+(cd / && "$RB/cx-route" test x) > "$AD/cxr.out" 2>&1; cxr_rc=$?
 [ "$cxr_rc" = 127 ] && ! grep -qx snapshot-test "$AD/cxr.out" || CXR_BAD="$CXR_BAD [extra argument: rc $cxr_rc]"
-(cd / && "$RO/bin/cx-route") > "$AD/cxr.out" 2>&1; cxr_rc=$?
+(cd / && "$RB/cx-route") > "$AD/cxr.out" 2>&1; cxr_rc=$?
 [ "$cxr_rc" = 0 ] && grep -Fq "  test: echo snapshot-test; exit 7" "$AD/cxr.out" && grep -Fq "  lint: true" "$AD/cxr.out" || CXR_BAD="$CXR_BAD [the list: rc $cxr_rc]"
-(cd / && "$RO/bin/cx-route" "test; touch $AD/cxr-injected") > "$AD/cxr.out" 2>&1; cxr_rc=$?
+(cd / && "$RB/cx-route" "test; touch $AD/cxr-injected") > "$AD/cxr.out" 2>&1; cxr_rc=$?
 [ "$cxr_rc" = 127 ] && [ ! -e "$AD/cxr-injected" ] || CXR_BAD="$CXR_BAD [an injected name: rc $cxr_rc]"
-(cd / && "$RO/bin/cx-route" lint) > "$AD/cxr.out" 2>&1; cxr_rc=$?
+(cd / && "$RB/cx-route" lint) > "$AD/cxr.out" 2>&1; cxr_rc=$?
 [ "$cxr_rc" = 0 ] || CXR_BAD="$CXR_BAD [lint from /: rc $cxr_rc]"
-command -v shellcheck >/dev/null 2>&1 && { shellcheck "$RO/bin/cx-route" > "$AD/cxr.sc" 2>&1 || CXR_BAD="$CXR_BAD [shellcheck: $(head -c 200 "$AD/cxr.sc")]"; }
-check "[X]   ... cx-route itself: an extra argument or a name that is not a snapshot key exits 127 and runs nothing; alone it lists the snapshot (rc 0); it runs a check in the worktree from any cwd; the generated script is shellcheck-clean${CXR_BAD:+:$CXR_BAD}" test -z "$CXR_BAD"
+command -v shellcheck >/dev/null 2>&1 && { shellcheck "$RB/cx-route" > "$AD/cxr.sc" 2>&1 || CXR_BAD="$CXR_BAD [shellcheck: $(head -c 200 "$AD/cxr.sc")]"; }
+# Whoever calls cx-route controls its environment: nothing from there runs but the snapshot
+# (bash -p, and env -i without BASH_ENV, SHELLOPTS and the BASH_FUNC_* strings of exported
+# functions); ordinary exported variables still reach the check.
+"$REAL_PY" -I "$NORM" route-snapshot --routes /dev/null --out "$AD/cxr4" --bin "$AD/cxr4/rb" --dir "$AD" --id x4 \
+  --cmd 'bash -c "echo grand"' --cmd 'printf "%s\n" "foo=$CXR_FOO"'
+printf 'touch %s\n' "$AD/cxr-bashenv" > "$AD/cxr-evil.sh"
+(cd / && env BASH_ENV="$AD/cxr-evil.sh" ENV="$AD/cxr-evil.sh" "BASH_FUNC_echo%%=() { touch $AD/cxr-func; }" "$AD/cxr4/rb/cx-route" cmd-1) > "$AD/cxr.out" 2>&1; cxr_rc=$?
+[ "$cxr_rc" = 0 ] && grep -qx grand "$AD/cxr.out" || CXR_BAD="$CXR_BAD [the check under a hostile environment: rc $cxr_rc, $(head -c 200 "$AD/cxr.out")]"
+[ ! -e "$AD/cxr-bashenv" ] || CXR_BAD="$CXR_BAD [BASH_ENV ran]"
+[ ! -e "$AD/cxr-func" ] || CXR_BAD="$CXR_BAD [an exported function reached the check's own bash]"
+(cd / && env CXR_FOO=bar "$AD/cxr4/rb/cx-route" cmd-2) > "$AD/cxr.out" 2>&1; cxr_rc=$?
+[ "$cxr_rc" = 0 ] && grep -qx foo=bar "$AD/cxr.out" || CXR_BAD="$CXR_BAD [an exported variable did not reach the check: rc $cxr_rc]"
+head -n 1 "$AD/cxr4/rb/cx-route" | grep -Eq '^#!/[^ ]*bash -p$' || CXR_BAD="$CXR_BAD [shebang: $(head -n 1 "$AD/cxr4/rb/cx-route")]"
+[ -s "$AD/cxr4/routes.json" ] && [ ! -e "$AD/cxr4/bin" ] || CXR_BAD="$CXR_BAD [--bin: routes.json not in OUT, or OUT/bin written]"
+command -v shellcheck >/dev/null 2>&1 && { shellcheck "$AD/cxr4/rb/cx-route" > "$AD/cxr.sc" 2>&1 || CXR_BAD="$CXR_BAD [shellcheck: $(head -c 200 "$AD/cxr.sc")]"; }
+check "[X]   ... cx-route itself: an extra argument or a name that is not a snapshot key exits 127 and runs nothing; alone it lists the snapshot (rc 0); it runs a check in the worktree from any cwd; a caller's BASH_ENV, ENV and exported functions never run (bash -p, env -i), its exported variables reach the check; the generated script is shellcheck-clean${CXR_BAD:+:$CXR_BAD}" test -z "$CXR_BAD"
 check "[P30] cx-run: no stub logged BILLABLE (every executor run carried a scenario knob)" eval '! grep -q "^BILLABLE" "$ADL"'
 }
 bg_section run sec_run
@@ -3261,6 +3341,17 @@ check "[A15] the executor edits .conductor/task.md -> 23 SPEC_TAMPERED (CX_RESUL
   eval 'rc_is 23 && line_is CX_RESULT status spec_tampered && one_signal SPEC_TAMPERED'
 cr STUB_GROK_RUN=nodiff -- "$CXRUN" --exec grok --id n1 'x'
 check "[A15] no diff in the worktree -> 3 EMPTY_OUTPUT" eval 'rc_is 3 && line_is CX_RESULT status empty && one_signal EMPTY_OUTPUT'
+# The executor owns the worktree's .git link file: the conductor's own git never finds the
+# repository from it (worktree.sh), so a rewritten link is TAMPERED and its git config never runs.
+cr STUB_GROK_RUN=gitlink STUB_GROK_PWNED="$AD/pwned-gl" -- "$CXRUN" --exec grok --id gl1 'x'
+check "[X]   the executor repoints the worktree's .git at a git directory whose core.fsmonitor runs a command -> 24 TAMPERED naming the link (CX_RESULT tampered, one CX_SIGNAL, last); the command never ran" \
+  eval 'rc_is 24 && line_is CX_RESULT status tampered && one_signal TAMPERED && err_has "the worktree'"'"'s .git was rewritten during the run" && err_has "do not run git there" && err_has "repo-gl1/.git points at $AD/home/.cx-wt/repo-gl1/.evil" && [ ! -e "$AD/pwned-gl" ]'
+cr STUB_GROK_RUN=ok -- "$CXRUN" --exec grok --id gl1 --reuse-worktree 'x'
+check "[X]   ... --reuse-worktree of that worktree is refused (exit 1: its .git no longer links to its own git directory), no executor runs, and the command still never ran" \
+  eval 'rc_is 1 && no_signal && err_has "points at $AD/home/.cx-wt/repo-gl1/.evil, not at its own git directory" && [ ! -e "$AD/pwned-gl" ] && [ "$(grep -c "^grok	.*--prompt-file $AD/home/.cx-wt/repo-gl1/" "$ADL")" = 1 ]'
+cr STUB_GROK_RUN=embedded -- "$CXRUN" --exec grok --id eb1 'x'
+check "[X]   an embedded repository without a commit (git add cannot index it) hides no other change: ok with the executor's file (+1 -0, 1 file) and a note in result.json" \
+  eval 'rc_is 0 && line_is CX_RESULT status ok && line_is CX_RESULT diffstat "+1 -0, 1 file" && grep -q "git add could not index every file of the worktree" "$AD/home/.conductor/out/eb1/result.json"'
 sed -i 's/"setup": "true"/"setup": "false"/' "$REPO/.cx/routes.json"
 cr STUB_GROK_RUN=ok -- "$CXRUN" --exec grok --id s1 'x'
 sed -i 's/"setup": "false"/"setup": "true"/' "$REPO/.cx/routes.json"
@@ -3402,8 +3493,8 @@ rm -f -- "$AD/home/.conductor/state/preflight.json"
 CR_MARK="$(wc -l < "$ADL")"
 grep -v -- '--always-approve' "$FIX/real/grok/help.txt" > "$AD/grok-help-noaa.txt"
 cr STUB_GROK_RUN=ok STUB_GROK_HELP="$AD/grok-help-noaa.txt" -- "$CXRUN" --exec grok --id v1 'x'
-check "[A9]  cx-run --exec grok whose --help lacks --always-approve (no cached probe) -> 26 VERSION_MISMATCH (flag contract; one CX_SIGNAL, last) before anything is created: no out dir, worktree or cx/v1 branch, and grok was asked only --version, models and --help" \
-  eval 'rc_is 26 && one_signal VERSION_MISMATCH && err_has "flag contract" && [ ! -e "$AD/home/.conductor/out/v1" ] && [ ! -e "$AD/home/.cx-wt/repo-v1" ] && ! git -C "$REPO" rev-parse -q --verify cx/v1 >/dev/null && [ -z "$(tail -n +"$((CR_MARK + 1))" "$ADL" | grep "^grok	" | grep -Ev "	argv: (--version|models|--help)$")" ]'
+check "[A9]  cx-run --exec grok whose --help lacks --always-approve (no cached probe) -> 26 VERSION_MISMATCH (flag contract; one CX_SIGNAL, last) before anything is created: no out dir, worktree or cx/v1 branch, and grok was asked only --version, models, --sandbox strict models and --help" \
+  eval 'rc_is 26 && one_signal VERSION_MISMATCH && err_has "flag contract" && [ ! -e "$AD/home/.conductor/out/v1" ] && [ ! -e "$AD/home/.cx-wt/repo-v1" ] && ! git -C "$REPO" rev-parse -q --verify cx/v1 >/dev/null && [ -z "$(tail -n +"$((CR_MARK + 1))" "$ADL" | grep "^grok	" | grep -Ev "	argv: (--version|models|--sandbox strict models|--help)$")" ]'
 
 # --- A14 through cx-run: saved options and the caller's keys never reach the executor
 printf '{"pluginConfigs": {"conductor@conductor-for-claude-code": {"options": {"cap_grok": "3", "default_timeout": "20m"}}}}\n' > "$AD/cfg/settings.json"
@@ -3446,10 +3537,10 @@ check "[A12] cx-run --background prints JOB_ID <id> (YYYYmmdd-HHMMSS-<hex>) at o
 cr -- "$CXJOB" wait "${J:0:12}"
 check "[A12] cx-job wait <unique prefix>: exit 0 when the job ends; stdout the digest and VERIFY THIS, stderr the job's CX_RESULT; status done rc=0" \
   eval 'rc_is 0 && out_has "DIGEST: created cx-grok.txt." && out_has "VERIFY THIS:" && line_is CX_RESULT id j1 && no_signal && [ "$(cd "$REPO" && env HOME="$AD/home" CX_HOME="$AD/home/.conductor" "$CXJOB" status "$J")" = "done rc=0" ]'
-cr STUB_GROK_RUN=sleep STUB_GROK_SLEEP=30 -- "$CXJOB" start --exec grok --id j2 'x'
+cr STUB_GROK_RUN=sleep STUB_GROK_SLEEP=60 -- "$CXJOB" start --exec grok --id j2 'x'
 J2="$(sed -n 's/^JOB_ID //p' "$O")"
 JD="$AD/home/.conductor/jobs/$J2"
-for ((i = 0; i < 100; i++)); do [ -s "$JD/sids" ] && break; sleep 0.1; done
+for ((i = 0; i < 300; i++)); do [ -s "$JD/sids" ] && break; sleep 0.1; done   # the executor runs (preflight done; a loaded machine)
 cr -- "$CXJOB" result "$J2"
 check "[A12] result while the job runs -> 75 RUNNING (one CX_SIGNAL)" eval 'rc_is 75 && one_signal RUNNING'
 cr -- "$CXJOB" wait "$J2" --timeout 1s
@@ -3994,7 +4085,7 @@ check "[A18] --user-grants --dry-run: one update listed (sandbox.toml: the repos
 cr HOME="$UH" -- "$INIT" --user-grants
 check "[A18] --user-grants: sandbox.toml gains $A18_NAME between cx:begin/cx:end lines and loses the invalid 0.2.0 cx-workspace block (the other profile kept); agy settings and grok's config.toml are never touched (no grant, no auto_update); sandbox.toml.cx-bak is the old file; CX_INIT names the profile" \
   eval 'rc_is 0 && cmp -s "$UH/.gemini/antigravity-cli/settings.json" "$AD/ug.orig/.gemini/antigravity-cli/settings.json" && cmp -s "$UH/.grok/config.toml" "$AD/ug.orig/.grok/config.toml" && [ ! -e "$UH/.grok/config.toml.cx-bak" ] && [ ! -e "$UH/.gemini/antigravity-cli/settings.json.cx-bak" ] && grep -qx "# cx:begin $A18_NAME" "$UH/.grok/sandbox.toml" && grep -qx "# cx:end $A18_NAME" "$UH/.grok/sandbox.toml" && ! grep -q "cx-workspace" "$UH/.grok/sandbox.toml" && grep -q "^\[profiles.other\]" "$UH/.grok/sandbox.toml" && cmp -s "$UH/.grok/sandbox.toml.cx-bak" "$AD/ug.orig/.grok/sandbox.toml" && line_is CX_INIT detected.grok_profile "$A18_NAME" && err_has "removed the 0.2.0 cx-workspace profile"'
-A18_TOML="$("$REAL_PY" -I - "$UH/.grok/sandbox.toml" "$A18_NAME" "$A18_GCD" "$AD/home/.conductor/out" <<'PY'
+A18_TOML="$("$REAL_PY" -I - "$UH/.grok/sandbox.toml" "$A18_NAME" "$A18_GCD" "$AD/home/.conductor/routes" <<'PY'
 import sys
 sb, name, gcd, out = open(sys.argv[1], encoding="utf-8").read(), sys.argv[2], sys.argv[3], sys.argv[4]
 try:
@@ -4019,7 +4110,7 @@ if "cx-workspace" in p:
 print("; ".join(bad))
 PY
 )"
-check "[A18] ... sandbox.toml parses (tomllib, as grok reads it): $A18_NAME = {extends strict, read_only [the git common dir, \$CX_HOME/out]}, the other profile untouched, no cx-workspace${A18_TOML:+: $A18_TOML}" \
+check "[A18] ... sandbox.toml parses (tomllib, as grok reads it): $A18_NAME = {extends strict, read_only [the git common dir, \$CX_HOME/routes]}, the other profile untouched, no cx-workspace${A18_TOML:+: $A18_TOML}" \
   test -z "$A18_TOML"
 cp -a "$UH" "$AD/ug.once"
 cr HOME="$UH" -- "$INIT" --user-grants
@@ -4948,7 +5039,7 @@ check "[P43] the SKILL names the background-call timeout (timeout: 7200000) in i
 # Phase 2: the tree snapshots live only in the agy adapter (agy.sh agy_trees; [A5], [A28] and the
 # running-mark check of the agy adapter section run them); the SKILL and section 12.2 define none.
 SKR="$TMP/skillrun"; mkdir -p "$SKR/home/.conductor/out/t1" "$SKR/home/.cx-wt"
-P60_N="$(grep -c "status --porcelain=v1 --untracked-files=all -- . ':!.claude/worktrees'" "$SK") $(sed -n "/^### 12.2 /,/^### 12.3 /p" "$ROOT/docs/DESIGN.md" | grep -c "status --porcelain=v1 --untracked-files=all -- . ':!.claude/worktrees'") $(grep -c "status --porcelain=v1 --untracked-files=all -- . ':!.claude/worktrees'" "$ROOT/scripts/adapters/agy.sh")"
+P60_N="$(grep -c "status --porcelain=v1 --untracked-files=all.* -- \. ':!\.claude/worktrees'" "$SK") $(sed -n "/^### 12.2 /,/^### 12.3 /p" "$ROOT/docs/DESIGN.md" | grep -c "status --porcelain=v1 --untracked-files=all.* -- \. ':!\.claude/worktrees'") $(grep -c "status --porcelain=v1 --untracked-files=all.* -- \. ':!\.claude/worktrees'" "$ROOT/scripts/adapters/agy.sh")"
 check "[P60] the tree snapshot that excludes .claude/worktrees is defined once, in the agy adapter, and no longer in the SKILL or section 12.2 (SKILL, 12.2, agy.sh: $P60_N)" \
   eval '[ "$P60_N" = "0 0 1" ] && ! grep -q "^trees() {" "$SK"'
 # Phase 2: no SKILL or section 12.2 block registers or runs agy, agy-delegate or ghcp-delegate by
@@ -5142,7 +5233,7 @@ for path in sys.argv[1:]:
             if argv.startswith("-p") and not cwd.endswith("/probe"):
                 bad.append("copilot probe cwd: " + cwd)
         elif name == "grok":
-            if argv not in ("--version", "models"):
+            if argv not in ("--version", "models", "--sandbox strict models"):
                 bad.append("grok: " + argv)
         elif name == "agy":
             if argv == "-p /usage --output-format json":
@@ -5161,7 +5252,7 @@ print("; ".join(bad[:6]))
 print(usage_calls, file=sys.stderr)
 PY
 )"
-check "[P30] no stub logged BILLABLE; copilot saw only --version or the doctor probe (from the probe dir); grok only --version and models; claude only --version and auth status; ghcp-models always an absolute GHCP_COPILOT_BIN and --refresh for D16${FREE_BAD:+: $FREE_BAD}" test -z "$FREE_BAD"
+check "[P30] no stub logged BILLABLE; copilot saw only --version or the doctor probe (from the probe dir); grok only --version, models and --sandbox strict models; claude only --version and auth status; ghcp-models always an absolute GHCP_COPILOT_BIN and --refresh for D16${FREE_BAD:+: $FREE_BAD}" test -z "$FREE_BAD"
 check "[P30] agy saw -p /usage exactly twice (the two --pools --agy-usage runs: pools-usage and scrub)" test "$(cat "$TMP/usage-calls")" = 2
 # Wall time is informational: only CX_TEST_STRICT_TIME=1 turns a run over 60 s into a FAIL.
 if [ "$STRICT_TIME" = 1 ]; then

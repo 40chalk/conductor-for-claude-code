@@ -150,8 +150,10 @@ Deviations from the plan that this spec makes on its own authority, each for a s
   discover -s tests)` never matches (the approval key is `python3`) and `shell(python3)` would
   allow `python3 -c`: the real run's tests were denied that way (`GHCP_DENIED` kind shell, 2
   calls). `write(<path>)`: an absolute path scopes one location, a relative one matches by
-  trailing components. The conductor allows `shell(cx-route)` and the four git reads only
-  (§15.2). Copilot cannot sign in from the build container (its GitHub proxy serves repository
+  trailing components. The conductor allows `shell(cx-route)` and `shell(git status)` only
+  (§15.2): `git diff`, `git log` and `git show` take `--output=<path>` (a write of any file) and
+  `git diff --no-index` reads any file, and a first-level-subcommand approval cannot forbid an
+  option. Copilot cannot sign in from the build container (its GitHub proxy serves repository
   API paths only): Copilot lanes are verified with stubs, `--print-command` and the real
   fixtures; the live check runs on the user's machine.
   `copilot --version` output contains the version; the exact wording is [assumption] (ghcp's stub
@@ -227,7 +229,14 @@ From the captured `grok --help` (GH) unless tagged:
   DIRECTORIES; a file path makes grok refuse to start), `deny` (literal paths, no globs: the 0.2.0
   `cx-workspace` template's `**/.env` globs were invalid). `~/.ssh`, `~/.aws`, `~/.gnupg` and
   `~/.grok/auth` are always write-protected. A profile with deny lists needs bubblewrap on Linux
-  (grok refuses to start: "Install bubblewrap with `apt install -y bubblewrap`").
+  (grok refuses to start: "Install bubblewrap with `apt install -y bubblewrap`"). A profile grok
+  cannot apply makes it refuse to start (`warning: sandbox could not be applied: Expected a
+  directory but got a file: /etc/hostname`, then `error: could not apply the 'cxtest' sandbox
+  profile; see the warning above for the cause. Refusing to start with its protections
+  missing.`, rc 1; free `grok --sandbox <p> models` probes, 2026-11-06). A `[profiles.strict]`
+  in `sandbox.toml` (with a file in `read_only`) did not change `--sandbox strict`: built-in
+  names are not redefined there. Where Landlock is missing (kernel < 5.13, or disabled) the
+  README says grok "logs a warning and continues without enforcement" [docs-only, §20 item 72].
 - `--sandbox strict --always-approve` in a worktree under `$HOME`: edits in the worktree and
   `python3 -m unittest discover -s tests` work; a write or read outside is denied; `git status`
   fails (`~/.gitconfig` and the worktree's git common directory in the main repository are
@@ -626,7 +635,7 @@ deliberately equal ghcp's (and agy-delegate's) codes, so adapters pass them thro
 | 21 | `MODEL_MISMATCH` | `model_mismatch` | cx-run | Served model ≠ requested (incl. `GHCP_FALLBACK` on a Fusion lane, agy `init.model`) |
 | 22 | `WRONG_TREE` | `wrong_tree` | cx-run (agy) | Files changed outside the task's worktree |
 | 23 | `SPEC_TAMPERED` | `spec_tampered` | cx-run, cx-gate | `.conductor/task.md` hash mismatch |
-| 24 | `TAMPERED` | `tampered` | cx-gate | Protected path changed (tests, lockfiles, CI, routes.json, agent config, …), or the executor left the task branch (`BRANCH_TAMPERED`, §12.2 step 3) |
+| 24 | `TAMPERED` | `tampered` | cx-run, cx-gate | Protected path changed (tests, lockfiles, CI, routes.json, agent config, …; cx-run: the worktree's `.git` link rewritten during the run, so no git ran there, §15.1), or the executor left the task branch (`BRANCH_TAMPERED`, §12.2 step 3) |
 | 25 | `ENV_FAILED` | `env_failed` | cx-run, cx-gate | The repo's `setup` command failed (not charged to the executor) |
 | 26 | `VERSION_MISMATCH` | `version_mismatch` | cx-run | flag contract: the CLI's live help lacks a flag the lane is about to emit; lane refused before running (no version is pinned, §5.4) |
 | 27 | `PARTIAL` | `partial` | cx-run (agy) | Partial output (agy print-timeout expired with rc 0) |
@@ -917,8 +926,9 @@ Never switch model or effort inside one executor session (it invalidates the cac
   #1313): `Read .conductor/task.md in the working directory and do exactly what it says. Run
   checks only as cx-route <name> (cx-route alone lists them). Do not spawn subagents. End with
   the DIGEST: line it specifies.` The agy raw lane adds what its per-run grants allow (read with
-  agy's own file tools; only cx-route, git status/diff/log/show and ls; any other command ends
-  the run); the claude dispatch names cx-route by its path (`$OUT/bin/cx-route`).
+  agy's own file tools; only cx-route, git status and ls, never git diff, log or show; any other
+  command ends the run); the claude dispatch names cx-route by its path
+  (`$CX_HOME/routes/<id>/cx-route`).
 - Checks run only through the run's `cx-route` (§15.1): the contract names each as
   `cx-route <name>` (`templates/task.md` does it for free-text tasks, from the run's snapshot).
 - `templates/task.md` (Phase 2; Claude writes the same structure by hand in Phase 1). Line 1 is
@@ -937,8 +947,8 @@ Files and pointers (paths, functions). No pasted file contents beyond short exce
 Only paths matching: `src/feature/**`. Lockfiles: no.
 ## Allowed commands
 Run checks only through cx-route: `cx-route test` (`npm test`), snapshotted from .cx/routes.json
-at dispatch (`cx-route` alone lists them). Also allowed: git status, git diff, git log, git show.
-No other shell command.
+at dispatch (`cx-route` alone lists them). Also allowed: git status. Read files, and your own
+changes, with your file tools. No other shell command.
 ## Forbidden
 Editing .conductor/task.md, the tests listed above, CI config, .cx/routes.json or git hooks;
 installing, upgrading or patching dependencies; committing, pushing or branching; starting
@@ -1699,7 +1709,7 @@ and D16 explains exit 16.
 | D14 | Auto-update (information only, §5.4) | env `COPILOT_AUTO_UPDATE`, `GROK_DISABLE_AUTOUPDATER`, `AGY_CLI_DISABLE_AUTO_UPDATE`; `cxlib.py toml-get ~/.grok/config.toml cli auto_update` | one info line with the four values: auto-update is the user's choice, every conductor run turns it off for its own run (the worker environment, §15.6) and each lane checks the live `--help` for its flags first. Never a warning, never a fix |
 | D15 | claude login | `timeout -k 5 15 claude auth status --json </dev/null` | `"loggedIn": true` ✓; `false` or missing → ! (`claude auth login`; only `claude -p` workers need it, so it never turns the doctor red); unparseable ! |
 | D16 | copilot login | Through `ghcp-models --json --refresh` (ghcp's own free probe) on any Copilot version; the raw invalid-model probe only without ghcp-models and only when D9 reports `CX_VERIFIED_COPILOT` (measured free there); see "D16 details" below | rc 0 ✓ (catalog kept for `--pools`); 11 ✗ (`copilot login`, unless a rule below applies); 16 ✗ (re-run this Bash call outside Claude Code's sandbox); 12 ! (timed out); 13 ✗; 2 ! (catalog unparseable); other ✗. Raw probe: stderr `from --model flag is not available` ✓; `AUTH_RE` ✗; `SANDBOX_RE` ✗; else !. No ghcp-models and D9 not exactly 1.0.105 → ! "copilot login not probed" (install the ghcp plugin), and no Copilot process starts |
-| D17 | grok login, model, profile | `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false timeout -k 5 30 grok models </dev/null 2>&1` | contains `You are not authenticated` ✗ (`grok login --device-auth`); rc 0, no such phrase and ≥ 1 id parsed → ✓; killed → ! (hung); anything else (non-zero rc, crash, network error, no ids) → ! with the first output line. `grok_bulk_model` among the ids (`cxlib.py parse-models --cli grok`: `^\s*[*-]\s+(\S+)` lines, else bare-id lines) ✓ else ! (an unlisted `-m` id silently drops `--effort`). `grok_sandbox_profile` `auto` (or the 0.2.0 value `cx-workspace`): info, the number of `cx-<repo>-<hash>` profiles in `~/.grok/sandbox.toml` (each repository's first grok run, or `cx-init --user-grants`, writes its own, §15.7); another name defined there ✓ else !. The invalid 0.2.0 `cx-workspace` block still there → ! (fix `cx-init --user-grants`). Linux and WSL: `bwrap` on PATH ✓ else ! (`sudo apt install -y bubblewrap`: grok refuses to start a profile with deny lists without it) |
+| D17 | grok login, model, profile | `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false timeout -k 5 30 grok models </dev/null 2>&1` | contains `You are not authenticated` ✗ (`grok login --device-auth`); rc 0, no such phrase and ≥ 1 id parsed → ✓; killed → ! (hung); anything else (non-zero rc, crash, network error, no ids) → ! with the first output line. `grok_bulk_model` among the ids (`cxlib.py parse-models --cli grok`: `^\s*[*-]\s+(\S+)` lines, else bare-id lines) ✓ else ! (an unlisted `-m` id silently drops `--effort`). `grok_sandbox_profile` `auto` (or the 0.2.0 value `cx-workspace`): info, the number of `cx-<repo>-<hash>` profiles in `~/.grok/sandbox.toml` (each repository's first grok run, or `cx-init --user-grants`, writes its own, §15.7); another name defined there ✓ else !. The invalid 0.2.0 `cx-workspace` block still there → ! (fix `cx-init --user-grants`). Linux and WSL: `bwrap` on PATH ✓ else ! (`sudo apt install -y bubblewrap`: grok refuses to start a profile with deny lists without it); `cxlib.py landlock` (the `landlock_create_ruleset` version query): an ABI ✓, ENOSYS/EOPNOTSUPP ! (grok cannot confine its process here), else info. Always: `grok --sandbox strict models` (free, the same prefix): a line saying the sandbox was not applied (`sandbox could not be applied`, `Refusing to start with its protections missing` or `… denied paths unprotected`, `without enforcement`) ✗ (every grok run is refused: Landlock, kernel 5.13 or newer, and bubblewrap); rc 0 ✓; killed or another rc ! |
 | D18 | agy login, grant | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 30 agy models --output-format json </dev/null`; if rc ≠ 0 or unparseable, the same prefix with `agy models` | ≥ 1 id that looks like a model slug (one token with a digit; `cxlib.py parse-models --cli agy` reads a `{"<slug>": "<label>"}` map only when every key is such a slug and no `error`/`status`/`message`/`code`/`detail`/`reason` key is present, so an rc-0 status envelope is no model list) ✓; 0 ids, not killed ✗ (run `agy` once in a terminal and sign in); killed ! (hang: not an auth problem, #318 or MCP startup). `~/.gemini/antigravity-cli/settings.json` `permissions.allow` holds `write_file(...)` or `command(...)` rules → info: global grants conductor 0.2.0 wrote, no longer needed (each raw run passes its own `--settings`, §15.2) and applying to every agy session; none → info that the grants are per run |
 | D19 | gh login | `timeout -k 5 15 gh auth status </dev/null` | rc 0 ✓; else ✗ (`gh auth login --web`) |
 | D20 | conductor install | `installed_plugins.json`, `enabledPlugins` | installed → info with version; disabled → ! |
@@ -2525,12 +2535,14 @@ the same names).
 
 **Checks run only through `cx-route`.** At dispatch `cx-run` snapshots the task's commands,
 named from `.cx/routes.json` (`test`, `lint`, `typecheck`, ...), into the run's
-`~/.conductor/out/<id>/bin/cx-route`, which is on every executor's PATH: `cx-route test` runs
-that snapshot (an edit of the worktree's `routes.json` changes nothing), `cx-route` alone lists
-the names. Executors may run only `cx-route <name>` and `git status`, `git diff`, `git log`,
-`git show` (agy also `ls`): agy gets exactly these as per-run `--settings` grants (its first
-other command ends the run), Copilot as `--allow-shell` rules, and grok runs inside its
-repository's sandbox profile. Name the checks in the contract as `cx-route <name>`.
+`~/.conductor/routes/<id>/cx-route`, which is on every executor's PATH: `cx-route test` runs
+that snapshot in a clean bash (an edit of the worktree's `routes.json` changes nothing, and a
+caller's `BASH_ENV` or exported functions never run), `cx-route` alone lists the names.
+Executors may run only `cx-route <name>` and `git status` (agy also `ls`): agy gets exactly
+these as per-run `--settings` grants (its first other command ends the run), Copilot as
+`--allow-shell` rules, and grok runs inside its repository's sandbox profile. Never `git diff`,
+`git log` or `git show`: their `--output=<path>` writes any file, and a prefix rule cannot
+forbid an option. Name the checks in the contract as `cx-route <name>`.
 `cx-init --user-grants` (optional, from inside the repo) writes that repository's grok profile
 ahead of its first grok run and removes the invalid profile conductor 0.2.0 wrote; agy needs no
 user-level grant any more. Never use the yolo / skip-permissions flags (`--yolo`,
@@ -2557,8 +2569,8 @@ Files and pointers (paths, functions). No pasted file contents beyond short exce
 Only paths matching: `src/feature/**`. Lockfiles: no.
 ## Allowed commands
 Run checks only through cx-route: `cx-route test` (`npm test`), snapshotted from .cx/routes.json
-at dispatch (`cx-route` alone lists them). Also allowed: git status, git diff, git log, git show.
-No other shell command.
+at dispatch (`cx-route` alone lists them). Also allowed: git status. Read files, and your own
+changes, with your file tools. No other shell command.
 ## Forbidden
 Editing .conductor/task.md, the tests listed above, CI config, .cx/routes.json or git hooks;
 installing, upgrading or patching dependencies; committing, pushing or branching; starting
@@ -3189,22 +3201,29 @@ and ledger (§15.4) → output: stdout = the digest, a final `VERIFY THIS: <what
 **`cx-route` (the 2026-11-06 probes, decision 2).** Executors run checks only through the run's
 `cx-route`. At dispatch, right after the worktree (or gate checkout) exists, `normalize.py
 route-snapshot` writes `$OUT/routes.json` (`{"version": 1, "id", "dir", "source", "created_at",
-"routes": [{"name", "command"}], "also": ["git status", "git diff", "git log", "git show"]}`) and
-the generated, self-contained `$OUT/bin/cx-route` (bash only: no runtime file and no python,
-so it also runs inside grok's strict sandbox, whose profile grants `$CX_HOME/out` read-only).
+"routes": [{"name", "command"}], "also": ["git status"]}`) and the generated, self-contained
+`$CX_HOME/routes/<id>/cx-route` (bash only: no runtime file and no python, so it also runs
+inside grok's strict sandbox, whose profile grants `$CX_HOME/routes` read-only: the one
+directory of a run grok may read, never the out directories with other runs' tasks, diffs and
+digests).
 The routes are the task's commands (the task file's `commands`, else the routes commands, plus
 `--allow`), each named after its key in the main checkout's `.cx/routes.json` (`test`, `lint`,
 `typecheck`, then other keys in sorted order) or `cmd-1`, `cmd-2` … when no key holds it.
-`cx-route <name>` cds into the worktree and runs that command with `bash -o pipefail -c`; its
-exit status passes through. `cx-route` alone (or `-l`, `--list`, `-h`, `--help`) lists the
+`cx-route <name>` cds into the worktree and runs that command with `bash -p -o pipefail -c`;
+its exit status passes through. Whoever calls it controls its environment, so it runs under
+`#!/bin/bash -p` (no `BASH_ENV`, `SHELLOPTS`, `BASHOPTS` or imported functions) and hands the
+check the caller's exported variables through `env -i`, without `BASH_ENV`, `ENV`,
+`SHELLOPTS`, `BASHOPTS`, `CDPATH`, `GLOBIGNORE` and the `BASH_FUNC_*` strings exported
+functions travel in. `cx-route` alone (or `-l`, `--list`, `-h`, `--help`) lists the
 snapshot; any other name, or anything after the name, exits 127 and runs nothing. Nothing reads
 the worktree's `.cx/routes.json` afterwards, so an executor that edits it changes no check.
-`$OUT/bin` is on the worker PATH right after the worker shims (§15.6); the task template names
+`$CX_HOME/routes/<id>` is on the worker PATH right after the worker shims (§15.6); the task template names
 each check as `` `cx-route <name>` (`<command>`) ``, the default prompt says to run checks only
 as `cx-route <name>`, and `--dry-run` prints the names. A `--reuse-worktree` re-dispatch writes
 a fresh snapshot; the cloud lane has none (no local executor).
 
-Classification, first match: `wrong_tree` 22 → `spec_tampered` 23 → `cancelled` 130 →
+Classification, first match: `wrong_tree` 22 → `spec_tampered` 23 → `tampered` 24 (the
+worktree's `.git` link) → `cancelled` 130 →
 `timeout` 12 → `sandbox` 16 → `auth` 11 → `model_unavailable` 14 → `quota` 10 →
 `model_mismatch` 21 → `denied` 15 (any denied write; any denial with no answer and no diff) →
 `partial` 27 → `failed` 2 → `empty` 3 (write mode: no diff; read mode: no answer) → `ok` 0.
@@ -3212,7 +3231,8 @@ Preflight statuses (13, 25, 26, 28) stop before the run.
 
 **As built (§15 build order items 2 and 3).** `scripts/cx-run.sh` with the sourced
 `scripts/lib/worktree.sh` (worktree root, worktrees, gate checkouts, the change of a worktree
-through a scratch index, the running mark) and `scripts/lib/taskfile.sh` (the contract, its
+through a scratch index, the running mark; git in a worktree an executor wrote only through
+`cx_wt_git`, its git directory taken from the repository's admin files) and `scripts/lib/taskfile.sh` (the contract, its
 install and hash), `templates/task.md` for free text. Choices the spec left open:
 - **Lanes.** `--exec` also takes `copilot-cloud`. `--mode read` defaults to `grok` (read lanes:
   grok, agy with `gemini-3.8-flash-high` unless `--model`, copilot with `review_model_gpt`,
@@ -3253,9 +3273,14 @@ install and hash), `templates/task.md` for free text. Choices the spec left open
   post-checks, `parse`, `emit`, `report` and the ledger line. A lane stopped before its executor
   ran (the adapter's 28, 13, 26, 11, 14) gets a result too (`checks.json` `stop`), so
   `CX_RESULT` and the ledger see `no_capacity`, `env_failed` and the like.
-- **Post-checks** (`checks.json`): `spec_ok` (the worktree's task hash), `diff`/`diffstat`
+- **Post-checks** (`checks.json`): `spec_ok` (the worktree's task hash), `git_link_ok` (the
+  worktree's `.git` still the link file git wrote, naming the git directory the main
+  repository's `worktrees/<n>/gitdir` records for it; false → 24 `tampered`, and no git runs in
+  the worktree), `diff`/`diffstat`
   (committed or not, untracked files included, against the base, through a scratch index so
-  the worktree's own index is untouched; the name-status list in `$OUT/changed.txt`), `branch`
+  the worktree's own index is untouched; the name-status list in `$OUT/changed.txt`; a file git
+  cannot index, such as an embedded repository without a commit, is a note and hides no other
+  change), `branch`
   (a note when the executor left `cx/<id>`: Step 3 then stops with `BRANCH_TAMPERED`). Nothing
   is committed (the conductor commit is §16.2, Phase 3); after a write run classified `ok` with
   a diff the worktree is marked `running` again until Step 3, except for agy tasks (their trees
@@ -3305,11 +3330,11 @@ writes `$OUT/<lane>.out`, `$OUT/<lane>.err`, `$OUT/rc`; `parse` runs `normalize.
 
 | Lane | Environment | Argv (write mode) | Parse and checks |
 |---|---|---|---|
-| copilot | unset `COPILOT_ALLOW_ALL COPILOT_AUTO_TIER COPILOT_MODEL COPILOT_PROVIDER_BASE_URL GH_TOKEN GITHUB_TOKEN`, except the one variable the host record names as `copilot_token_env` (§7.6, D16), and `COPILOT_HOME` when it differs from the host record; `COPILOT_AUTO_UPDATE=false`, `GHCP_COPILOT_BIN=<record bin.copilot>`, `GHCP_USAGE_LOG=$CX_HOME/raw-usage.log`, `COPILOT_GITHUB_TOKEN` from `$CX_HOME/secrets/copilot-token` when that file exists | `<ghcp_delegate> --model <copilot_opus_id> --effort <E> --dir "$WT" --write --allow-shell cx-route --allow-shell 'git status' --allow-shell 'git diff' --allow-shell 'git log' --allow-shell 'git show' --timeout <T> --digest -- "$P"` (ghcp turns each into `--allow-tool 'shell(<it>)'`; Copilot matches a shell call by its command name, so the routes commands run through `cx-route` and `shell(python3)` / `shell(:*)` are never granted); Fusion: `--fusion standard\|max` instead of `--model/--effort`; read/review: no `--write`, `--dir "$GATE" --add-dir "$OUT"`, the same `--allow-shell` list | answer = stdout; `GHCP_SESSION`, `GHCP_USAGE` (`models_used`, `ai_credits`, tokens), `GHCP_DENIED`, `GHCP_FALLBACK`, `GHCP_NOTE`, `GHCP_SIGNAL`. Served: every `models_used[].model` equals the request (Fusion: any `GHCP_FALLBACK` → 21). #5149: effort xhigh, ≥ 30,000 output tokens and an empty answer → 2 with reason `copilot#5149`. ghcp exits pass through |
-| grok | `GROK_DISABLE_AUTOUPDATER=1`, `GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false`, `GIT_CONFIG_GLOBAL=/dev/null` (strict cannot read `~/.gitconfig`); unset `XAI_API_KEY`, `GROK_SANDBOX` | `<grok> --prompt-file "$WT/.conductor/prompt.txt" -m <grok_bulk_model> --effort <E> --cwd "$WT" -s <uuid> --output-format json --sandbox <the repository's profile cx-<repo>-<hash>, §15.7> --always-approve --no-subagents --max-turns 60` (the sandbox is the boundary: `--permission-mode acceptEdits` denied the first edit headless, and no `--allow` rules are needed inside it; the profile is written under `$CX_HOME/locks/grok-sandbox.lock` before the slot when missing or different); read/review: `--sandbox read-only --always-approve --json-schema <schema>` on the gate checkout. `GROK_MAX_CONCURRENT_SUBAGENTS=4` and no `--no-subagents` only when the task JSON says `"subagents": true` | JSON `text`, `sessionId`, `modelUsage`, `usage`, `stopReason` [docs-only]; any `permission required:` on stderr → denied; rc 1 with an error object and no `sessionId` → 2; `You are not authenticated` → 11; `rate.?limit\|quota\|\b429\b` → 10. Served: every `modelUsage` key is the model or the model plus a suffix of the explicit alias table (`-build` only: `grok-4.7` serves `grok-4.7-build`; `grok-4.7-build-fast` or another model → 21); `model_served` is the key, with a note when it is the alias. Tokens also from `grok usage <uuid>` (free) |
-| agy (raw, default) | `AGY_CLI_DISABLE_AUTO_UPDATE=true`; unset `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `/usage` before (free); `flock` on `$CX_HOME/locks/agy-launch`; registration `(cd "$WT" && <agy> --new-project --output-format json -p /model </dev/null)`; tree snapshot (`git status --porcelain=v1 -z` of the main checkout and every other worktree); `(cd "$WT" && exec setsid timeout --kill-after=15s <T+5m> <agy> --model <slug> --add-dir "$WT" --settings "$OUT/agy-settings.json" --print-timeout <T> --output-format stream-json --disable-slash-commands -p "$P" </dev/null) > agy.ndjson 2> agy.err &`, where `agy-settings.json` (written before the slot, session-only) is `{"permissions": {"allow": ["write_file(<WT>)", "command(cx-route)", "command(git status)", "command(git diff)", "command(git log)", "command(git show)", "command(ls)"]}}` (never `--dangerously-skip-permissions`, never a global grant) and `$P` is the agy prompt (read with agy's own file tools; any other command ends the run); the new session id is appended to `$CX_JOB_DIR/sids` | Wait ≤ 120 s for the `init` event: `init.model` ≠ slug → kill, 21; release the launch lock after `init`; SIGKILL the process group 5 s after the `result` event (#1313); snapshot again: any change outside `$WT` → 22 and `touch $CX_HOME/state/agy-paused` (agy dispatch stops until a human runs `cx-job unpause agy`; the main checkout is never auto-reset); `subagent_info` or a non-Opus model in events → 2 (`subagent`); `denied_actions` (each named after the tool step it stopped: `run_command`'s `tool_info.parameters.CommandLine` in `denied[].command` and `CX_DENIED.commands`) / permission `finished_reason` → 15; expired print timeout → 27; `/usage` after → `cost.quota_delta`. `agy_claude_floor_pct` > 0 and the bucket below it → lane ineligible |
+| copilot | unset `COPILOT_ALLOW_ALL COPILOT_AUTO_TIER COPILOT_MODEL COPILOT_PROVIDER_BASE_URL GH_TOKEN GITHUB_TOKEN`, except the one variable the host record names as `copilot_token_env` (§7.6, D16), and `COPILOT_HOME` when it differs from the host record; `COPILOT_AUTO_UPDATE=false`, `GHCP_COPILOT_BIN=<record bin.copilot>`, `GHCP_USAGE_LOG=$CX_HOME/raw-usage.log`, `COPILOT_GITHUB_TOKEN` from `$CX_HOME/secrets/copilot-token` when that file exists | `<ghcp_delegate> --model <copilot_opus_id> --effort <E> --dir "$WT" --write --allow-shell cx-route --allow-shell 'git status' --timeout <T> --digest -- "$P"` (ghcp turns each into `--allow-tool 'shell(<it>)'`; Copilot matches a shell call by its command name, so the routes commands run through `cx-route` and `shell(python3)` / `shell(:*)` are never granted; nor `git diff`, `log` or `show`, approved by first-level subcommand: their `--output=<path>` writes any file); Fusion: `--fusion standard\|max` instead of `--model/--effort`; read/review: no `--write`, `--dir "$GATE" --add-dir "$OUT"`, the same `--allow-shell` list | answer = stdout; `GHCP_SESSION`, `GHCP_USAGE` (`models_used`, `ai_credits`, tokens), `GHCP_DENIED`, `GHCP_FALLBACK`, `GHCP_NOTE`, `GHCP_SIGNAL`. Served: every `models_used[].model` equals the request (Fusion: any `GHCP_FALLBACK` → 21). #5149: effort xhigh, ≥ 30,000 output tokens and an empty answer → 2 with reason `copilot#5149`. ghcp exits pass through |
+| grok | `GROK_DISABLE_AUTOUPDATER=1`, `GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false`, `GIT_CONFIG_GLOBAL=/dev/null` (strict cannot read `~/.gitconfig`); unset `XAI_API_KEY`, `GROK_SANDBOX` | `<grok> --prompt-file "$WT/.conductor/prompt.txt" -m <grok_bulk_model> --effort <E> --cwd "$WT" -s <uuid> --output-format json --sandbox <the repository's profile cx-<repo>-<hash>, §15.7> --always-approve --no-subagents --max-turns 60` (the sandbox is the boundary: `--permission-mode acceptEdits` denied the first edit headless, and no `--allow` rules are needed inside it; the profile is written under `$CX_HOME/locks/grok-sandbox.lock` before the slot when missing or different; a per-project `.grok/sandbox.toml` in the worktree refuses the run, 2; the preflight runs `grok --sandbox strict models`, free, and a line saying the sandbox was not applied refuses the lane, 2); read/review: `--sandbox read-only --always-approve --json-schema <schema>` on the gate checkout. `GROK_MAX_CONCURRENT_SUBAGENTS=4` and no `--no-subagents` only when the task JSON says `"subagents": true` | JSON `text`, `sessionId`, `modelUsage`, `usage`, `stopReason` [docs-only]; any `permission required:` on stderr → denied; rc 1 with an error object and no `sessionId` → 2; `You are not authenticated` → 11; `rate.?limit\|quota\|\b429\b` → 10; a stderr line saying the sandbox was not applied → 2 (when grok went on anyway, the reason says it ran unconfined). Served: every `modelUsage` key is the model or the model plus a suffix of the explicit alias table (`-build` only: `grok-4.7` serves `grok-4.7-build`; `grok-4.7-build-fast` or another model → 21); `model_served` is the key, with a note when it is the alias. Tokens also from `grok usage <uuid>` (free) |
+| agy (raw, default) | `AGY_CLI_DISABLE_AUTO_UPDATE=true`; unset `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `/usage` before (free); `flock` on `$CX_HOME/locks/agy-launch`; registration `(cd "$WT" && <agy> --new-project --output-format json -p /model </dev/null)`; tree snapshot (`git status --porcelain=v1` of the main checkout and every other worktree, through each worktree's git directory as the repository's admin files name it, never a worktree's own `.git`, with no fsmonitor, hooks, textconv or submodules; plus each worktree's `.git` link hash); `(cd "$WT" && exec setsid timeout --kill-after=15s <T+5m> <agy> --model <slug> --add-dir "$WT" --settings "$OUT/agy-settings.json" --print-timeout <T> --output-format stream-json --disable-slash-commands -p "$P" </dev/null) > agy.ndjson 2> agy.err &`, where `agy-settings.json` (written before the slot, session-only) is `{"permissions": {"allow": ["write_file(<WT>)", "command(cx-route)", "command(git status)", "command(ls)"]}}` (never `--dangerously-skip-permissions`, never a global grant; never `command(git diff|log|show)`: a token-prefix rule would also allow their `--output=<path>` and `diff --no-index`, a write and a read anywhere, and agy has no filesystem sandbox) and `$P` is the agy prompt (read with agy's own file tools; any other command ends the run); the new session id is appended to `$CX_JOB_DIR/sids` | Wait ≤ 120 s for the `init` event: `init.model` ≠ slug → kill, 21; release the launch lock after `init`; SIGKILL the process group 5 s after the `result` event (#1313); snapshot again: any change outside `$WT` → 22 and `touch $CX_HOME/state/agy-paused` (agy dispatch stops until a human runs `cx-job unpause agy`; the main checkout is never auto-reset); `subagent_info` or a non-Opus model in events → 2 (`subagent`); `denied_actions` (each named after the tool step it stopped: `run_command`'s `tool_info.parameters.CommandLine` in `denied[].command` and `CX_DENIED.commands`) / permission `finished_reason` → 15; expired print timeout → 27; `/usage` after → `cost.quota_delta`. `agy_claude_floor_pct` > 0 and the bucket below it → lane ineligible |
 | agy (wrapper) | as above plus `AGY_USAGE_LOG=$CX_HOME/raw-usage.log`; PATH shim set without `agy` | registration as above, then `<agy_delegate> --model <slug> --dir "$WT" --timeout <T> --digest "$P"` | `model_served: null` plus the note `agy wrapper: AGY_USAGE.model echoes the request; served model unverified` (§1.4); such a run never counts as G6-verified and never yields 21; agy-delegate exits pass through |
-| claude | — | Default: no process; stdout `{"dispatch": "claude-subagent", "id", "worktree", "host_path", "prompt", "effort", "task_file"}`, then `cx-run --finish <id>`. `--headless`: `cd "$WT" && <claude> -p --model claude-opus-5-5 --effort <E> --output-format json --session-id <uuid> --permission-mode acceptEdits --settings "$OUT/cx-worker.json" "$P"` | JSON `result`, `session_id`, `usage`, `modelUsage` [assumption; pin with a capture]. `cx-worker.json` (from `templates/cx-worker.json`) allows `Bash(cx-route:*)`, the git reads and `Bash(<cmd>)` per routes command and denies `Bash(claude:*)`, `Bash(copilot:*)`, `Bash(grok:*)`, `Bash(agy:*)`, every `Bash(ghcp-<x>:*)`, `Bash(agy-<x>:*)`, `Bash(cx-<x>:*)`. `--safe-mode` is added only after §20 item 18 passes |
+| claude | — | Default: no process; stdout `{"dispatch": "claude-subagent", "id", "worktree", "host_path", "prompt", "effort", "task_file"}`, then `cx-run --finish <id>`. `--headless`: `cd "$WT" && <claude> -p --model claude-opus-5-5 --effort <E> --output-format json --session-id <uuid> --permission-mode acceptEdits --settings "$OUT/cx-worker.json" "$P"` | JSON `result`, `session_id`, `usage`, `modelUsage` [assumption; pin with a capture]. `cx-worker.json` (from `templates/cx-worker.json`) allows `Bash(cx-route:*)`, `Bash(git status)` and `Bash(<cmd>)` per routes command and denies `Bash(claude:*)`, `Bash(copilot:*)`, `Bash(grok:*)`, `Bash(agy:*)`, every `Bash(ghcp-<x>:*)`, `Bash(agy-<x>:*)`, `Bash(cx-<x>:*)`. `--safe-mode` is added only after §20 item 18 passes |
 
 Gemini lanes (digest, research, Argon review) always register the directory first and call
 `agy-delegate --model '<label>' --dir <dir> --timeout 30m --digest`.
@@ -3541,8 +3566,9 @@ cx-job unpause agy
 
 ### 15.6 Worker environment
 
-Every executor run: `CX_WORKER=1`; `PATH="<shim dir>:$OUT/bin:<host record path>"` (`$OUT/bin`
-holds the run's `cx-route`, §15.1; the shims stay first); executors by absolute path;
+Every executor run: `CX_WORKER=1`; `PATH="<shim dir>:$CX_HOME/routes/<id>:<host record path>"`
+(that directory holds the run's `cx-route`, §15.1; the shims stay first); executors by absolute
+path;
 `COPILOT_AUTO_UPDATE=false`, `GROK_DISABLE_AUTOUPDATER=1`, `AGY_CLI_DISABLE_AUTO_UPDATE=true`
 (a CLI never replaces itself mid-run; outside the runs auto-update is the user's choice, §5.4),
 `NO_COLOR=1`, `PYTHONDONTWRITEBYTECODE=1` (Python checks would leave `__pycache__` in the
@@ -3564,18 +3590,21 @@ profile, so `--user-grants` only writes that profile ahead of the repository's f
   `[a-z0-9-]`, at most 24 characters), the hex the start of the sha256 of the repository's git
   common directory (resolved). Its block in `~/.grok/sandbox.toml` (`${GROK_HOME:-~/.grok}`),
   rendered from `templates/grok-sandbox.toml` between `# cx:begin <name>` and `# cx:end <name>`:
-  `extends = "strict"`, `read_only = ["<git common dir>", "<$CX_HOME/out>"]` (git status and git
-  log in a worktree; each run's `cx-route`). Written by the grok lane before the slot
+  `extends = "strict"`, `read_only = ["<git common dir>", "<$CX_HOME/routes>"]` (git status in a
+  worktree; each run's `cx-route`, never the out directories). Written by the grok lane before the slot
   (`cxlib.py grok-profile`, under `flock` on `$CX_HOME/locks/grok-sandbox.lock`) when missing or
-  different, and by `cx-init --user-grants`; the block is rewritten only between its markers, a
-  `[profiles.<name>]` of the user's own outside them is left alone, the file is first copied to
+  different, and by `cx-init --user-grants`; the block is rewritten between its markers, and,
+  since the name is conductor's own (no person writes it, while a grok writer may rewrite
+  `sandbox.toml`: strict lets it write `~/.grok`), any other `[profiles.<name>]` table (or
+  sub-table) is replaced too; a definition left another way (dotted keys, an inline table) is a
+  conflict (the parsed profile must equal the rendered one), which refuses the run; the file is first copied to
   `sandbox.toml.cx-bak`, written atomically (through a symlinked dotfile to its target) with its
   own mode, and a result that would not parse (tomllib, Python 3.11 and newer) is a conflict:
   nothing is written. Both writers remove the exact block conductor 0.2.0 appended (the
   `cx-workspace` profile with glob deny paths, which grok's literal `deny` cannot take).
 - **Option `grok_sandbox_profile`**: `auto` (default; the 0.2.0 default `cx-workspace` counts as
   `auto`) uses the repository's profile; any other value names a profile of the user's own,
-  used as it is (it must let grok read the git common directory and `$CX_HOME/out`). Outside a
+  used as it is (it must let grok read the git common directory and `$CX_HOME/routes`). Outside a
   git checkout the lane uses the built-in `strict`. Read-only and review runs use the built-in
   `read-only` with `--always-approve`.
 - **`cx-init --user-grants [--dir D] [--dry-run] [--json]`** (`cxlib.py user-grants`): the
@@ -4042,9 +4071,12 @@ update the § it affects and drop its tag.
 | 66 | Desktop app sessions in WSL load user-scope plugins (contradicting `desktop-wsl.md`) | observed once: 2026-11-01 on ChalkDesk, a Remote Control session in `~/ai-folders` (WSL) with the desktop app's signals loaded the conductor and ran `/conductor:doctor`, whose old D30 then warned falsely | Repeat in a session opened on `\\wsl.localhost` from the desktop folder picker, and in a Work locally project thread | §1.5, D30 |
 | 67 | Whether `agy --effort xhigh` or `max` applies to `claude-opus-5-5-*` on Google AI Ultra (the 1.4.12 help offers the values; `agy models` lists only the -low/-medium/-high slugs, so the Opus lane keeps effort in the slug and sends xhigh/max to the next pool) | unverified | One tiny `agy -p` run with `--model claude-opus-5-5-high --effort xhigh --output-format stream-json`, reading the init event's model and effort | §6.2, §15.2 |
 | 68 | Whether agy's print-mode slash commands (`agy -p /model`, `/usage`, `/config`, used by the free probes, the doctor's `--agy-usage` and the per-worktree registration `--new-project -p /model`) cost quota | **settled 2026-11-06**: `agy -p /model` and `-p /usage` report `num_turns` 0 and 0 tokens (agy 1.5.1, build container): free | — | §8.2 D18, §15.2 registration |
-| 69 | grok's `strict` profile plus `read_only = [<git common dir>, $CX_HOME/out]` lets a worktree run `cx-route <name>` (bash, the check's own toolchain) and `git status`; a check whose toolchain lives under `$HOME` (`~/.nvm`, `~/.cargo`) cannot run in it | unverified for cx-route (the git grant is verified, §1.3) | One `cx-run --exec grok` whose task runs `cx-route test` (live check G1 in the 0.2.1 notes) | §15.2 grok, §15.7 |
-| 70 | Copilot approves `shell(cx-route)` for a PATH-resolved script named `cx-route`, and `shell(git status)` etc. for `git status --short` | docs (`copilot help permissions`: command name; git first-level subcommand) | One `cx-run --exec copilot` on the user's machine (Copilot cannot sign in from the build container) | §15.2 copilot |
+| 69 | grok's `strict` profile plus `read_only = [<git common dir>, $CX_HOME/routes]` lets a worktree run `cx-route <name>` (bash, the check's own toolchain) and `git status`; a check whose toolchain lives under `$HOME` (`~/.nvm`, `~/.cargo`) cannot run in it | unverified for cx-route (the git grant is verified, §1.3) | One `cx-run --exec grok` whose task runs `cx-route test` (live check G1 in the 0.2.1 notes) | §15.2 grok, §15.7 |
+| 70 | Copilot approves `shell(cx-route)` for a PATH-resolved script named `cx-route`, and `shell(git status)` for `git status --short` | docs (`copilot help permissions`: command name; git first-level subcommand) | One `cx-run --exec copilot` on the user's machine (Copilot cannot sign in from the build container) | §15.2 copilot |
 | 71 | agy's `command(cx-route)` grant covers `cx-route test` (a token-prefix rule, as measured for multi-word rules) | inferred from the probes (§1.4) | One `cx-run --exec agy` whose task runs `cx-route test` | §15.2 agy |
+| 72 | grok on a kernel without Landlock: whether 1.0.70 refuses to start (as for a profile it cannot apply) or warns and goes on unconfined (its README) | a profile it cannot apply refuses (measured 2026-11-06); no Landlock unverified | `grok --sandbox strict models` on such a kernel; the lane refuses either way when a line says the sandbox was not applied, and D17 reports the Landlock ABI | §1.3, §15.2 grok, D17 |
+| 73 | Which definition grok uses when the worktree's `.grok/sandbox.toml` and `~/.grok/sandbox.toml` both define the run's profile | unverified | `grok --sandbox <p> models` with both files and an invalid grant in one | §15.2 grok (the lane refuses a worktree that holds one), §15.7 |
+| 74 | The agy and Copilot lanes have no OS sandbox: `cx-route` runs the repository's own checks, whose code is in the worktree, so their grants keep an executor to the routes but do not contain a hostile one (grok's sandbox does) | by construction | — | §15.2, §15.6 |
 
 ## Appendix A. Spec revision log
 
@@ -4188,9 +4220,20 @@ and cheap live probes of agy 1.5.1, grok 1.0.70 and Copilot CLI 1.0.105 in the b
 | # | Finding | Change | Where |
 |---|---|---|---|
 | 1 | Pins refused a working Copilot (the user's machine auto-updated to 1.0.106) | No version pins: the flag contract checks every flag a lane emits in the live `--help` before each run (26 only for a missing flag); the versions last verified are doctor info lines; no advice to disable auto-update | §5.4, §8.3 D9–D16, §15.2 |
-| 2 | Executors could not run the repo's checks within their permission models (agy denied a command, Copilot matched `python3`, grok had no grant) | `cx-route`: the run's checks snapshotted at dispatch into `$OUT/bin/cx-route`, the only check command any executor runs | §6.4, §15.1, §15.6 |
-| 3 | agy: one denial ends a headless run; the global grants were machine-wide | Per-run `--settings` (`write_file(<worktree>)`, `command()` for cx-route, the git reads, `ls`); no global grant; the real stream-json parsed, the denied command named | §1.4, §15.2, §15.7 |
-| 4 | grok: `acceptEdits` denied the first edit headless; `strict` blocks git; glob deny paths are invalid | Per-repository profiles (extends `strict`, `read_only` the git dir and `$CX_HOME/out`) under a lock, `--sandbox <it> --always-approve`, `GIT_CONFIG_GLOBAL=/dev/null`; the 0.2.0 block removed; bubblewrap in D17 | §1.3, §15.2, §15.7, §8.3 |
-| 5 | Copilot: `shell(<full command>)` never matches | `--allow-shell cx-route` and the four git reads only | §1.2, §15.2 |
+| 2 | Executors could not run the repo's checks within their permission models (agy denied a command, Copilot matched `python3`, grok had no grant) | `cx-route`: the run's checks snapshotted at dispatch into `$CX_HOME/routes/<id>/cx-route`, the only check command any executor runs | §6.4, §15.1, §15.6 |
+| 3 | agy: one denial ends a headless run; the global grants were machine-wide | Per-run `--settings` (`write_file(<worktree>)`, `command()` for cx-route, `git status`, `ls`); no global grant; the real stream-json parsed, the denied command named | §1.4, §15.2, §15.7 |
+| 4 | grok: `acceptEdits` denied the first edit headless; `strict` blocks git; glob deny paths are invalid | Per-repository profiles (extends `strict`, `read_only` the git dir and `$CX_HOME/routes`) under a lock, `--sandbox <it> --always-approve`, `GIT_CONFIG_GLOBAL=/dev/null`; the 0.2.0 block removed; bubblewrap in D17 | §1.3, §15.2, §15.7, §8.3 |
+| 5 | Copilot: `shell(<full command>)` never matches | `--allow-shell cx-route` and `git status` only | §1.2, §15.2 |
 | 6 | grok serves `grok-4.7` as `grok-4.7-build` (21 in 0.2.0) | An explicit alias table: `-build` only | §15.2 |
 | 7 | Python checks left `__pycache__` in worktrees | `PYTHONDONTWRITEBYTECODE=1` in every worker environment | §15.6 |
+
+A security review of that build (2026-11-06) changed it before release:
+
+| # | Finding | Change | Where |
+|---|---|---|---|
+| R1 | The conductor's own git (`git -C "$WT" add -A`, `diff`, the agy snapshots' `status`) found the repository from the worktree's `.git`, which every write lane may rewrite: a repointed git directory's `core.fsmonitor` ran as the conductor | `worktree.sh`: the git directory from the main repository's admin files (`cx_wt_admin`, `cx_wt_gitdir`), `cx_wt_git` with `--git-dir`/`--work-tree` and no fsmonitor, hooks, pager, textconv or submodules; a rewritten link is 24 `tampered` and no git runs there; `--reuse-worktree` refuses it | §4.1, §15.1, §15.2 agy |
+| R2 | grok may rewrite `~/.grok/sandbox.toml`; a `[profiles.cx-…]` without the markers was left as "the user's" | The name is conductor's own: every other definition is replaced, one that still differs in the parsed file refuses the run; a worktree `.grok/sandbox.toml` refuses it too | §15.2 grok, §15.7 |
+| R3 | `command(git diff)` (agy) and `shell(git diff)` (Copilot) also allow `--output=<path>` and `--no-index` | `git status` only (agy also `ls`), in the grants, the contract and the prompts | §1.2, §6.4, §12.2, §15.2 |
+| R4 | `cx-route` honoured its caller's `BASH_ENV` and exported functions | `#!/bin/bash -p`, the check through `env -i` without the startup variables and `BASH_FUNC_*` | §15.1 |
+| R5 | grok approves every tool inside its sandbox; where the sandbox does not apply it may go on unconfined | The preflight's `grok --sandbox strict models` (2 when a line says the sandbox was not applied), the same line in a run's stderr → 2; D17 also probes it and reports the Landlock ABI | §1.3, §8.3 D17, §15.2 |
+| R6 | The grok profile granted all of `$CX_HOME/out` (other runs' tasks, diffs, digests) | `cx-route` lives in `$CX_HOME/routes/<id>/`; the profile grants `$CX_HOME/routes` | §15.1, §15.6, §15.7 |

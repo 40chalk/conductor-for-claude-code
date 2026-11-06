@@ -29,7 +29,7 @@
 # --user-grants (DESIGN section 15.7) writes the user-level settings a repository's executor runs
 # need, idempotently: the grok sandbox profile of the repository at --dir (default: the current
 # directory, when it is one), cx-<repo>-<8 hex>, from templates/grok-sandbox.toml (extends
-# grok's strict profile; read_only the repository's git directory and ~/.conductor/out), added
+# grok's strict profile; read_only the repository's git directory and ~/.conductor/routes), added
 # to ~/.grok/sandbox.toml or rewritten when it differs (cx-run's grok lane writes the same
 # profile on the repository's first grok run, so this is optional), and it removes the invalid
 # cx-workspace profile conductor 0.2.0 wrote there. agy needs no user-level grant (each raw agy
@@ -116,7 +116,7 @@ if [ "$GRANTS" = 1 ]; then
   # shellcheck source=lib/worktree.sh
   . "$HERE/lib/worktree.sh"
   UG=(--home "$HOME" --grok-home "${GROK_HOME:-$HOME/.grok}" --profile "$(cx_opt grok_sandbox_profile)"
-      --template "$CX_ROOT/templates/grok-sandbox.toml" --out-root "${CX_HOME:-$HOME/.conductor}/out")
+      --template "$CX_ROOT/templates/grok-sandbox.toml" --routes-root "${CX_HOME:-$HOME/.conductor}/routes")
   TOP=""
   if [ -d "$DIR" ] && TOP="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$TOP" ]; then
     UG+=(--repo "$TOP")
@@ -132,6 +132,8 @@ if [ "$GRANTS" = 1 ]; then
   UG+=(--root "$ROOT")
   [ "$DRY" = 1 ] && UG+=(--dry-run)
   [ "$JSON" = 1 ] && UG+=(--json)
+  # grok refuses a profile whose read_only names no directory.
+  [ "$DRY" = 1 ] || mkdir -p -- "${CX_HOME:-$HOME/.conductor}/routes"
   cx_py user-grants "${UG[@]}"
   rc=$?
   case "$rc" in

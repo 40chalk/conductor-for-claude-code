@@ -15,11 +15,33 @@
 # ignoreterm (ignores TERM, starts a TERM-ignoring child in another process group of its session,
 # pid in $STUB_GROK_DAEMON_PID, then sleeps 60 s), route (ok, after it overwrote --cwd's
 # .cx/routes.json and ran cx-route ${STUB_GROK_ROUTE:-test} and cx-route nope from PATH, their
-# output and exit codes in --cwd/cx-route.out).
+# output and exit codes in --cwd/cx-route.out), gitlink (ok, and it rewrites --cwd/.git to point
+# at --cwd/.evil, a git directory whose core.fsmonitor touches ${STUB_GROK_PWNED:-/dev/null}),
+# embedded (ok, plus an embedded repository without a commit in --cwd/sub, which git add cannot
+# index).
+# --sandbox <profile> models (the free sandbox probe) -> the models listing, unless
+# STUB_GROK_SANDBOX says the sandbox cannot apply: refuse (grok 1.0.70's real "warning: sandbox
+# could not be applied" and "Refusing to start with its protections missing" lines, rc 1),
+# nobwrap (its bubblewrap refusal, rc 1) or warn (the warning only, then the listing, rc 0: the
+# fail-open grok's README describes). A prompt run with STUB_GROK_SANDBOX_RUN=warn prints the
+# warning on stderr and goes on; refuse prints both lines and exits 1 before doing anything.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump grok
 stub_log grok -- "$@"
+nosb_warn() { printf 'warning: sandbox could not be applied: Landlock is not supported by this kernel\n' >&2; }
+nosb_refuse() {
+  nosb_warn
+  printf "error: could not apply the '%s' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n" "$1" >&2
+}
+if [ "${1-}" = --sandbox ] && [ $# -eq 3 ] && [ "$3" = models ]; then
+  case "${STUB_GROK_SANDBOX:-}" in
+    refuse) nosb_refuse "$2"; exit 1 ;;
+    nobwrap) printf 'error: Refusing to start with denied paths unprotected. Install bubblewrap with %sapt install -y bubblewrap%s\n' '`' '`' >&2; exit 1 ;;
+    warn) nosb_warn ;;
+  esac
+  shift 2
+fi
 case "${1-}" in
   --version)
     [ $# -eq 1 ] || stub_billable grok "$@"
@@ -44,6 +66,10 @@ esac
 run="${STUB_GROK_RUN:-}" model="" cwd="$PWD" sid="" schema="" prompt=""
 for a in "$@"; do case "$a" in --prompt-file|-p|--single) prompt=1 ;; esac; done
 [ -n "$run" ] && [ -n "$prompt" ] || stub_billable grok "$@"
+case "${STUB_GROK_SANDBOX_RUN:-}" in
+  refuse) nosb_refuse "${STUB_GROK_PROFILE:-strict}"; exit 1 ;;
+  warn) nosb_warn ;;
+esac
 while [ $# -gt 0 ]; do
   case "$1" in
     -m|--model) model="$2"; shift 2 ;;
@@ -79,6 +105,11 @@ case "$run" in
       r1="$(cx-route "${STUB_GROK_ROUTE:-test}" 2>&1)"; c1=$?
       r2="$(cx-route nope 2>&1)"; c2=$?
       printf '%s\nrc=%s\n%s\nrc=%s\n' "$r1" "$c1" "$r2" "$c2" > cx-route.out ) ;;
+  gitlink)
+    git init -q --bare "$cwd/.evil" && git -C "$cwd/.evil" config core.bare false \
+      && git -C "$cwd/.evil" config core.fsmonitor "touch ${STUB_GROK_PWNED:-/dev/null}" \
+      && printf 'gitdir: .evil\n' > "$cwd/.git" ;;
+  embedded) mkdir -p "$cwd/sub" && git -C "$cwd/sub" init -q ;;
   ok|denied|mismatch|nodiff|tamper) ;;
   *) stub_billable grok "$@" ;;
 esac
