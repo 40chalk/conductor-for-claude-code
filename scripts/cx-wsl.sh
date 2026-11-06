@@ -30,7 +30,15 @@
 # GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false; gh, git
 # and bash run with the environment unchanged (a shell step carries its own prefixes).
 # Arguments pass byte for byte: paths in them must be WSL paths (/home/...). For bash -s with a
-# step on stdin (not a terminal), a CR before each LF is stripped, with a cx-wsl: note.
+# step on stdin (not a terminal), a CR before each LF is stripped, with a cx-wsl: note; the step
+# is buffered in $CX_HOME/tmp (0700), never in /tmp, which every strict-based grok run may write.
+#
+# grok runs (every form that takes a slot, below): only under grok's built-in strict profile and
+# with an absolute --cwd DIR (DESIGN section 12.2): every --sandbox must name strict (grok's other
+# built-ins write ~/.grok: off and devbox everywhere, workspace and read-only its own binary,
+# ripgrep and plugins, measured on 1.0.70; no --sandbox means no sandbox at all; a profile of
+# yours is not checked here), else exit 1 before the slot. cx-wsl runs grok from DIR, so the
+# process's working directory, which strict lets grok write, is --cwd too.
 #
 # Pool slots (DESIGN section 15.3): an executor call first takes a slot of its pool, shared by
 # every session, Work locally thread and forwarded call on this computer, and holds it until
@@ -46,7 +54,8 @@
 # paused ($CX_HOME/state/agy-paused, after a wrong_tree result) exits 28 once it has its slot.
 #
 # Exit codes: the tool's own status (0-255), its stdout and stderr unchanged, no CX_* line
-# added. cx-wsl's own failures: 1 usage error (no TOOL, a tool outside the list); 2 FAILED (the
+# added. cx-wsl's own failures: 1 usage error (no TOOL, a tool outside the list, a grok run
+# without --sandbox strict or without an absolute --cwd directory); 2 FAILED (the
 # bash -s step could not be buffered, or the lock directory is unusable); 13 CLI_MISSING (no
 # host record, or the tool is not recorded or not executable: run cx-doctor first, see the
 # note); 28 NO_CAPACITY (no slot of the tool's pool within CX_SLOT_WAIT_SECS, or its cap is 0:
@@ -128,6 +137,36 @@ slot_pool() {
   return 0
 }
 POOL="$(slot_pool "$TOOL" "$@")"
+
+# grok_run_args ARG...: a grok run (header) names --sandbox strict, every time it names --sandbox,
+# and an absolute --cwd directory (GROK_CWD); exit 1 otherwise, before the slot.
+GROK_CWD=""
+grok_run_args() {
+  local a prev="" n=0
+  for a in "$@"; do
+    case "$prev" in
+      --sandbox)
+        [ "$a" = strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox strict, not --sandbox '$a' (grok's other built-ins let it write ~/.grok: its own binary, ripgrep and plugins)"
+        n=$((n + 1)) prev=""; continue ;;
+      --cwd) GROK_CWD="$a" prev=""; continue ;;
+    esac
+    case "$a" in
+      --sandbox=*)
+        [ "${a#--sandbox=}" = strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox strict, not $a (grok's other built-ins let it write ~/.grok: its own binary, ripgrep and plugins)"
+        n=$((n + 1)) ;;
+      --cwd=*) GROK_CWD="${a#--cwd=}" ;;
+    esac
+    prev="$a"
+  done
+  [ "$prev" != --sandbox ] && [ "$n" -gt 0 ] \
+    || cx_usage_error "cx-wsl grok runs only under --sandbox strict (without --sandbox grok runs with no sandbox at all)"
+  case "$GROK_CWD" in
+    /*) [ -d "$GROK_CWD" ] || cx_usage_error "--cwd $GROK_CWD is not a directory" ;;
+    *) cx_usage_error "cx-wsl grok runs need an absolute --cwd DIR (a directory of their own, such as \$OUT/msg): grok's strict profile lets it write its working directory" ;;
+  esac
+}
+[ "$TOOL" != grok ] || [ -z "$POOL" ] || grok_run_args "$@"
+
 if [ -n "$POOL" ]; then
   # shellcheck source=lib/locks.sh
   . "$HERE/lib/locks.sh"
@@ -165,6 +204,8 @@ case "$TOOL" in
     exec env -u GEMINI_API_KEY -u GOOGLE_API_KEY \
       PATH="$NEWPATH" CX_WORKER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true "$ABS" "$@" ;;
   grok)
+    # From its --cwd (header): the process's working directory and --cwd are the same.
+    [ -z "$GROK_CWD" ] || cd -- "$GROK_CWD" || cx_usage_error "cannot change to --cwd $GROK_CWD"
     exec env -u XAI_API_KEY -u GROK_SANDBOX PATH="$NEWPATH" CX_WORKER=1 GROK_DISABLE_AUTOUPDATER=1 \
       GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false \
       GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false "$ABS" "$@" ;;
@@ -174,7 +215,9 @@ case "$TOOL" in
     # empty, `git -C "$WT" add -A` runs in the cwd). Strip a CR before each LF and say so; a
     # terminal on stdin is passed through untouched.
     if [ "${1-}" = -s ] && [ ! -t 0 ]; then
-      STEP="$(mktemp "${TMPDIR:-/tmp}/cx-wsl-step.XXXXXXXX")" || cx_signal FAILED 2 "cannot create a temporary file"
+      # Buffered in $CX_HOME/tmp (0700, cx_tmpdir), never in /tmp: a grok run going on meanwhile
+      # may write /tmp, and lines it appended to the step would run here, unsandboxed.
+      STEP="$(cx_mktemp cx-wsl-step)" || cx_signal FAILED 2 "cannot create a temporary file in ${CX_HOME:-$HOME/.conductor}/tmp"
       cat > "$STEP" || { rm -f "$STEP"; cx_signal FAILED 2 "cannot read the step on stdin"; }
       if grep -q $'\r$' "$STEP"; then
         sed -i 's/\r$//' "$STEP"

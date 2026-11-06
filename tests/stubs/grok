@@ -12,7 +12,9 @@
 # sessionId, rc 1), auth ("You are not authenticated.", rc 1), quota (rate limit, rc 1), sleep
 # (ok after ${STUB_GROK_SLEEP:-30} s; with STUB_GROK_HOLD, ok once that file is gone, at most that
 # long), nodiff (ok without writing a file), tamper (ok, and it also
-# edits .conductor/task.md in --cwd), daemon (ok, leaving a sleeping child in its session and a
+# edits .conductor/task.md in --cwd), relink (ok, and it moves --cwd's .conductor to .cdx and
+# leaves a symlink .conductor -> .cdx: the same task.md behind a link), daemon (ok, leaving a
+# sleeping child in its session and a
 # setsid one outside it; their pids in $STUB_GROK_DAEMON_PID and $STUB_GROK_DAEMON_PID.setsid),
 # ignoreterm (ignores TERM, starts a TERM-ignoring child in another process group of its session,
 # pid in $STUB_GROK_DAEMON_PID, then sleeps 60 s), route (ok, after it overwrote --cwd's
@@ -20,7 +22,8 @@
 # output and exit codes in --cwd/cx-route.out), gitlink (ok, and it rewrites --cwd/.git to point
 # at --cwd/.evil, a git directory whose core.fsmonitor touches ${STUB_GROK_PWNED:-/dev/null}),
 # embedded (ok, plus an embedded repository without a commit in --cwd/sub, which git add cannot
-# index).
+# index). STUB_GROK_SEEN=FILE: a prompt run writes into FILE what it found in --cwd: "cwd=<it>",
+# then --cwd/.conductor/change.diff (a regular file's text, else "NO-DIFF").
 # --sandbox <profile> models (the free sandbox probe) -> the models listing, unless
 # STUB_GROK_SANDBOX says the sandbox cannot apply: refuse (grok 1.0.70's real "warning: sandbox
 # could not be applied" and "Refusing to start with its protections missing" lines, rc 1),
@@ -109,18 +112,24 @@ case "${STUB_GROK_SANDBOX_RUN:-}" in
   refuse) nosb_refuse "${STUB_GROK_PROFILE:-strict}"; exit 1 ;;
   warn) nosb_warn ;;
 esac
+# (A flag without its value ends the loop: shift 2 would fail and loop forever.)
 while [ $# -gt 0 ]; do
   case "$1" in
-    -m|--model) model="$2"; shift 2 ;;
-    --cwd) cwd="$2"; shift 2 ;;
-    -s|--session-id) sid="$2"; shift 2 ;;
-    --json-schema) schema="$2"; shift 2 ;;
-    --prompt-file|-p|--single|--effort|--reasoning-effort|--output-format|--sandbox|--permission-mode|--allow|--deny|--max-turns|--add-dir) shift 2 ;;
+    -m|--model) model="${2-}"; shift 2 || break ;;
+    --cwd) cwd="${2-}"; shift 2 || break ;;
+    -s|--session-id) sid="${2-}"; shift 2 || break ;;
+    --json-schema) schema="${2-}"; shift 2 || break ;;
+    --prompt-file|-p|--single|--effort|--reasoning-effort|--output-format|--sandbox|--permission-mode|--allow|--deny|--max-turns|--add-dir) shift 2 || break ;;
     *) shift ;;
   esac
 done
 served="$model"
 [ "$run" = mismatch ] && served="${STUB_GROK_SERVED:-grok-4.6}"
+if [ -n "${STUB_GROK_SEEN:-}" ]; then
+  { printf 'cwd=%s\n' "$cwd"
+    if [ -f "$cwd/.conductor/change.diff" ] && [ ! -L "$cwd/.conductor/change.diff" ]; then cat "$cwd/.conductor/change.diff"; else echo NO-DIFF; fi
+  } > "$STUB_GROK_SEEN"
+fi
 case "$run" in
   error) printf '{"error": {"message": "stream ended unexpectedly"}}\n'; exit 1 ;;
   auth) printf 'You are not authenticated. Run grok login.\n' >&2; exit 1 ;;
@@ -154,6 +163,7 @@ case "$run" in
       && git -C "$cwd/.evil" config core.fsmonitor "touch ${STUB_GROK_PWNED:-/dev/null}" \
       && printf 'gitdir: .evil\n' > "$cwd/.git" ;;
   embedded) mkdir -p "$cwd/sub" && git -C "$cwd/sub" init -q ;;
+  relink) mv -- "$cwd/.conductor" "$cwd/.cdx" && ln -s .cdx "$cwd/.conductor" ;;
   ok|denied|mismatch|nodiff|tamper) ;;
   *) stub_billable grok "$@" ;;
 esac

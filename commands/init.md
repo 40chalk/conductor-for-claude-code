@@ -19,7 +19,7 @@ Arguments: $ARGUMENTS
 - `.github/copilot-instructions.md`: code-review and coding-agent rules for GitHub Copilot,
   inside the same block markers.
 
-It also adds `/.conductor/` to the repository's `info/exclude` so task contracts are never
+It also adds `/.conductor` to the repository's `info/exclude` so task contracts are never
 committed. It detects the commands for npm, pnpm, yarn, bun, Python (pytest, ruff, mypy; uv
 and poetry), Go and Cargo where they are obvious; `--setup`, `--test`, `--lint` and
 `--typecheck` override a detected command, and an empty value (`--lint ''`) means none.

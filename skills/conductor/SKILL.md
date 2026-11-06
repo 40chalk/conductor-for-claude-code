@@ -182,9 +182,11 @@ machine).
 
 ### Step 1: the contract
 
-Write the contract to a file with the Write tool (any path, e.g. `/tmp/cx-t1.md`; `cx-run`
-copies it to `~/.conductor/out/<id>/task.md`, its canonical place, and into the worktree as
-`.conductor/task.md`). Line 1 is machine-readable, the rest is prose for the executor:
+Write the contract to a file with the Write tool under `~/.conductor/tasks/` (e.g.
+`~/.conductor/tasks/t1.md`; the Write tool needs your home spelled out), never under `/tmp` or
+`/var/tmp`: every grok run may write those (its sandbox grants them), and a failover re-reads the
+contract. `cx-run` copies it to `~/.conductor/out/<id>/task.md`, its canonical place, and into the
+worktree as `.conductor/task.md`. Line 1 is machine-readable, the rest is prose for the executor:
 
 ```markdown
 <!-- cx-task {"id": "t1", "base": "<sha>", "lane": "agy-opus", "effort": "high", "allowed_paths": ["src/feature/**"], "lockfiles": false, "commands": ["npm test"]} -->
@@ -225,7 +227,7 @@ effort and has a free slot (agy in raw mode, which verifies the served model); w
 eligible pool is full it waits up to 10 minutes for a slot, then gives you the claude lane:
 
 ```bash
-cx-run --background --task-file /tmp/cx-t1.md --id t1 --effort high
+cx-run --background --task-file ~/.conductor/tasks/t1.md --id t1 --effort high
 cx-job wait '<job id>'   # the id after JOB_ID; one background Bash call with timeout: 7200000
 ```
 
@@ -234,11 +236,11 @@ lane was chosen or skipped and which preflight results came from the cache. An e
 each started the same way and waited for with `cx-job wait`:
 
 ```bash
-cx-run --background --exec agy --task-file /tmp/cx-t1.md --id t1                        # agy Opus (raw mode: served model verified)
-cx-run --background --exec copilot --effort high --task-file /tmp/cx-t1.md --id t1      # Copilot Opus
-cx-run --background --exec copilot --fusion standard --task-file /tmp/cx-t1.md --id t1  # mechanical fallback (Fusion Standard)
-cx-run --background --exec copilot --fusion max --task-file /tmp/cx-t1.md --id t1       # both Opus pools drained (Fusion Max)
-cx-run --background --exec grok --task-file /tmp/cx-t1.md --id t1                       # Grok grok-4.7, mechanical work
+cx-run --background --exec agy --task-file ~/.conductor/tasks/t1.md --id t1                        # agy Opus (raw mode: served model verified)
+cx-run --background --exec copilot --effort high --task-file ~/.conductor/tasks/t1.md --id t1      # Copilot Opus
+cx-run --background --exec copilot --fusion standard --task-file ~/.conductor/tasks/t1.md --id t1  # mechanical fallback (Fusion Standard)
+cx-run --background --exec copilot --fusion max --task-file ~/.conductor/tasks/t1.md --id t1       # both Opus pools drained (Fusion Max)
+cx-run --background --exec grok --task-file ~/.conductor/tasks/t1.md --id t1                       # Grok grok-4.7, mechanical work
 ```
 
 An explicit lane whose pool stays full exits 28 (`NO_CAPACITY`) after 10 minutes, or at once
@@ -254,7 +256,7 @@ worktree, runs `setup` and prints a dispatch JSON (`worktree`, `host_path`, `pro
 Then finish it:
 
 ```bash
-cx-run --exec claude --task-file /tmp/cx-t1.md --id t1
+cx-run --exec claude --task-file ~/.conductor/tasks/t1.md --id t1
 cx-run --finish t1
 ```
 
@@ -277,10 +279,13 @@ Not lanes: `agy-media` and `/antigravity:research` (both always pass `--yolo`); 
 to your own WebSearch and Grok, media waits for the v1.1 Docker lane. Commit messages, PR text
 and changelogs go to Grok with the diff inside the prompt file (one call; `vars.sh` is written
 by `cx-run`). Grok runs under its built-in `strict` profile in a directory of its own that holds
-only the prompt (`$OUT/msg/`, emptied first): it may write only there, in `~/.grok/sessions` and
-the temp directories, and nothing the conductor later sources or runs (`vars.sh`, the routes)
-lives there. Never `--sandbox read-only` (it lets grok write `~/.grok`: its own binary, ripgrep
-and plugins) and never `--cwd "$TOP"`:
+only the prompt (`$OUT/msg/`, emptied first; `cx-wsl` runs grok from its `--cwd` and refuses a
+grok run without `--sandbox strict` or without an absolute `--cwd`): it may write only there, in
+`~/.grok/sessions`, `/tmp` and `/var/tmp`. Nothing the conductor later reads, sources or runs
+lies in any of them (`vars.sh`, the routes and the contract live under `~/.conductor`, and
+`cx-wsl bash -s` buffers a step in `~/.conductor/tmp`); keep nothing you will run or re-read in
+`/tmp` either. Never `--sandbox read-only` (it lets grok write `~/.grok`: its binary, ripgrep and
+plugins) and never `--cwd "$TOP"`:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
@@ -317,7 +322,7 @@ committed or gated; inspect the worktree, then fail over or re-dispatch. The gat
 exact commit `C`, never a branch name. A second gate attempt uses `$ID.2`. Failover to the next
 lane: `git -C "$WT" reset -q --hard "$BASE" && git -C "$WT" clean -ffdxq -e /.conductor/`
 (inside the conductor's own worktree only), then `cx-run --reuse-worktree --exec <next lane>
---task-file /tmp/cx-t1.md --id t1`. Never let two lanes write to one worktree.
+--task-file ~/.conductor/tasks/t1.md --id t1`. Never let two lanes write to one worktree.
 
 ### Step 4: reviews (read-only, on a gate checkout of the committed branch; only after Step 3)
 
@@ -390,7 +395,7 @@ fetches the pull request head into a gate checkout and runs `setup` and every ro
 there (exit 20 `GATE_FAILED` when one fails, 25 when `setup` does):
 
 ```bash
-cx-run --exec copilot-cloud --task-file /tmp/cx-t1.md --id t1
+cx-run --exec copilot-cloud --task-file ~/.conductor/tasks/t1.md --id t1
 ghcp-cloud list                          # follow the agent
 ghcp-cloud view '<PR number>' --log      # one task's log
 cx-run --finish t1 --pr '<PR number>'
@@ -720,6 +725,17 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
   `grok_sandbox_profile` naming a built-in that writes `~/.grok`: set it back to `auto`; for a
   profile of the user's that does, the refusal itself names the path); a `.grok/sandbox.toml`
   in a branch to review means another lane reviews it; use another lane meanwhile.
+- **Exit 2 "the commit … tracks .conductor"** (a read or review run): that branch or base
+  commits something at `.conductor`, where the conductor writes the diff, the task and the prompt
+  file (a symlink there would redirect those writes to any file of the user's). Nothing was
+  checked out. Show the user what the branch put there; review that diff by hand, never with a
+  lane.
+- **Exit 2 "the worktree's .conductor cannot hold the task"** (a re-dispatch): the earlier
+  executor made `.conductor` a symlink or put one in it. Nothing was written; inspect the
+  worktree, then dispatch the task afresh under a new id.
+- **Exit 1 from `cx-wsl grok`**: a grok call without `--sandbox strict` (every `--sandbox` it
+  names) or without an absolute `--cwd` directory. Use the commit-message lines of Step 2
+  verbatim.
 - **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
   checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing

@@ -112,9 +112,11 @@ T=""
 cleanup() { [ -n "$T" ] && rm -rf "$T"; return 0; }
 trap cleanup EXIT
 trap 'trap "" INT TERM HUP; cx_signal CANCELLED 130 ""' INT TERM HUP
-T="$(mktemp -d "${TMPDIR:-/tmp}/cx-doctor.XXXXXXXX" 2>/dev/null)" || T=""
+# The probes' outputs and the facts the host record is built from (cx-wsl runs the binaries it
+# names) stay in $CX_HOME/tmp (cx_tmpdir), never in a /tmp that a grok run may write.
+T="$(cx_mktemp -d cx-doctor 2>/dev/null)" || T=""
 if [ -z "$T" ] || [ ! -d "$T" ]; then
-  printf '%s: cannot create a temporary directory under %s\n' "$CX_PROG" "${TMPDIR:-/tmp}" >&2
+  printf '%s: cannot create a temporary directory under %s\n' "$CX_PROG" "$(cx_tmpdir 2>/dev/null || echo "${CX_HOME:-$HOME/.conductor}/tmp")" >&2
   exit 2
 fi
 CHECKS="$T/checks.tsv"
@@ -1201,7 +1203,7 @@ d15_d19() {
     # instead warn and go on unconfined). Free: grok models under the built-in strict profile.
     # grok 1.0.70 also logs a ProfileApplied event per sandboxed start in its sandbox log: only
     # the bytes appended during this probe, for this probe's cwd, are read (cxlib.py).
-    local why="" sev sev0=0 sev1=0 ev_state=none ev_plat="" ev_prof=""
+    local why="" sev sev0=0 sev1=0 ev_state=none ev_plat="" ev_prof="" ev_hw=""
     sev="${GROK_HOME:-$HOME/.grok}/sessions/sandbox-events.jsonl"
     if [ -f "$sev" ] && [ ! -L "$sev" ]; then sev0="$(stat -c %s -- "$sev" 2>/dev/null)" || sev0=0; fi
     probe grok-sandbox 30 "${GROK_ENV[@]}" GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false \
@@ -1211,8 +1213,10 @@ d15_d19() {
     [[ $sev0 =~ ^[0-9]+$ ]] || sev0=0
     [[ $sev1 =~ ^[0-9]+$ ]] || sev1=0
     if [ "$PY" = 1 ] && [ "$sev1" -gt 0 ]; then
-      IFS=$'\t' read -r ev_state ev_plat ev_prof < <(cx_py grok-sandbox-event --file "$sev" --from "$sev0" --to "$sev1" --workspace "$PROBE" 2>/dev/null)
+      IFS=$'\t' read -r ev_state ev_plat ev_prof ev_hw < <(cx_py grok-sandbox-event --file "$sev" --from "$sev0" --to "$sev1" --workspace "$PROBE" \
+        --grok-home "${GROK_HOME:-$HOME/.grok}" 2>/dev/null)
       case "$ev_state" in enforced|unenforced) ;; *) ev_state=none ;; esac
+      [ "$ev_hw" != - ] || ev_hw=""
     fi
     cat "$T/grok-sandbox.out" "$T/grok-sandbox.err" > "$T/grok-sandbox.all" 2>/dev/null
     why="$(grep -m 1 -iE "sandbox could not be applied|could not apply the '[^']*' sandbox profile|refusing to start with (its protections missing|denied paths unprotected)|without (sandbox )?enforcement" "$T/grok-sandbox.all" 2>/dev/null | head -c 200)"
@@ -1224,6 +1228,11 @@ d15_d19() {
     elif [ "$ev_state" = unenforced ]; then
       chk fail D17 "$S_LOG" "grok started --sandbox ${ev_prof:-strict} here without enforcing it (its sandbox log $sev: ProfileApplied, enforced false, platform ${ev_plat:-unknown}): every grok run is refused" \
         "on Linux and WSL grok needs Landlock (kernel 5.13 or newer, enabled) and bubblewrap: sudo apt install -y bubblewrap"
+    elif [ -n "$ev_hw" ]; then
+      # grok 1.0.70's strict keeps ~/.grok read-only (measured); its README says strict writes
+      # ~/.grok. Every strict-based profile, the repository's included, would grant the same.
+      chk fail D17 "$S_LOG" "grok's built-in strict lets grok write its home ${GROK_HOME:-~/.grok} here (read_write path $ev_hw in its sandbox log $sev): its own binary, ripgrep and plugins there run outside any sandbox later, so every grok run is refused" \
+        "use another lane for grok's work until a grok release keeps ~/.grok read-only under strict (grok --sandbox strict models, then the last line of $sev)"
     elif [ "$rc" -eq 0 ]; then
       chk ok D17 "$S_LOG" "grok applies its sandbox here (grok --sandbox strict models)"
     else
@@ -1248,13 +1257,17 @@ d15_d19() {
         auto|cx-workspace)
           [ -f "$sbx" ] && n_cx="$(grep -c '^# cx:begin cx-' "$sbx" 2>/dev/null)"
           chk info D17 "$S_LOG" "grok runs (write, read and review) use their repository's own sandbox profile (cx-<repo>-<hash>, extends strict; ${n_cx:-0} in $sbx), written by a repository's first grok run or cx-init --user-grants" ;;
+        # The built-ins that let grok write its home: normalize.py GROK_HOME_WRITERS (the suite
+        # pins the two lists equal).
         off|devbox|workspace|read-only)
           chk fail D17 "$S_LOG" "option grok_sandbox_profile names grok's built-in $prof, which lets grok write its home ~/.grok (its own binary, ripgrep and plugins): every grok run is refused" "set grok_sandbox_profile back to auto" ;;
+        strict)
+          chk warn D17 "$S_LOG" "option grok_sandbox_profile names grok's built-in strict: grok runs start, but strict cannot read a worktree's git directory or $CXH/routes, so git status and cx-route fail inside worktrees" "set grok_sandbox_profile back to auto (the repository's profile extends strict with exactly those two reads)" ;;
         *)
           if [ "$PY" = 1 ] && cx_py toml-table "$sbx" "$prof" 2>/dev/null; then
             chk ok D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is defined in $sbx"
           else
-            chk warn D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is not defined in $sbx: grok runs fail to start" "define it, or set grok_sandbox_profile back to auto"
+            chk warn D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is not one of grok's built-ins and not defined in $sbx: grok runs fail to start" "define it, or set grok_sandbox_profile back to auto"
           fi ;;
       esac
       if [ -f "$sbx" ] && grep -q '^# conductor: the grok sandbox profile every conductor grok writer runs under' "$sbx" 2>/dev/null; then

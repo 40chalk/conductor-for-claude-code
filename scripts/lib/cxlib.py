@@ -17,9 +17,11 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   toml-get FILE SECTION KEY    raw value; exit 1 when absent
   toml-table FILE NAME         exit 0 when a table whose last key segment is NAME exists
   landlock                     "abi N", "none <why>" or "unknown <why>": the kernel's Landlock (D17)
-  grok-sandbox-event --file F --from N --to M --workspace W
+  grok-sandbox-event --file F --from N --to M --workspace W [--grok-home H]
                                "enforced|unenforced|none<TAB>platform<TAB>profile": grok's sandbox
-                               log lines appended between sizes N and M for workspace W (D17)
+                               log lines appended between sizes N and M for workspace W (D17); with
+                               --grok-home a fourth field, the first read_write path of those
+                               events that grants write to H (grok_home_write), else "-"
   const NAME                   prints a message constant (CURSOR_WORKER_MSG, CURSOR_POOL_MSG)
   options-check                effective options (CLAUDE_PLUGIN_OPTION_*) validated (section 5.3)
   conductor-options FILE       the conductor's saved options in FILE as JSON
@@ -497,12 +499,14 @@ def grok_home_write(paths, grok_home):
     home GROK_HOME (${GROK_HOME:-~/.grok}): GROK_HOME itself, a directory above it (/, $HOME, or
     /tmp when the home lies there) or one inside it (bin/, vendor/, installed-plugins/), except
     GROK_HOME/sessions and below, the session store every grok run writes. Each path and the home
-    are compared as given (abspath) and resolved (realpath), both: a path is exempt only when both
-    of its forms lie in the session store of the home's own form, so a sessions link back to the
-    home is no exemption. Measured on 1.0.70 (tests/fixtures/real/grok/write-probe-*): the
-    built-in read-only grants ~/.grok, where grok's own binary (bin/), its ripgrep (vendor/) and
-    installed-plugins/ stay writable (only its protected set is write-denied), so a run steered by
-    what it reads could plant code that later runs outside any sandbox. None when no path does."""
+    are compared as given (abspath) and resolved (realpath), both, and only on whole path
+    components ($GROK_HOME/sessions-x is no session store, ${GROK_HOME}-x no part of the home): a
+    path is exempt only when both of its forms lie in the session store of the home's own form,
+    so a sessions link back to the home is no exemption. Measured on 1.0.70
+    (tests/fixtures/real/grok/write-probe-*): the built-in read-only grants ~/.grok, where grok's
+    binary in bin/, its ripgrep (vendor/), installed-plugins/ and auth.json stay writable (an
+    append-open of its protected set was denied), so a run steered by what it reads could plant
+    code that later runs outside any sandbox. None when no path does."""
     if not grok_home:
         return None
     homes = [os.path.abspath(grok_home), os.path.realpath(grok_home)]
@@ -519,14 +523,24 @@ def grok_home_write(paths, grok_home):
 
 
 def cmd_grok_sandbox_event(a):
-    """grok-sandbox-event --file F --from N --to M --workspace W: prints "enforced", "unenforced"
-    or "none", then the platform and the profile, tab-separated (DESIGN section 8.3 D17)."""
+    """grok-sandbox-event --file F --from N --to M --workspace W [--grok-home H]: prints
+    "enforced", "unenforced" or "none", then the platform and the profile, tab-separated, and with
+    --grok-home the first read_write path of those events that grants write to H, else "-"
+    (DESIGN section 8.3 D17: a grok whose built-in strict writes its home fails D17)."""
     ev = grok_sandbox_event(a.file, a.start, a.end, a.workspace)
     if ev is None:
-        out("none\t-\t-\n")
+        line = "none\t-\t-"
     else:
-        out("%s\t%s\t%s\n" % ("enforced" if ev["enforced"] else "unenforced", ev["platform"].replace("\t", " "),
-                                ev["profile"].replace("\t", " ")))
+        line = "%s\t%s\t%s" % ("enforced" if ev["enforced"] else "unenforced", ev["platform"].replace("\t", " "),
+                                ev["profile"].replace("\t", " "))
+    if a.grok_home:
+        hw = None
+        for e in grok_sandbox_events(a.file, a.start, a.end, a.workspace):
+            hw = grok_home_write(e["read_write_paths"] or [], a.grok_home)
+            if hw:
+                break
+        line += "\t" + (sanitize(hw, 300).replace("\t", " ") if hw else "-")
+    out(line + "\n")
     return 0
 
 
@@ -2262,7 +2276,9 @@ def cmd_init_apply(a):
     ex_lines = []
     if exclude and os.path.isfile(exclude):
         ex_lines = [ln.strip() for ln in read_text(exclude).split("\n")]
-        excluded = "/.conductor/" in ex_lines
+        # /.conductor, not 0.2.1's /.conductor/ (directories only): a .conductor symlink or file
+        # an executor left is ignored too (worktree.sh cx_wt_exclude).
+        excluded = "/.conductor" in ex_lines
     written = []
     if not conflict and not a.dry_run:
         for rel, data in writes:
@@ -2281,7 +2297,7 @@ def cmd_init_apply(a):
                 with open(exclude, "ab") as fh:
                     if cur and not cur.endswith("\n"):
                         fh.write(b"\n")
-                    fh.write(b"/.conductor/\n")
+                    fh.write(b"/.conductor\n")
                 excluded = True
             except OSError as e:
                 err("cxlib: init-apply: cannot update %s: %s\n" % (exclude, e))
@@ -2399,15 +2415,17 @@ def grok_profile_plan(path, template, name, gcd, routes_root):
     """(action, new_text, notes) for the repository's profile in sandbox.toml PATH: create,
     update, same or conflict (the result would not parse, or would not hold exactly the
     rendered profile). Every conductor grok run (write, read and review, and the skill's
-    commit-message call under the built-in strict) runs under a strict-based profile, and grok
-    write-denies sandbox.toml under its sandbox profiles (devbox and off aside; its protected set:
-    config.toml, sandbox.toml, trusted_folders.toml, managed_config.toml, requirements.toml,
-    hooks-paths, hooks/, bundled/, bundles/; measured on 1.0.70 under read-only and strict,
-    tests/fixtures/real/grok/write-probe-*), so no conductor grok run can change this file. What
-    can: your own grok sessions without a sandbox (grok's default) or with devbox, other tools,
-    and code planted earlier where 0.2.1's read-only runs could write (grok's binary in
-    ~/.grok/bin, its ripgrep in ~/.grok/vendor, ~/.grok/installed-plugins), which runs outside
-    any sandbox. The name cx-<repo>-<hash> is conductor's own (no person writes it), so every
+    commit-message call under the built-in strict) runs under a strict-based profile, and under
+    strict grok write-denies ~/.grok itself and sandbox.toml (measured on 1.0.70,
+    tests/fixtures/real/grok/write-probe-strict-1.0.70.txt), so no conductor grok run can change
+    this file. Under the built-in read-only an append-open of its protected set (config.toml,
+    sandbox.toml, trusted_folders.toml, managed_config.toml, requirements.toml, hooks-paths,
+    hooks/, bundled/, bundles/) was denied too, but ~/.grok itself stayed writable, so whether
+    a rename over a protected file is denied rests on grok's docs alone (they pin a protected
+    path's parents). What can change it: your own grok sessions without a sandbox (grok's
+    default) or with devbox, other tools, and code planted earlier where 0.2.1's read-only runs
+    could write (grok's binary in ~/.grok/bin, its ripgrep in ~/.grok/vendor,
+    ~/.grok/installed-plugins, auth.json), which runs outside any sandbox. The name cx-<repo>-<hash> is conductor's own (no person writes it), so every
     definition of NAME is replaced by the rendered block, between the cx:begin/cx:end lines or
     not (markers something stripped never make a widened profile "the user's")."""
     notes = []
@@ -2652,6 +2670,7 @@ def main(argv):
     s.add_argument("--from", dest="start", type=int, default=0)
     s.add_argument("--to", dest="end", type=int, default=0)
     s.add_argument("--workspace", required=True)
+    s.add_argument("--grok-home", default="")
     s.set_defaults(fn=cmd_grok_sandbox_event)
     s = sub.add_parser("const")
     s.add_argument("name")

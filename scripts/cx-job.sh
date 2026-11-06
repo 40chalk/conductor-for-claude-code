@@ -353,7 +353,7 @@ case "$CMD" in
     RT="$CX_RT"
     # The preflight: cx-run --dry-run with the same arguments (--finish has a dry run of its own).
     # A refusal (1) or a path with no WSL form (42) never changes, so nothing is started.
-    PRE="$(mktemp "${TMPDIR:-/tmp}/cx-job-pre.XXXXXXXX")" || cx_signal FAILED 2 "mktemp failed"
+    PRE="$(cx_mktemp cx-job-pre)" || cx_signal FAILED 2 "cannot create a scratch file in $CXH/tmp"
     bash "$RT/scripts/cx-run.sh" --dry-run "${ARGS[@]+"${ARGS[@]}"}" > /dev/null 2> "$PRE" < /dev/null
     prc=$?
     if [ "$prc" = 1 ] || [ "$prc" = 42 ]; then

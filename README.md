@@ -50,14 +50,14 @@ runs the same in the background (`JOB_ID`, `status`, `wait`, `result`, `kill`, `
 (`/conductor:route <task>` explains one):
 
 ```
-cx-run --background --task-file /tmp/cx-t1.md --id t1 --effort high   # --exec auto: agy (raw), then Copilot, then Claude
+cx-run --background --task-file ~/.conductor/tasks/t1.md --id t1 --effort high   # --exec auto: agy (raw), then Copilot, then Claude
 cx-job wait <job id>                                                  # one background Bash call, timeout 7200000
 cx-run --exec grok --id t2 -- '- add a greeting file'                  # free text; after -- it may start with -
 cx-run --mode read --exec grok '<question>'                           # an answer only, on a detached checkout
 cx-run --mode review --family gemini --branch cx/t1                    # a cross-family review
-cx-run --exec claude --task-file /tmp/cx-t3.md --id t3                 # a dispatch JSON for your own subagent ...
+cx-run --exec claude --task-file ~/.conductor/tasks/t3.md --id t3      # a dispatch JSON for your own subagent ...
 cx-run --finish t3                                                     # ... then its checks, CX_RESULT and ledger line
-cx-run --exec copilot-cloud --task-file /tmp/cx-t4.md --id t4          # the Copilot cloud agent opens a PR ...
+cx-run --exec copilot-cloud --task-file ~/.conductor/tasks/t4.md --id t4  # the Copilot cloud agent opens a PR ...
 cx-run --finish t4 --pr 42                                             # ... whose head is gated on a clean checkout
 ```
 
@@ -102,26 +102,37 @@ profile `cx-<repo>-<hash>` in `~/.grok/sandbox.toml` (extends grok's `strict`; r
 to the repository's git directory and `~/.conductor/routes`, never the out directories), which
 the first grok run of a repository writes; option `grok_sandbox_profile` can name a profile of
 your own instead, used for every mode. The skill's commit-message call uses the built-in
-`strict` in a directory that holds only its prompt. Measured on grok 1.0.70
-(`tests/fixtures/real/grok/write-probe-*`): `strict` lets grok write only its working
-directory, `~/.grok/sessions`, `/tmp` and `/var/tmp`; grok's built-in `read-only`, which 0.2.1
-used for read and review runs and the commit-message call, write-denies only grok's protected
-set (`config.toml`, `sandbox.toml`, `trusted_folders.toml`, `managed_config.toml`,
-`requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`) and lets grok write the
-rest of `~/.grok`: its own binary in `~/.grok/bin`, its ripgrep in `~/.grok/vendor`,
-`~/.grok/installed-plugins` and `auth.json`, code and credentials used later outside any
-sandbox. Before each grok run (and before its pool slot) the lane checks the run's own profile
+`strict` in a directory that holds only its prompt (`cx-wsl` refuses a grok run without
+`--sandbox strict` or an absolute `--cwd`, and runs grok from that directory). Measured on grok
+1.0.70: `strict` grants write to its working directory, `~/.grok/sessions`, `/tmp` and
+`/var/tmp` only (grok's sandbox log, `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`),
+and inside `~/.grok` it write-denies everything but `sessions/` (the write probe,
+`tests/fixtures/real/grok/write-probe-strict-1.0.70.txt`). grok's built-in `read-only`, which
+0.2.1 used for read and review runs and the commit-message call, write-denied an append-open of
+grok's protected set (`config.toml`, `sandbox.toml`, `trusted_folders.toml`,
+`managed_config.toml`, `requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`)
+and let grok write the rest of `~/.grok` (`write-probe-read-only-1.0.70.txt`): its binary in
+`~/.grok/bin` (which runs whenever grok is launched from there), its ripgrep in
+`~/.grok/vendor`, `~/.grok/installed-plugins` and `auth.json`, code and credentials used later
+outside any sandbox. Before each grok run (and before its pool slot) the lane checks the run's own profile
 for free: `grok --sandbox <profile> models` in the run's checkout, then the line it adds to
 grok's sandbox log (`~/.grok/sessions/sandbox-events.jsonl`, read where GNU `stat` is
 available). The run is refused (exit 2, before any prompt) when that line says the profile was
 not enforced or grants write to `~/.grok` itself, a directory above it or one inside it (all
-but `~/.grok/sessions`), and always for a built-in profile that writes `~/.grok` (`off`,
-`devbox`, `workspace`, `read-only`); with no log the check changes nothing. The profile's name
+but `~/.grok/sessions`), and always, before grok starts, for a built-in profile that writes
+`~/.grok` (`off`, `devbox`, `workspace`, `read-only`); with no log the check changes nothing.
+The preflight refuses the whole lane the same way when grok's built-in `strict` would grant
+`~/.grok` (grok's README says it does; 1.0.70 does not). The profile's name
 is conductor's own: before each run, and again once it holds its slot, any other definition of
 it is replaced, and a file that would still define it another way (or a `.grok/sandbox.toml` in
-the run's checkout, a review's included) refuses the run. Known limit: `~/.grok/sessions` holds
-every grok session's transcript and every grok run can read and write it, so a grok run can see
-other grok runs' tasks and answers there. Every grok run approves every tool inside its sandbox,
+the run's checkout, a review's included) refuses the run. A read or review of a commit that
+tracks anything at `.conductor` (where the conductor writes the diff, the task and the prompt
+file) is refused before the checkout, and the conductor never writes through a symlink there.
+Known limits: `~/.grok/sessions` holds every grok session's transcript and every grok run can
+read and write it, so a grok run can see other grok runs' tasks and answers there; every grok
+run can write `/tmp` and `/var/tmp`, so the conductor keeps its scratch files in
+`~/.conductor/tmp` and the skill its task contracts in `~/.conductor/tasks/`, and nothing you
+will run or re-read belongs in `/tmp` while grok runs go on. Every grok run approves every tool inside its sandbox,
 so its preflight also checks that grok can apply one here (`grok --sandbox strict models`, free;
 on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17).
 `cx-init --user-grants` (optional, from inside the repository) writes the
@@ -215,7 +226,7 @@ Every option is a string; an empty value means the default.
 | `copilot_xhigh_ok` | `false` | Allow `--reasoning-effort xhigh` on Copilot Opus (`max` is never sent) |
 | `grok_bulk_model` | `grok-4.7` | Grok model for mechanical lanes |
 | `grok_bulk_effort` | `high` | Grok effort for mechanical lanes |
-| `grok_sandbox_profile` | `auto` | grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile (refused when it lets grok write `~/.grok`) |
+| `grok_sandbox_profile` | `auto` | grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile (refused when its logged grants let grok write `~/.grok`); grok's built-ins that write `~/.grok` are refused, and `strict` cannot read a worktree's git directory or the routes (`cx-doctor` D17 warns) |
 | `review_model_gemini` | `Gemini 4 Argon (High)` | Gemini-family reviewer |
 | `review_model_gpt` | `gpt-6.1-sol` | GPT-family reviewer |
 | `cap_agy` / `cap_copilot` / `cap_grok` | `2` / `3` / `5` | Concurrency limits (throughput, not spend): pool slots shared by every session, thread and forwarded call on the computer (`~/.conductor/locks`); `0` turns a pool off |

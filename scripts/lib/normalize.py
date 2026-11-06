@@ -1195,17 +1195,32 @@ def cmd_probe(a):
     sandbox = None
     if a.sandbox_out and os.path.exists(a.sandbox_out):
         why = grok_nosandbox(read(a.sandbox_out))
-        # grok's sandbox log: the ProfileApplied event the probe appended (DESIGN section 1.3). Its
-        # enforced false refuses like a line saying the sandbox was not applied; no event changes
-        # nothing (the log is absent on other hosts or versions).
-        ev = CXL.grok_sandbox_event(a.sandbox_events, a.sandbox_events_from, a.sandbox_events_to,
-                                    a.sandbox_workspace) if a.sandbox_events and a.sandbox_workspace else None
+        # grok's sandbox log: the ProfileApplied events the probe appended (DESIGN section 1.3). An
+        # enforced false refuses like a line saying the sandbox was not applied, and so does a
+        # read_write path into grok's home (a grok whose built-in strict writes ~/.grok: its
+        # README says it does, 1.0.70 measured it does not; every strict-based profile, the
+        # repository's included, would grant the same); no event changes nothing (the log is
+        # absent on other hosts or versions).
+        evs = CXL.grok_sandbox_events(a.sandbox_events, a.sandbox_events_from, a.sandbox_events_to,
+                                      a.sandbox_workspace) if a.sandbox_events and a.sandbox_workspace else []
+        ev = next((e for e in evs if e["enforced"] is False), evs[0] if evs else None)
+        hw = None
+        for e in evs if a.sandbox_grok_home else []:
+            hw = CXL.grok_home_write(e["read_write_paths"] or [], a.sandbox_grok_home)
+            if hw:
+                break
         if not why and ev and ev["enforced"] is False:
             why = ("its sandbox log says --sandbox %s ran unenforced: ProfileApplied, enforced false, platform %s, in %s" % (
                 ev["profile"], ev["platform"], a.sandbox_events))
+        if why:
+            hw = None  # home_write names the refusal's reason only
+        elif hw:
+            why = ("its sandbox log says --sandbox strict grants write to grok's home %s here (read_write path %s in the "
+                   "probe's ProfileApplied event, in %s)" % (a.sandbox_grok_home, hw, a.sandbox_events))
         sandbox = {"ok": False if why else (True if a.sandbox_rc == 0 else None), "detail": why or (
             None if a.sandbox_rc == 0 else "grok --sandbox strict models exited %s" % a.sandbox_rc),
-            "enforced": ev["enforced"] if ev else None, "platform": ev["platform"] if ev else None}
+            "enforced": ev["enforced"] if ev else None, "platform": ev["platform"] if ev else None,
+            "home_write": hw}
     if a.version_ok is not None:
         vok = a.version_ok == "true"
     try:
@@ -1573,6 +1588,11 @@ def verdict(p):
             lane, p.get("version") or "(version unknown)", why)
     elif p.get("paused"):
         line = "28 NO_CAPACITY agy dispatch is paused after a wrong_tree result: inspect the changed tree, then run cx-job unpause agy"
+    elif isinstance(p.get("sandbox"), dict) and p["sandbox"].get("ok") is False and p["sandbox"].get("home_write"):
+        line = ("2 FAILED %s's built-in strict profile lets it write its own home on this host (%s): its binary, ripgrep and "
+                "plugins there run outside any sandbox later, and every grok run (the repository's strict-based profile "
+                "included) approves every tool inside its sandbox, so the lane is refused (cx-doctor D17)" % (
+                    lane, p["sandbox"].get("detail")))
     elif isinstance(p.get("sandbox"), dict) and p["sandbox"].get("ok") is False:
         line = ("2 FAILED %s cannot apply its sandbox on this host (%s): it runs with --always-approve inside it, so the lane is "
                 "refused (on Linux and WSL it needs Landlock, kernel 5.13 or newer, and bubblewrap; cx-doctor D17)" % (
@@ -1984,6 +2004,7 @@ def main(argv):
     s.add_argument("--sandbox-events-from", type=int, default=0, help="its size before the sandbox probe")
     s.add_argument("--sandbox-events-to", type=int, default=0, help="its size after the sandbox probe")
     s.add_argument("--sandbox-workspace", default="", help="the sandbox probe's working directory")
+    s.add_argument("--sandbox-grok-home", default="", help="${GROK_HOME:-~/.grok}: a read_write path into it refuses the lane")
     s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("cache-get")
     s.add_argument("--key", required=True)

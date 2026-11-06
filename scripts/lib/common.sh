@@ -348,6 +348,64 @@ cx_decode_wsl() {
   return 0
 }
 
+# cx_tmpdir: prints the directory for the conductor's own scratch files (DESIGN section 15.1):
+# $CX_HOME/tmp, a 0700 directory of yours created on first use, never /tmp or $TMPDIR, which
+# every strict-based grok run may write (its sandbox grants /tmp and /var/tmp, measured on
+# 1.0.70), so nothing the conductor reads back, sources or runs may lie there. On Git Bash:
+# ${TMPDIR:-/tmp} (the Windows side, which no executor's sandbox grants). rc 1, printing
+# nothing, when that directory is a symlink, not a directory or not yours.
+cx_tmpdir() {
+  local d
+  if cx_is_windows_shell; then printf '%s\n' "${TMPDIR:-/tmp}"; return 0; fi
+  d="${CX_HOME:-${HOME:-}/.conductor}/tmp"
+  if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+    mkdir -p -- "${d%/tmp}" 2>/dev/null
+    mkdir -m 700 -- "$d" 2>/dev/null
+  fi
+  [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ] || return 1
+  chmod 700 -- "$d" 2>/dev/null || return 1
+  printf '%s\n' "$d"
+}
+
+# cx_mktemp [-d] NAME: a new scratch file (or directory) NAME.XXXXXXXX in cx_tmpdir; prints its
+# path; rc 1 when none can be created.
+cx_mktemp() {
+  local td mkd=()
+  [ "${1-}" != -d ] || { mkd=(-d); shift; }
+  td="$(cx_tmpdir)" || return 1
+  mktemp ${mkd[@]+"${mkd[@]}"} "$td/$1.XXXXXXXX"
+}
+
+# cx_cdir DIR: DIR/.conductor (the task contract, a prompt file, a review's diff) as a real
+# directory, created when absent: rc 1 (CX_CDIR_WHY) when it is a symlink or no directory, or
+# holds a symlink at any depth. The conductor writes there unsandboxed, and DIR is a checkout of
+# an executor-written commit or a worktree an executor wrote: a link there would redirect the
+# write to any file you can write (DESIGN section 15.1). Write each file with cx_cput (or rm -f
+# first): never through a name that is already there.
+CX_CDIR_WHY=""
+cx_cdir() {
+  local d="$1/.conductor" l
+  CX_CDIR_WHY=""
+  if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
+    CX_CDIR_WHY="$d is $( [ -L "$d" ] && echo "a symlink" || echo "not a directory"): the conductor never writes through it"
+    return 1
+  fi
+  if [ -d "$d" ]; then
+    l="$(find "$d" -type l -print -quit 2>/dev/null)"
+    if [ -n "$l" ]; then
+      CX_CDIR_WHY="$l is a symlink: the conductor never writes into a .conductor/ that holds one"
+      return 1
+    fi
+    return 0
+  fi
+  mkdir -- "$d" 2>/dev/null
+  if [ -L "$d" ] || [ ! -d "$d" ]; then CX_CDIR_WHY="cannot create $d"; return 1; fi
+}
+
+# cx_cput SRC DEST: copies SRC to DEST as a new file (DEST, a symlink included, is removed first;
+# a directory there fails): for the files of a directory cx_cdir checked.
+cx_cput() { rm -f -- "$2" && cp -- "$1" "$2"; }
+
 # cx_win_config_dir / cx_win_settings_file (Git Bash): the Windows-side Claude config dir and
 # settings file (DESIGN section 7.3): $CLAUDE_CONFIG_DIR, else %USERPROFILE%\.claude, else
 # $HOME/.claude.
@@ -469,7 +527,7 @@ cx_runtime_ensure() {
       return 0
     fi
   fi
-  err="$(mktemp "${TMPDIR:-/tmp}/cx-rt.XXXXXXXX")" || return 0
+  err="$(cx_mktemp cx-rt)" || return 0
   if CX_HOME="$h" bash "$CX_HOSTDIR/install-runtime.sh" --from "$CX_ROOT" >/dev/null 2>"$err" && [ -f "$rt/RUNTIME_STAMP" ]; then
     CX_RT="$rt"
   else

@@ -421,7 +421,8 @@ cxa_probe() {
     printf '%s\n' "$j"
     return 0
   fi
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/cx-probe.XXXXXXXX")" || cxa_fail 2 FAILED "mktemp failed"
+  # The probe's outputs decide the verdict: never in a /tmp that a grok run may write (cx_tmpdir).
+  tmp="$(cx_mktemp -d cx-probe)" || cxa_fail 2 FAILED "cannot create a scratch directory in $CXA_HOME/tmp"
   CXA_PROBE_TMP="$tmp"
   printf '%s\0' "${CXA_ARGV[@]}" > "$tmp/argv"
   j="$(lane_probe)"

@@ -151,7 +151,8 @@ env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_CODE_REMOTE HOME=$S/home CLAUDE_CONFIG_DIR=$
   rule), only `cx-run --background` when their task names it. The pool slots are shared by every
   session, thread, workflow agent and forwarded call on the computer.
 - **The skill's recipe** (SKILL section 4 = DESIGN §12.2, `[P43]` compares every bash line):
-  step 1 the contract (`/tmp/cx-t1.md` in WSL; from Windows a Windows-side path, never Git
+  step 1 the contract (`~/.conductor/tasks/t1.md` in WSL, never `/tmp`, which grok runs may
+  write; from Windows a Windows-side path, never Git
   Bash's `/tmp`: exit 42); step 2 `cx-run`/`cx-job` (`vars.sh` comes from cx-run); step 3 the
   conductor's squash commit and gate (`BRANCH_TAMPERED` 24); step 4 reviews; step 5 GitHub,
   `cx-wsl ghcp-ci-debug` and its hand-back to `cx/<id>`. The hand steps' only executor calls are
@@ -234,7 +235,15 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
 - Executors run only inside `cx-run` (the adapters) and, for the hand steps and Windows tool
   calls, `cx-wsl`; both take the pool slot. Never put a secret on a command line (argv is
   world-readable in `/proc`): the Copilot token travels in the environment only. An adapter's
-  executor never inherits a lock descriptor; temporary files come from `mktemp`.
+  executor never inherits a lock descriptor; temporary files come from `cx_mktemp`, in
+  `$CX_HOME/tmp` (0700), never `$TMPDIR` or `/tmp`, which every strict-based grok run may write
+  (only the Git Bash side keeps the Windows temp directory; a static `[X]` check greps it).
+- `<checkout>/.conductor/` is the conductor's: written only through `cx_cdir` (a real directory
+  holding no symlink) and `cx_cput` (a new file); a read or review of a commit that tracks
+  `.conductor` exits 2 before its checkout; `info/exclude` gets `/.conductor` (no slash).
+- `cx-wsl grok` runs (forms that take a slot) need `--sandbox strict` and an absolute `--cwd`
+  (else 1) and run from that directory; the skill's one `cx-wsl grok` line is pinned by a
+  static check (`$OUT/msg` emptied first, strict only, no `--cwd "$TOP"`).
 
 ## Changes that touch many files
 
@@ -270,6 +279,9 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   and README's allow-rule lists.
 - **Version bump**: `plugin.json`, `marketplace.json`, `CX_VERSION`, `cxlib.VERSION`, a new
   `## x.y.z — date` heading in `CHANGELOG.md` (`[P2]`).
+- **grok's home-writing built-ins** (`off`, `devbox`, `workspace`, `read-only`):
+  `GROK_HOME_WRITERS` in `normalize.py` and D17's case arm in `cx-doctor.sh` (a static `[X]`
+  check pins them equal), DESIGN §1.3, §8.3 D17, §15.2 and §15.7, README, SKILL troubleshooting.
 - **Pin bump**: `CX_PIN_*` in `common.sh`, DESIGN §1 and §5.4, README.
 - **New shipped file**: DESIGN §13.4, `CX_SHIPPED_FILES`/`CX_SHIPPED_EXEC`,
   `install-runtime.sh` dirs and D4's subset (`[P41]`).
@@ -329,4 +341,9 @@ holds (DESIGN §20 items 40–61); that Copilot signs in with `COPILOT_GITHUB_TO
 `gh repo view` resolves SSH host aliases, and `ghcp-cloud`'s host-qualified `-R` (items 62–65);
 agy's stream-json events, whether `--effort xhigh|max` applies to the Opus slugs and whether
 its `-p /model|/usage|/config` slash forms cost quota (items 67, 68; its flags themselves are
-verified against the captured 1.4.12 help), and claude -p's result shape (§20).
+verified against the captured 1.4.12 help), and claude -p's result shape (§20); whether grok
+reads `--prompt-file` before its sandbox applies or under it, whether its daemon backend ever
+runs a conductor run, and which directory `strict`'s CWD grant follows when the process cwd and
+`--cwd` differ (items 77, 78, 80; all moot or refused by construction); under the built-in
+`read-only` only an append-open of grok's protected set was measured denied, not a rename in the
+writable `~/.grok` (item 76).
