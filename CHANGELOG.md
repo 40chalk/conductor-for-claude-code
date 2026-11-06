@@ -58,8 +58,9 @@ version is pinned any more.
     `--reuse-worktree` refuses it; an embedded repository without a commit no longer hides the
     rest of the change (`git add --ignore-errors`, a note).
   - grok's profile `cx-<repo>-<hash>` is conductor's own: a `[profiles.<name>]` outside the
-    cx:begin/cx:end lines (a grok writer may rewrite `~/.grok/sandbox.toml`) is replaced
-    instead of being left as "the user's", and a file that still defines it another way, or a
+    cx:begin/cx:end lines (grok's README says strict writes `~/.grok`; the live runs below
+    found `~/.grok` read-only under it, so this is defence in depth) is replaced instead of
+    being left as "the user's", and a file that still defines it another way, or a
     `.grok/sandbox.toml` in the worktree, refuses the run.
   - `git diff`, `git log` and `git show` left every grant (agy's `--settings`, Copilot's
     `--allow-shell`, the Claude worker's settings) and the contract: their `--output=<path>`
@@ -83,6 +84,32 @@ version is pinned any more.
   repository, the agy snapshot over both, a stripped or dotted grok profile, a worktree
   `.grok/sandbox.toml`, `cx-route` under `BASH_ENV` and an exported function, grok's sandbox
   refusal in the probe, the run and D17, and its fail-open warning).
+- **Verified live** (the build container, 2026-11-06, this build; a scratch repository whose
+  `slugify` raised `NotImplementedError`, three failing tests, `commands.test` in
+  `.cx/routes.json`): `cx-doctor` ran for real (25 ok; D17: grok applies its sandbox, Landlock
+  ABI 7, bubblewrap present; the host record written). An agy write run (agy 1.5.1, served
+  `claude-opus-5-5-high`) ran `ls -R`, `cx-route test` and `git status` under its per-run
+  `--settings`, nothing denied, exit 0 in 29 s; a grok write run (`--sandbox
+  cx-textutil-78d1f9c2 --always-approve`, served `grok-4.7-build`) ran `cx-route test`, exit 0;
+  a grok read through `cx-run --background` and `cx-job wait`/`result` ended 0; the skill's
+  Step 3 (commit, then the gate on a clean checkout of that commit) by hand gave GATE_OK on both
+  write runs. The Copilot lane could not sign in there (it stays to be run on the user's
+  machine). Fixtures `real/agy/sbx-agy-2/`, `real/grok/sbx-grok-2/`, `real/grok/sbx-grok-3/` and
+  `real/grok/sandbox-events-1.0.70.jsonl`. Fixes from them:
+  - grok with `--json-schema`: the answer is `structuredOutput` (as JSON). grok's `text` joins
+    every turn's message with no separator, so the read run's answer was `[ ][{...}]`, not
+    valid JSON. A plain digest keeps `text` as it is (documented: turn boundaries cannot be
+    recovered from it).
+  - grok's sandbox log: the preflight and `cx-doctor` D17 read the `ProfileApplied` line their
+    `grok --sandbox strict models` appends to `~/.grok/sessions/sandbox-events.jsonl` (only
+    the bytes added during the probe, for its cwd); `enforced` false refuses the lane (2) and
+    fails D17, `enforced` true adds a D17 line with the platform, no log changes nothing.
+  - The docs now say what was measured: strict (and the profiles extending it) writes only the
+    worktree, `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` read-only (grok's
+    README claim is kept, attributed); the profile comment changed, so each repository's
+    profile is rewritten once on its next grok run.
+  - `cx-job wait|result|status|kill <task id>` (the `--id`, not the JOB_ID) still exits 1, now
+    with a note naming the JOB_ID of the one job that has that task id.
 
 ## 0.2.0 — 2026-11-01
 

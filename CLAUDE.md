@@ -329,5 +329,4 @@ holds (DESIGN §20 items 40–61); that Copilot signs in with `COPILOT_GITHUB_TO
 `gh repo view` resolves SSH host aliases, and `ghcp-cloud`'s host-qualified `-R` (items 62–65);
 agy's stream-json events, whether `--effort xhigh|max` applies to the Opus slugs and whether
 its `-p /model|/usage|/config` slash forms cost quota (items 67, 68; its flags themselves are
-verified against the captured 1.4.12 help), grok's JSON result fields and claude -p's result
-shape (§20).
+verified against the captured 1.4.12 help), and claude -p's result shape (§20).

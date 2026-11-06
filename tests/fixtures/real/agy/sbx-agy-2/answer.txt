@@ -1,0 +1,13 @@
+I implemented `slugify` in `textutil.py`, and `cx-route test` now passes.
+
+**What changed**
+- [textutil.py:3](file:///root/.cx-wt/textutil-live-agy-1/textutil.py#L3): added `import re`.
+- [textutil.py:12](file:///root/.cx-wt/textutil-live-agy-1/textutil.py#L12): replaced `raise NotImplementedError` with `return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")`. It lowercases the text, turns every run of anything other than ASCII letters and digits into a single hyphen, and removes hyphens at the start and end. This is what the docstring describes.
+
+**What I ran**
+- `cx-route test`: 3 tests ran, all passed.
+- `git status`: only `textutil.py` is modified. I didn't touch the tests.
+
+**Open issues:** None.
+
+DIGEST: Implemented slugify in textutil.py with a single regex and `cx-route test` passes (3/3) with the tests unchanged.

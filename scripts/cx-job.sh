@@ -19,7 +19,8 @@
 #        cx-job unpause agy                   resumes agy dispatch after a wrong_tree pause
 #        cx-job -h|--help | --version
 #
-# <id> is YYYYmmdd-HHMMSS-<4 hex>, or any unique prefix of it. The registry is
+# <id> is YYYYmmdd-HHMMSS-<4 hex>, or any unique prefix of it (a task id, cx-run's --id, is
+# refused with exit 1 and a note naming the JOB_ID of the one job that has it). The registry is
 # $CX_HOME/jobs/<id>/ (argv, meta, pid, pid_start, sids, queued, out, err, rc). start checks the
 # arguments with cx-run --dry-run first (exit 1 or 42: refused, nothing started; a taken id, a
 # running task and an unmappable path are refused here, not later in the job) and reads a task
@@ -72,17 +73,53 @@ proc_start() {
   printf '%s\n' "${20}"
 }
 
+# task_id_of JD: the task id (--id X or --id=X) among the job's cx-run arguments, before the
+# task text; nothing when the id came from a task file or was generated.
+task_id_of() {
+  local i
+  local -a A=()
+  [ -f "$1/argv" ] && mapfile -d '' -t A < "$1/argv" || return 1
+  for ((i = 0; i < ${#A[@]}; i++)); do
+    case "${A[$i]}" in
+      --) break ;;
+      --id) printf '%s\n' "${A[$((i + 1))]:-}"; return 0 ;;
+      --id=*) printf '%s\n' "${A[$i]#*=}"; return 0 ;;
+      --exec|--mode|--family|--model|--effort|--fusion|--task-file|--repo|--base|--branch|--diff|--allow|--timeout|--finish|--pr|--agy-mode|--gh-repo|--base-branch)
+        i=$((i + 1)) ;;   # a value: never read as an option (cx-run.sh has the same list)
+    esac
+  done
+  return 1
+}
+
+# no_job ID: the note for an ID that names no job. When ID is the task id of exactly one job,
+# it says which JOB_ID that is; the caller still exits 1 (nothing acts on the resolved job).
+no_job() {
+  local id="$1" d t=()
+  [ -n "$id" ] || return 1
+  shopt -s nullglob
+  for d in "$JOBS"/*/; do
+    d="${d%/}"
+    [ "$(task_id_of "$d" 2>/dev/null)" = "$id" ] && t+=("${d##*/}")
+  done
+  shopt -u nullglob
+  if [ "${#t[@]}" = 1 ]; then
+    cx_note "no job $id in $JOBS: $id is the task id of job ${t[0]}; cx-job takes the JOB_ID that cx-run --background printed"
+    return 0
+  fi
+  return 1
+}
+
 # jobdir ID: the job directory of ID or of the unique job whose id starts with it.
 jobdir() {
   local id="${1-}" d m=() n
-  [[ $id =~ ^[0-9A-Za-z][0-9A-Za-z-]*$ ]] || { cx_note "invalid job id '$id'"; return 1; }
+  [[ $id =~ ^[0-9A-Za-z][0-9A-Za-z-]*$ ]] || { no_job "$id" || cx_note "invalid job id '$id'"; return 1; }
   if [ -d "$JOBS/$id" ]; then printf '%s\n' "$JOBS/$id"; return 0; fi
   shopt -s nullglob
   for d in "$JOBS/$id"*; do [ -d "$d" ] && m+=("$d"); done
   shopt -u nullglob
   n="${#m[@]}"
   if [ "$n" = 1 ]; then printf '%s\n' "${m[0]}"; return 0; fi
-  if [ "$n" = 0 ]; then cx_note "no job $id in $JOBS"; else cx_note "job id $id is ambiguous (${n} jobs start with it)"; fi
+  if [ "$n" = 0 ]; then no_job "$id" || cx_note "no job $id in $JOBS"; else cx_note "job id $id is ambiguous (${n} jobs start with it)"; fi
   return 1
 }
 

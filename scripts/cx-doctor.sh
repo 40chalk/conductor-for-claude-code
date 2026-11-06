@@ -1199,10 +1199,21 @@ d15_d19() {
     # Every grok run approves every tool inside its sandbox, so the sandbox must apply here
     # (grok 1.0.70 refuses to start when it cannot apply a profile; its README says it may
     # instead warn and go on unconfined). Free: grok models under the built-in strict profile.
-    local why=""
+    # grok 1.0.70 also logs a ProfileApplied event per sandboxed start in its sandbox log: only
+    # the bytes appended during this probe, for this probe's cwd, are read (cxlib.py).
+    local why="" sev sev0=0 sev1=0 ev_state=none ev_plat="" ev_prof=""
+    sev="${GROK_HOME:-$HOME/.grok}/sessions/sandbox-events.jsonl"
+    if [ -f "$sev" ] && [ ! -L "$sev" ]; then sev0="$(stat -c %s -- "$sev" 2>/dev/null)" || sev0=0; fi
     probe grok-sandbox 30 "${GROK_ENV[@]}" GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false \
       GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false "$B_grok" --sandbox strict models
     rc=$?
+    if [ -f "$sev" ] && [ ! -L "$sev" ]; then sev1="$(stat -c %s -- "$sev" 2>/dev/null)" || sev1=0; fi
+    [[ $sev0 =~ ^[0-9]+$ ]] || sev0=0
+    [[ $sev1 =~ ^[0-9]+$ ]] || sev1=0
+    if [ "$PY" = 1 ] && [ "$sev1" -gt 0 ]; then
+      IFS=$'\t' read -r ev_state ev_plat ev_prof < <(cx_py grok-sandbox-event --file "$sev" --from "$sev0" --to "$sev1" --workspace "$PROBE" 2>/dev/null)
+      case "$ev_state" in enforced|unenforced) ;; *) ev_state=none ;; esac
+    fi
     cat "$T/grok-sandbox.out" "$T/grok-sandbox.err" > "$T/grok-sandbox.all" 2>/dev/null
     why="$(grep -m 1 -iE "sandbox could not be applied|could not apply the '[^']*' sandbox profile|refusing to start with (its protections missing|denied paths unprotected)|without (sandbox )?enforcement" "$T/grok-sandbox.all" 2>/dev/null | head -c 200)"
     if killed "$rc"; then
@@ -1210,10 +1221,16 @@ d15_d19() {
     elif [ -n "$why" ]; then
       chk fail D17 "$S_LOG" "grok cannot apply its sandbox here ($why): every grok run is refused" \
         "on Linux and WSL grok needs Landlock (kernel 5.13 or newer, enabled) and bubblewrap: sudo apt install -y bubblewrap"
+    elif [ "$ev_state" = unenforced ]; then
+      chk fail D17 "$S_LOG" "grok started --sandbox ${ev_prof:-strict} here without enforcing it (its sandbox log $sev: ProfileApplied, enforced false, platform ${ev_plat:-unknown}): every grok run is refused" \
+        "on Linux and WSL grok needs Landlock (kernel 5.13 or newer, enabled) and bubblewrap: sudo apt install -y bubblewrap"
     elif [ "$rc" -eq 0 ]; then
       chk ok D17 "$S_LOG" "grok applies its sandbox here (grok --sandbox strict models)"
     else
       chk warn D17 "$S_LOG" "grok --sandbox strict models (rc $rc): $(first_line "$T/grok-sandbox.all")"
+    fi
+    if [ "$ev_state" = enforced ]; then
+      chk ok D17 "$S_LOG" "grok's sandbox log reports --sandbox ${ev_prof:-strict} enforced here (platform ${ev_plat:-unknown}; $sev)"
     fi
     if [ "${1:-}" = full ] && [ -n "$GROK_IDS" ]; then
       local bulk

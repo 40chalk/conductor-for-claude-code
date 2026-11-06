@@ -575,3 +575,31 @@ spec left open.
     it ran unconfined when grok went on. The doctor also reports the Landlock ABI
     (`cxlib.py landlock`; a warning when the kernel has none), but grok's own answer decides
     the lane.
+
+### The 2026-11-06 live runs (build container, conductor 0.2.1)
+
+12. **grok's sandbox log is read, but can only add a refusal.** grok 1.0.70 appends one JSON
+    line per sandboxed start to `${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl`
+    (`event_type` `ProfileApplied`, `profile`, `workspace`, `platform`, `enforced`,
+    `restrict_network`, `read_write_paths`, `read_only_paths`; the real lines are
+    `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`): the preflight and D17 take the
+    file's size before and after their `grok --sandbox strict models` and read only those bytes
+    (at most 1 MiB, split on `"\n"`, never through a symlink or from a FIFO), matching the
+    workspace against the probe's cwd (as given or resolved). `enforced` false refuses like a
+    line saying the sandbox was not applied (2 `FAILED`, the same reason text with the event
+    first); `enforced` true records the platform; no log, no event, or a non-boolean
+    `enforced` changes nothing. A sandboxed writer can write `~/.grok/sessions`, so the log is
+    not trusted to lift a refusal: a forged `enforced` true changes nothing, a forged false only
+    refuses. The run itself is not checked against the log (only the probe), and the shape of an
+    unenforced event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is
+    synthetic, DESIGN §20 item 72).
+13. **With `--json-schema`, grok's `structuredOutput` is the answer** (as `json.dumps`, not
+    ASCII-escaped), even when `text` is a string: `text` joins every turn's message with no
+    separator. Without `--json-schema`, `text` stays the digest as it is (turn boundaries
+    cannot be recovered from it); `output` and `data` are still read only when there is no
+    `text`. Nothing downstream parses a read or review answer: it goes to `answer.txt` and
+    cx-run's stdout.
+14. **`cx-job` explains a task id but never resolves it**: `wait`, `result`, `status` and `kill`
+    given a task id (`--id`) of exactly one job still exit 1, with a note naming its JOB_ID, so
+    a typo can never wait on, or kill, another job. A task id that came from a task file or was
+    generated is not in the job's stored arguments, so it gets the plain "no job" note.

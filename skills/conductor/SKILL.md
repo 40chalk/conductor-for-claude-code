@@ -134,11 +134,12 @@ with the repo's `setup` and `commands` from `.cx/routes.json` (written by `cx-in
 
 - **Background for long calls.** A write run may take 30 minutes or more: start it with
   `cx-run --background …`, which prints `JOB_ID <id>` at once, and wait for it with ONE
-  background Bash call `cx-job wait <id>` with `run_in_background: true` and `timeout: 7200000`
-  (the 2-hour maximum; the tool notifies you when it exits). A background call is stopped at
-  its timeout too, and the default (30 minutes) is shorter than a 30m run plus setup and agy's
-  grace. Only runs with `--timeout 9m` or less, `--dry-run`, `--explain`, the claude dispatch
-  and `--finish` may run in the foreground. Never wait by re-checking across turns.
+  background Bash call `cx-job wait <id>` (that JOB_ID, never the task's `--id`) with
+  `run_in_background: true` and `timeout: 7200000` (the 2-hour maximum; the tool notifies you
+  when it exits). A background call is stopped at its timeout too, and the default (30
+  minutes) is shorter than a 30m run plus setup and agy's grace. Only runs with `--timeout
+  9m` or less, `--dry-run`, `--explain`, the claude dispatch and `--finish` may run in the
+  foreground. Never wait by re-checking across turns.
 - **Outside the sandbox.** `cx-run`, `cx-job` and the hand steps (they touch the worktree,
   `~/.conductor`, `gh` and `git push`) run outside Claude Code's Bash sandbox: Copilot writes
   `~/.copilot`, agy `~/.gemini` and `~/.antigravity`, Grok `~/.grok`, and the worktrees live
@@ -703,11 +704,11 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
   note names where it points). No git ran there, so do not run any (its git configuration could
   run commands): report it, remove the worktree with `rm -rf`, then `git worktree prune` in the
   repository, and dispatch again with a new id.
-- **grok refused with exit 2** ("cannot apply its sandbox", "holds .grok/sandbox.toml", "cannot
-  write the grok sandbox profile"): grok approves every tool inside its sandbox, so the lane
-  never runs without it. `cx-doctor` D17 names the cause (Landlock and bubblewrap on Linux and
-  WSL; a second definition of the repository's profile in `~/.grok/sandbox.toml`); use another
-  lane meanwhile.
+- **grok refused with exit 2** ("cannot apply its sandbox", including "its sandbox log says
+  … ran unenforced", "holds .grok/sandbox.toml", "cannot write the grok sandbox profile"):
+  grok approves every tool inside its sandbox, so the lane never runs without it. `cx-doctor`
+  D17 names the cause (Landlock and bubblewrap on Linux and WSL; a second definition of the
+  repository's profile in `~/.grok/sandbox.toml`); use another lane meanwhile.
 - **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
   checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing

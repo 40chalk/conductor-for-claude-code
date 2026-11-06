@@ -15,8 +15,9 @@
 #                  is the repository's own, cx-<repo>-<8 hex of its git directory> (option
 #                  grok_sandbox_profile auto, the default; the 0.2.0 value cx-workspace counts as
 #                  auto; any other value names a profile of your own): extends grok's strict
-#                  profile (reads the worktree and system paths only, writes it, /tmp and
-#                  ~/.grok, no child network) plus read_only access to the git directory (git
+#                  profile (reads the worktree and system paths only; writes the worktree,
+#                  ~/.grok/sessions, /tmp and /var/tmp, ~/.grok itself read-only, as measured on
+#                  1.0.70; no child network) plus read_only access to the git directory (git
 #                  status in a worktree) and $CX_HOME/routes (each run's cx-route; never the out
 #                  directories, which hold other runs' tasks, diffs and digests). The
 #                  sandbox is the boundary, so every tool is approved inside it (a headless run
@@ -30,17 +31,22 @@
 #   probe (free):  grok --version (recorded only), grok models (the -m id must be listed: an
 #                  unlisted id silently drops --effort), grok --sandbox strict models (grok's
 #                  sandbox must apply here: a "sandbox could not be applied" or "Refusing to start"
-#                  line refuses the lane, 2), grok --help (the flag contract: 26 when it lacks a
-#                  flag of the argv).
+#                  line refuses the lane, 2, and so does a ProfileApplied event with enforced
+#                  false that grok appended to ~/.grok/sessions/sandbox-events.jsonl during the
+#                  probe for its cwd; enforced true records the platform; no event changes
+#                  nothing), grok --help (the flag contract: 26 when it lacks a flag of the argv).
 #   run:           writes the profile into ~/.grok/sandbox.toml when it is missing or differs
 #                  (under $CX_HOME/locks/grok-sandbox.lock). The name is conductor's own: any other
-#                  definition of it (one a grok writer left there without the cx:begin/cx:end
-#                  lines: strict lets grok write ~/.grok) is replaced, and a file that would then
+#                  definition of it (one left there without the cx:begin/cx:end lines: grok's
+#                  README says strict writes ~/.grok; measured on 1.0.70 it keeps ~/.grok
+#                  read-only, so this is defence in depth) is replaced, and a file that would then
 #                  not parse or still define it another way refuses the run (2), as does a
 #                  per-project .grok/sandbox.toml in the worktree. Then it writes the prompt
 #                  file, runs grok, then grok usage <uuid> (free).
-#   parse:         JSON text / sessionId / modelUsage / usage / stopReason [docs-only]; any
-#                  "permission required:" on stderr -> 15; a modelUsage key other than the model
+#   parse:         JSON text / sessionId / modelUsage / usage / stopReason (verified on 1.0.70;
+#                  text joins every turn's message with no separator, so with --json-schema the
+#                  answer is structuredOutput as JSON); any "permission required:" on stderr
+#                  -> 15; a modelUsage key other than the model
 #                  or its -build alias -> 21; a stderr line saying the sandbox was not applied
 #                  -> 2 (and, when grok went on anyway, a reason saying it ran unconfined). Slot
 #                  pool: grok (cap_grok).
@@ -101,6 +107,15 @@ grok_profile() {
   GROK_PROFILE_AUTO=1
 }
 grok_sandbox_file() { printf '%s\n' "${GROK_HOME:-${HOME:-}/.grok}/sandbox.toml"; }
+# grok's sandbox log (one ProfileApplied JSON line per sandboxed start, measured on 1.0.70) and
+# its size in bytes (0 when it is absent, a symlink or not a regular file).
+grok_events_file() { printf '%s\n' "${GROK_HOME:-${HOME:-}/.grok}/sessions/sandbox-events.jsonl"; }
+grok_events_size() {
+  local n=""
+  if [ -f "$1" ] && [ ! -L "$1" ]; then n="$(stat -c %s -- "$1" 2>/dev/null)"; fi
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+  printf '%s\n' "$n"
+}
 
 lane_argv() {
   local wt="${A_WT:-$PWD}" schema="$A_SCHEMA"
@@ -175,18 +190,24 @@ lane_postrun() {
 }
 
 lane_probe() {
-  local t="$CXA_PROBE_TMP" mrc src
+  local t="$CXA_PROBE_TMP" mrc src ev ev0 ev1
   cxa_probe_cmd "$t/version" "$CXA_BIN" --version
   cxa_probe_cmd "$t/models" "$CXA_BIN" models
   mrc=$?
-  # grok's sandbox must apply on this host: every grok run approves every tool inside it.
+  # grok's sandbox must apply on this host: every grok run approves every tool inside it. The
+  # lines grok appends to its sandbox log during this probe (only those: the sizes before and
+  # after) hold its ProfileApplied event for the probe's cwd; enforced false refuses the lane.
+  ev="$(grok_events_file)"
+  ev0="$(grok_events_size "$ev")"
   cxa_probe_cmd "$t/sandbox" "$CXA_BIN" --sandbox strict models
   src=$?
+  ev1="$(grok_events_size "$ev")"
   cxa_help grok "$CXA_BIN" --help
   cxa_contract_argv grok
   cxa_py probe --lane grok --bin "$CXA_BIN" --version-out "$t/version" --verified "$CX_VERIFIED_GROK" \
     --models-cli grok --models-out "$t/models" --models-rc "$mrc" --model "$CXA_MODEL" \
-    --sandbox-out "$t/sandbox" --sandbox-rc "$src" "${CXA_CONTRACT[@]}"
+    --sandbox-out "$t/sandbox" --sandbox-rc "$src" --sandbox-events "$ev" --sandbox-events-from "$ev0" \
+    --sandbox-events-to "$ev1" --sandbox-workspace "$CXA_HOME/probe" "${CXA_CONTRACT[@]}"
 }
 
 cxa_main "$@"

@@ -17,6 +17,9 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   toml-get FILE SECTION KEY    raw value; exit 1 when absent
   toml-table FILE NAME         exit 0 when a table whose last key segment is NAME exists
   landlock                     "abi N", "none <why>" or "unknown <why>": the kernel's Landlock (D17)
+  grok-sandbox-event --file F --from N --to M --workspace W
+                               "enforced|unenforced|none<TAB>platform<TAB>profile": grok's sandbox
+                               log lines appended between sizes N and M for workspace W (D17)
   const NAME                   prints a message constant (CURSOR_WORKER_MSG, CURSOR_POOL_MSG)
   options-check                effective options (CLAUDE_PLUGIN_OPTION_*) validated (section 5.3)
   conductor-options FILE       the conductor's saved options in FILE as JSON
@@ -404,6 +407,82 @@ def cmd_landlock(a):
     """landlock: prints "abi N", "none <why>" or "unknown <why>" (DESIGN section 8.3 D17)."""
     k, v = landlock_abi()
     out("%s %s\n" % (k, v))
+    return 0
+
+
+GROK_EVENTS_MAX = 1 << 20
+
+
+def grok_sandbox_event(path, start, end, workspace):
+    """grok's sandbox log (1.0.70, measured 2026-11-06: ~/.grok/sessions/sandbox-events.jsonl
+    gets one JSON line per sandboxed start, {"event_type": "ProfileApplied", "profile",
+    "workspace", "platform", "enforced", "restrict_network", "read_write_paths",
+    "read_only_paths"}; tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl). Reads only bytes
+    [START, END) of PATH, what grok appended while one probe ran ([0, END) when the file shrank
+    meanwhile; at most 1 MiB), never through a symlink and never blocking on a FIFO; lines are
+    split on "\n" only. Returns {"profile", "platform", "enforced"} of the ProfileApplied event
+    whose workspace is WORKSPACE (an event with enforced false wins), else None: the event can
+    only add a refusal, never lift one (an absent log or event changes nothing)."""
+    import stat
+    if not path or not workspace or end is None or end <= 0:
+        return None
+    start = start if isinstance(start, int) and 0 <= start <= end else 0
+    if end <= start:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    data = b""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        os.lseek(fd, start, os.SEEK_SET)
+        n = min(end - start, GROK_EVENTS_MAX)
+        while len(data) < n:
+            chunk = os.read(fd, n - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    want = {os.path.abspath(workspace), os.path.realpath(workspace)}
+    found = None
+    for line in data.decode("utf-8", "replace").split("\n"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("event_type") != "ProfileApplied":
+            continue
+        ws = ev.get("workspace")
+        if not isinstance(ws, str) or not ws or (os.path.abspath(ws) not in want and os.path.realpath(ws) not in want):
+            continue
+        enf = ev.get("enforced")
+        if not isinstance(enf, bool):
+            continue
+        rec = {"profile": sanitize(ev.get("profile") or "?", 80), "platform": sanitize(ev.get("platform") or "unknown", 80),
+               "enforced": enf}
+        if enf is False:
+            return rec
+        found = found or rec
+    return found
+
+
+def cmd_grok_sandbox_event(a):
+    """grok-sandbox-event --file F --from N --to M --workspace W: prints "enforced", "unenforced"
+    or "none", then the platform and the profile, tab-separated (DESIGN section 8.3 D17)."""
+    ev = grok_sandbox_event(a.file, a.start, a.end, a.workspace)
+    if ev is None:
+        out("none\t-\t-\n")
+    else:
+        out("%s\t%s\t%s\n" % ("enforced" if ev["enforced"] else "unenforced", ev["platform"].replace("\t", " "),
+                                ev["profile"].replace("\t", " ")))
     return 0
 
 
@@ -2276,7 +2355,8 @@ def grok_profile_plan(path, template, name, gcd, routes_root):
     """(action, new_text, notes) for the repository's profile in sandbox.toml PATH: create,
     update, same or conflict (the result would not parse, or would not hold exactly the
     rendered profile). The name cx-<repo>-<hash> is conductor's own: no person writes it, and a
-    grok writer may rewrite sandbox.toml during its run (strict lets it write ~/.grok), so every
+    grok writer might rewrite sandbox.toml (grok's README says strict writes ~/.grok; grok 1.0.70
+    applied it with ~/.grok read-only, only ~/.grok/sessions writable: defence in depth), so every
     definition of NAME is replaced by the rendered block, between the cx:begin/cx:end lines or
     not (markers a writer stripped never make a widened profile "the user's")."""
     notes = []
@@ -2513,6 +2593,12 @@ def main(argv):
     s.set_defaults(fn=cmd_toml_table)
     s = sub.add_parser("landlock")
     s.set_defaults(fn=cmd_landlock)
+    s = sub.add_parser("grok-sandbox-event")
+    s.add_argument("--file", required=True)
+    s.add_argument("--from", dest="start", type=int, default=0)
+    s.add_argument("--to", dest="end", type=int, default=0)
+    s.add_argument("--workspace", required=True)
+    s.set_defaults(fn=cmd_grok_sandbox_event)
     s = sub.add_parser("const")
     s.add_argument("name")
     s.set_defaults(fn=cmd_const)

@@ -100,11 +100,15 @@ cx-run --finish t4 --pr 42                                             # ... who
 Grok writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
 `~/.grok/sandbox.toml` (extends grok's `strict`; read-only access to the repository's git
 directory and `~/.conductor/routes`, never the out directories), which the first grok run of a
-repository writes. The name is conductor's own: grok may write `~/.grok`, so before each run any
+repository writes. Measured on grok 1.0.70, `strict` lets grok write only the worktree,
+`~/.grok/sessions`, `/tmp` and `/var/tmp` (`~/.grok` itself stays read-only, although grok's
+README says strict writes it); the name is conductor's own all the same, so before each run any
 other definition of it is replaced, and a file that would still define it another way (or a
 `.grok/sandbox.toml` in the worktree) refuses the run. Every grok run approves every tool inside
 its sandbox, so its preflight first checks that grok can apply one here (`grok --sandbox strict
-models`, free; on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17). `cx-init
+models`, free; on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17), and refuses
+the lane when the line that probe adds to grok's sandbox log
+(`~/.grok/sessions/sandbox-events.jsonl`) says the profile was not enforced. `cx-init
 --user-grants` (optional, from inside the repository) writes it ahead of time and removes the
 invalid `cx-workspace` profile 0.2.0 wrote, with a `.cx-bak` backup (`--dry-run` shows what it
 would change). agy needs no global grant any more: remove the `write_file(...)` and

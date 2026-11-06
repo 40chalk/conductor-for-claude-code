@@ -1,0 +1,1 @@
+[ ][{"file":"textutil.py","line":17,"why":"Only ASCII A–Z, a–z, and 0–9 are kept (lines 13–16). é fails those checks and hits this branch, which ends the current token, so it is a separator."}]

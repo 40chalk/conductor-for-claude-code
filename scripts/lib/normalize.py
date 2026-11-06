@@ -435,9 +435,14 @@ def _grok_denials(err):
 
 
 def parse_grok(out_dir, meta, run, rc):
-    """grok -p --output-format json [docs-only, DESIGN section 20 item 7]: one JSON object with
-    text, sessionId, modelUsage, usage, stopReason; an error object without sessionId on rc 1;
-    "permission required:" on stderr for a denied tool (rc 0)."""
+    """grok --output-format json, verified on 1.0.70 (tests/fixtures/real/grok/sbx-grok-1..3):
+    one JSON object with text, stopReason, sessionId, requestId, cwd, thought, usage
+    {input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens,
+    reasoning_tokens, total_tokens}, num_turns, total_cost_usd(_ticks), modelUsage {<served>:
+    {...}} and, with --json-schema, structuredOutput. text joins every turn's assistant message
+    with no separator (turn boundaries cannot be recovered from it), so with --json-schema the
+    structured answer wins. "permission required:" on stderr for a denied tool (rc 0); an error
+    object without sessionId on rc 1 [docs-only]."""
     f = facts_base()
     raw = read(os.path.join(out_dir, "grok.out"))
     err = read(os.path.join(out_dir, "grok.err"))
@@ -447,9 +452,12 @@ def parse_grok(out_dir, meta, run, rc):
         f["answer"] = text
     elif raw.strip() and not obj:
         f["answer"] = raw  # plain text (no JSON at all)
-    if meta.get("json_schema") and not isinstance(text, str) and obj:
-        for k in ("structured_output", "structuredOutput", "output", "data"):
-            if k in obj:
+    if meta.get("json_schema") and obj:
+        # With --json-schema, 1.0.70 puts the validated answer in structuredOutput, while text
+        # joins every turn's message with no separator (sbx-grok-3: "[ ]" from the first turn,
+        # then the array), so text alone is not valid JSON. The structured answer wins.
+        for k in ("structuredOutput", "structured_output") + (() if isinstance(text, str) else ("output", "data")):
+            if obj.get(k) is not None:
                 f["answer"] = json.dumps(obj[k], ensure_ascii=False)
                 break
     f["session"] = obj.get("sessionId") or obj.get("session_id") or None
@@ -1177,8 +1185,17 @@ def cmd_probe(a):
     sandbox = None
     if a.sandbox_out and os.path.exists(a.sandbox_out):
         why = grok_nosandbox(read(a.sandbox_out))
+        # grok's sandbox log: the ProfileApplied event the probe appended (DESIGN section 1.3). Its
+        # enforced false refuses like a line saying the sandbox was not applied; no event changes
+        # nothing (the log is absent on other hosts or versions).
+        ev = CXL.grok_sandbox_event(a.sandbox_events, a.sandbox_events_from, a.sandbox_events_to,
+                                    a.sandbox_workspace) if a.sandbox_events and a.sandbox_workspace else None
+        if not why and ev and ev["enforced"] is False:
+            why = ("its sandbox log says --sandbox %s ran unenforced: ProfileApplied, enforced false, platform %s, in %s" % (
+                ev["profile"], ev["platform"], a.sandbox_events))
         sandbox = {"ok": False if why else (True if a.sandbox_rc == 0 else None), "detail": why or (
-            None if a.sandbox_rc == 0 else "grok --sandbox strict models exited %s" % a.sandbox_rc)}
+            None if a.sandbox_rc == 0 else "grok --sandbox strict models exited %s" % a.sandbox_rc),
+            "enforced": ev["enforced"] if ev else None, "platform": ev["platform"] if ev else None}
     if a.version_ok is not None:
         vok = a.version_ok == "true"
     try:
@@ -1889,6 +1906,10 @@ def main(argv):
     s.add_argument("--paused", action="store_true")
     s.add_argument("--sandbox-out", default="", help="grok --sandbox strict models output (grok's sandbox applies here)")
     s.add_argument("--sandbox-rc", type=int, default=None)
+    s.add_argument("--sandbox-events", default="", help="grok's sandbox log (sandbox-events.jsonl)")
+    s.add_argument("--sandbox-events-from", type=int, default=0, help="its size before the sandbox probe")
+    s.add_argument("--sandbox-events-to", type=int, default=0, help="its size after the sandbox probe")
+    s.add_argument("--sandbox-workspace", default="", help="the sandbox probe's working directory")
     s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("cache-get")
     s.add_argument("--key", required=True)
