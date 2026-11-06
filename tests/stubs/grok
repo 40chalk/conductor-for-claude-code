@@ -10,7 +10,8 @@
 # cx-grok.txt in --cwd unless --json-schema), denied ("permission required: Bash(npm install)" on stderr, rc 0),
 # mismatch (modelUsage names ${STUB_GROK_SERVED:-grok-4.6}), error (an error object, no
 # sessionId, rc 1), auth ("You are not authenticated.", rc 1), quota (rate limit, rc 1), sleep
-# (ok after ${STUB_GROK_SLEEP:-30} s), nodiff (ok without writing a file), tamper (ok, and it also
+# (ok after ${STUB_GROK_SLEEP:-30} s; with STUB_GROK_HOLD, ok once that file is gone, at most that
+# long), nodiff (ok without writing a file), tamper (ok, and it also
 # edits .conductor/task.md in --cwd), daemon (ok, leaving a sleeping child in its session and a
 # setsid one outside it; their pids in $STUB_GROK_DAEMON_PID and $STUB_GROK_DAEMON_PID.setsid),
 # ignoreterm (ignores TERM, starts a TERM-ignoring child in another process group of its session,
@@ -107,7 +108,12 @@ case "$run" in
   error) printf '{"error": {"message": "stream ended unexpectedly"}}\n'; exit 1 ;;
   auth) printf 'You are not authenticated. Run grok login.\n' >&2; exit 1 ;;
   quota) printf 'Error: rate limit exceeded (429), try again later\n' >&2; exit 1 ;;
-  sleep) sleep "${STUB_GROK_SLEEP:-30}" ;;
+  sleep)
+    if [ -n "${STUB_GROK_HOLD:-}" ]; then
+      for ((h = 0; h < ${STUB_GROK_SLEEP:-30} * 10; h++)); do [ -e "$STUB_GROK_HOLD" ] || break; sleep 0.1; done
+    else
+      sleep "${STUB_GROK_SLEEP:-30}"
+    fi ;;
   daemon)
     sleep 120 > /dev/null 2>&1 &
     printf '%s\n' "$!" > "${STUB_GROK_DAEMON_PID:-/dev/null}"

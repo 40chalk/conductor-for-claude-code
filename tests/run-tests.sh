@@ -3795,8 +3795,10 @@ check "[X]   cx-job status, result, wait and kill given a task id (--id j1) inst
 cr -- "$CXJOB" list --all
 check "[X]   cx-job list --all names every job with its status" eval 'rc_is 0 && out_has "$J  done rc=0" && out_has "$J2  cancelled"'
 
-# --- A13: the caps under cx-run; --no-wait; queued
-cr STUB_GROK_RUN=sleep STUB_GROK_SLEEP=20 CLAUDE_PLUGIN_OPTION_CAP_GROK=1 -- "$CXRUN" --background --exec grok --id q1 'x'
+# --- A13: the caps under cx-run; --no-wait; queued. The first job holds its slot until the
+# hold file goes (at most 120 s), not for a fixed time a loaded machine could outrun.
+Q1_HOLD="$AD/q1.hold"; : > "$Q1_HOLD"
+cr STUB_GROK_RUN=sleep STUB_GROK_SLEEP=120 STUB_GROK_HOLD="$Q1_HOLD" CLAUDE_PLUGIN_OPTION_CAP_GROK=1 -- "$CXRUN" --background --exec grok --id q1 'x'
 J3="$(sed -n 's/^JOB_ID //p' "$O")"
 for ((i = 0; i < 100; i++)); do [ -s "$AD/home/.conductor/jobs/$J3/sids" ] && break; sleep 0.1; done
 cr STUB_GROK_RUN=ok CLAUDE_PLUGIN_OPTION_CAP_GROK=1 -- "$CXRUN" --exec grok --no-wait --id q2 'x'
@@ -3807,6 +3809,7 @@ J="$(sed -n 's/^JOB_ID //p' "$O")"
 lc=""
 for ((i = 0; i < 100; i++)); do lc="$(cd "$REPO" && env HOME="$AD/home" CX_HOME="$AD/home/.conductor" "$CXJOB" status "$J")"; [ "$lc" = queued ] && break; sleep 0.1; done
 check "[A13] ... a second job waits for the slot: cx-job status says queued" test "$lc" = queued
+rm -f -- "$Q1_HOLD"
 cr -- "$CXJOB" wait "$J"
 check "[A13] ... and runs once the first ends (exit 0)" eval 'rc_is 0 && line_is CX_RESULT id q3 && line_is CX_RESULT status ok'
 cr -- "$CXJOB" wait "$J3"
