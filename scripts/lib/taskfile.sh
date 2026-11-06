@@ -15,7 +15,9 @@
 #                               (CX_TASK_WHY) when line 1 is missing or invalid
 #   cx_task_from_file OUT FILE  copies a complete task.md (line-1 JSON required) to OUT/task.md
 #   cx_task_from_text OUT TEXTFILE ID BASE LANE EFFORT CMD...
-#                               wraps free text into templates/task.md as OUT/task.md
+#                               wraps free text into templates/task.md as OUT/task.md (each
+#                               check as cx-route <name> when OUT/routes.json, the run's
+#                               cx-route snapshot, exists)
 #   cx_task_install OUT DIR     DIR/.conductor/task.md = OUT/task.md; OUT/task.sha = its sha256
 #   cx_task_hash_ok OUT DIR     rc 0 when DIR/.conductor/task.md still hashes to OUT/task.sha
 
@@ -48,6 +50,8 @@ cx_task_from_text() {
   shift 6
   local -a ca=()
   for c in "$@"; do ca+=(--cmd "$c"); done
+  # The run's cx-route snapshot (cx-run writes it first) names each check: cx-route <name>.
+  [ ! -f "$out/routes.json" ] || ca+=(--snapshot "$out/routes.json")
   python3 -I "$CX_LIB/normalize.py" task-render --template "$CX_ROOT/templates/task.md" --out "$out/task.md" \
     --id "$id" --base "$base" --lane "$lane" --effort "$effort" --text-file "$text" "${ca[@]+"${ca[@]}"}" \
     || { CX_TASK_WHY="cannot render the task text into templates/task.md"; return 1; }

@@ -15,7 +15,9 @@ Files of one run in OUT ($CX_HOME/out/<id>), for adapter L (copilot grok agy cla
   L.meta.json            what was requested (adapter argv)
   L.out L.err rc         the executor's stdout, stderr and exit status (adapter run)
   L.run.json             run facts: times, sids, cancelled, timed_out, agy init/result/tree facts
-  checks.json            optional post-run facts from cx-run: spec_ok, diff, diffstat, commit,
+  checks.json            optional post-run facts from cx-run: spec_ok, git_link_ok and
+                         git_link_why (false: the worktree's .git was rewritten -> tampered, 24),
+                         diff, diffstat, commit,
                          branch, base, gate (green|red), cancelled, timed_out, finished (cx-run
                          --finish: a dispatched claude task is classified, not "dispatched"),
                          stop ({status, reason}: the run stopped before the executor, e.g.
@@ -26,7 +28,8 @@ Subcommands:
   parse --lane L --out OUT          result.json (+ answer.txt); prints "<exit> <status>"
   emit --out OUT                    CX_DENIED, CX_NOTE, CX_RESULT lines (stderr), as applicable
   report --out OUT                  the stdout block of cx-run: digest, VERIFY THIS line, diffstat
-  probe --lane L ...                the probe JSON of DESIGN section 15.2 from captured probe output
+  probe --lane L ...                the probe JSON of DESIGN section 15.2 from captured probe output,
+                                    with the flag contract (--help-file, --argv-file, --need)
   cache-get / cache-put             the 10-minute preflight cache ($CX_HOME/state/preflight.json;
                                     the adapters store green probes only)
   agy-watch --ndjson F --events E --pgid N [--after-result 5]
@@ -51,7 +54,15 @@ Subcommands:
   task-meta --file F                a task.md's line-1 JSON as shell assignments (TK_*); exit 1
                                     when line 1 is not <!-- cx-task {json} -->
   task-render --template T --out F --id ID --base SHA --lane L --effort E --text-file F
-              [--cmd CMD]...        a free-text task wrapped into templates/task.md
+              [--cmd CMD]... [--snapshot OUT/routes.json]
+                                    a free-text task wrapped into templates/task.md (checks named
+                                    as cx-route <name> from the snapshot)
+  route-snapshot --routes F --out OUT --dir D --id ID [--cmd CMD]... [--bin BIN] [--bash B]
+                                    OUT/routes.json and BIN/cx-route (cx-run: $CX_HOME/routes/<id>;
+                                    default OUT/bin): the task's checks, named from .cx/routes.json
+                                    at dispatch (cx-route)
+  agy-settings --out F --wt DIR...  the agy raw lane's per-run --settings file (write_file of the
+                                    worktree, command() of cx-route, git status and ls)
 """
 
 import argparse
@@ -162,6 +173,20 @@ POOLS = {"agy-opus": "google-claude-bucket", "agy-gemini": "google-gemini",
 QUOTA_RE = re.compile(r"rate.?limit|quota|\b429\b|resource.?exhausted|credits balance is too low|insufficient credits|usage limit", re.I)
 AUTH_RE = re.compile(r"You are not authenticated|not (?:logged|signed) in|unauthenticated|unauthorized|please (?:sign in|authenticate|run /login)|No authentication information found|Invalid API key|\breauth", re.I)
 SANDBOX_RE = re.compile(r"Read-only file system|os error 30|EROFS", re.I)
+# grok's own sandbox not applied: "warning: sandbox could not be applied: <cause>", then "error:
+# could not apply the '<p>' sandbox profile; ... Refusing to start with its protections missing."
+# (grok 1.0.70, measured 2026-11-06, a profile with a file in read_only, rc 1) and "Refusing to
+# start with denied paths unprotected" (no bubblewrap, rc 1); grok's README says that where the
+# sandbox cannot be applied (no Landlock) it "logs a warning and continues without enforcement".
+GROK_NOSANDBOX_RE = re.compile(r"(?im)^.*(?:sandbox could not be applied|could not apply the '[^'\n]*' sandbox profile"
+                               r"|refusing to start with (?:its protections missing|denied paths unprotected)"
+                               r"|without (?:sandbox )?enforcement).*$")
+
+
+def grok_nosandbox(text):
+    """The first line of TEXT saying grok's sandbox was not applied, else None."""
+    m = GROK_NOSANDBOX_RE.search(text or "")
+    return CX.sanitize(m.group(0).strip(), 200) if m else None
 MODEL_RE = re.compile(r"model .{0,80}(?:not available|not found|unknown|unsupported|is not supported)|unknown model|invalid model", re.I)
 PARTIAL_RE = re.compile(r"print timeout after .*returning partial output", re.I)
 
@@ -388,6 +413,17 @@ def parse_copilot(out_dir, meta, run, rc):
     return f
 
 
+# Served-model aliases (G6, DESIGN section 15.2): the served name may be the requested one plus
+# one of these suffixes, nothing else (measured 2026-11-06 on grok 1.0.70: -m grok-4.6 serves
+# grok-4.6-build and -m grok-4.7 serves grok-4.7-build; grok-4.7-build-fast is another model).
+SERVED_ALIASES = {"grok": ("", "-build")}
+
+
+def served_matches(lane, req, served):
+    return isinstance(req, str) and isinstance(served, str) and any(
+        served == req + suf for suf in SERVED_ALIASES.get(lane, ("",)))
+
+
 def _grok_denials(err):
     res = []
     for ln in err.split("\n"):
@@ -399,9 +435,15 @@ def _grok_denials(err):
 
 
 def parse_grok(out_dir, meta, run, rc):
-    """grok -p --output-format json [docs-only, DESIGN section 20 item 7]: one JSON object with
-    text, sessionId, modelUsage, usage, stopReason; an error object without sessionId on rc 1;
-    "permission required:" on stderr for a denied tool (rc 0)."""
+    """grok --output-format json, verified on 1.0.70 (tests/fixtures/real/grok/sbx-grok-1..3):
+    one JSON object with text, stopReason, sessionId, requestId, cwd, thought, usage
+    {input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens,
+    reasoning_tokens, total_tokens}, num_turns, total_cost_usd(_ticks), modelUsage {<served>:
+    {...}} and, with --json-schema, structuredOutput. text joins every turn's assistant message
+    with no separator (turn boundaries cannot be recovered from it), so with --json-schema the
+    structured answer wins; without one, text stays the answer, with a note saying it is not the
+    structured one. "permission required:" on stderr for a denied tool (rc 0); an error object
+    without sessionId on rc 1 [docs-only]."""
     f = facts_base()
     raw = read(os.path.join(out_dir, "grok.out"))
     err = read(os.path.join(out_dir, "grok.err"))
@@ -411,11 +453,18 @@ def parse_grok(out_dir, meta, run, rc):
         f["answer"] = text
     elif raw.strip() and not obj:
         f["answer"] = raw  # plain text (no JSON at all)
-    if meta.get("json_schema") and not isinstance(text, str) and obj:
-        for k in ("structured_output", "structuredOutput", "output", "data"):
-            if k in obj:
+    if meta.get("json_schema"):
+        # With --json-schema, 1.0.70 puts the validated answer in structuredOutput, while text
+        # joins every turn's message with no separator (sbx-grok-3: "[ ]" from the first turn,
+        # then the array), so text alone is not valid JSON. The structured answer wins.
+        for k in ("structuredOutput", "structured_output") + (() if isinstance(text, str) else ("output", "data")):
+            if obj.get(k) is not None:
                 f["answer"] = json.dumps(obj[k], ensure_ascii=False)
                 break
+        else:
+            if nonblank(f["answer"]):
+                f["notes"].append("grok gave no structuredOutput for --json-schema: the answer is its text, which joins "
+                                  "every turn's message with no separator (it may not be valid JSON)")
     f["session"] = obj.get("sessionId") or obj.get("session_id") or None
     mu = obj.get("modelUsage") if isinstance(obj.get("modelUsage"), dict) else None
     f["models"] = sorted(mu) if mu else []
@@ -449,11 +498,23 @@ def parse_grok(out_dir, meta, run, rc):
     text_classes(f, diag, failed)
     req = meta.get("model_requested")
     if mu:
-        if set(mu) != {req}:
+        bad = sorted(m for m in mu if not served_matches("grok", req, m))
+        if bad:
             flag(f, "model_mismatch", "modelUsage names %s, requested %s" % (", ".join(sorted(mu)), req))
-        f["served"] = req if set(mu) == {req} else sorted(mu)[0]
+            f["served"] = bad[0]
+        else:
+            f["served"] = sorted(mu)[-1]
+            if f["served"] != req:
+                f["notes"].append("grok served %s for %s: its build alias (accepted, DESIGN section 15.2)" % (f["served"], req))
     elif rc == 0 and nonblank(f["answer"]):
         f["notes"].append("served model unverified: no modelUsage in grok's JSON")
+    nosb = grok_nosandbox(err)
+    if nosb:
+        if rc == 0 or nonblank(f["answer"]):
+            flag(f, "failed", "grok ran without its sandbox (%s): every tool was approved and nothing confined it; "
+                              "inspect the worktree and the files it could reach before anything else (cx-doctor D17)" % nosb)
+        else:
+            flag(f, "failed", "grok could not apply its sandbox profile and did not start (%s; cx-doctor D17)" % nosb)
     if rc not in (0, None) and rc not in (124, 137, 130):
         if error is not None and not f["session"]:
             flag(f, "failed", "grok exited %d with an error object and no sessionId: %s" % (rc, CX.sanitize(json.dumps(error), 120)))
@@ -463,14 +524,23 @@ def parse_grok(out_dir, meta, run, rc):
 
 
 def _ev_type(ev):
-    t = ev.get("type")
-    return t if isinstance(t, str) else ""
+    """An event's type: "type" (the shapes of other CLIs) or "event" (agy's real stream-json,
+    verified on 1.4.12: {"event": "init" | "step_update" | "result", "<event>": {...}})."""
+    for k in ("type", "event"):
+        t = ev.get(k)
+        if isinstance(t, str) and t:
+            return t
+    return ""
 
 
 def agy_event_kind(ev):
-    """init | result | subagent | other for one agy stream-json event [unverified shapes,
-    DESIGN section 20 item 6: Gemini-CLI-like {"type": "init", "model"} and Claude-Code-like
-    {"type": "system", "subtype": "init"} are both accepted]."""
+    """init | result | subagent | step | other for one agy stream-json event. The real shape
+    (agy 1.4.12, tests/fixtures/real/agy/sbx-agy-1/agy.out) is {"event": "init", "init":
+    {"model", "cwd", "tools", "permission_mode"}, "conversation_id"}, {"event": "step_update",
+    "step_update": {"step_index", "state", "step_type", "tool_name", "tool_info": {"name",
+    "parameters"}}} and {"event": "result", "result": {"status", "response", "usage",
+    "denied_actions"}}; the older guesses ({"type": "init", "model"}, {"type": "system",
+    "subtype": "init"}) are still accepted."""
     t = _ev_type(ev).lower()
     if t == "init" or (t == "system" and ev.get("subtype") == "init") or isinstance(ev.get("init"), dict):
         return "init"
@@ -478,6 +548,11 @@ def agy_event_kind(ev):
         return "result"
     if "subagent" in t or "subagent_info" in ev:
         return "subagent"
+    if t == "step_update" or isinstance(ev.get("step_update"), dict):
+        st = ev.get("step_update") if isinstance(ev.get("step_update"), dict) else {}
+        if "subagent" in str(st.get("tool_name") or "").lower():
+            return "subagent"
+        return "step"
     return "other"
 
 
@@ -488,6 +563,66 @@ def agy_init_model(ev):
                 if isinstance(body.get(k), str) and body[k]:
                     return body[k]
     return None
+
+
+def _snake(name):
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", str(name)).lower()
+
+
+def agy_tool_steps(evs):
+    """The tool steps of agy's step_update events, in step order (the last update of each
+    step wins): [{"index", "state", "tool", "params"}]."""
+    steps = {}
+    for e in evs:
+        st = e.get("step_update")
+        if not isinstance(st, dict) or st.get("step_type") != "tool":
+            continue
+        info = st.get("tool_info") if isinstance(st.get("tool_info"), dict) else {}
+        idx = st.get("step_index") if isinstance(st.get("step_index"), int) else len(steps) + 1000
+        params = info.get("parameters") if isinstance(info.get("parameters"), dict) else {}
+        steps[idx] = {"index": idx, "state": str(st.get("state") or ""),
+                      "tool": str(st.get("tool_name") or info.get("name") or ""), "params": params}
+    return [steps[k] for k in sorted(steps)]
+
+
+AGY_DETAIL_KEYS = ("CommandLine", "Command", "command", "TargetFile", "AbsolutePath", "Path", "path", "Url", "url")
+
+
+def agy_denials(res, evs):
+    """result.denied_actions ([{action, display_name}]) named after the tool step each one
+    stopped: the last tool step of that tool (run_command for "command"/"RunCommand"), whose
+    parameters give the command line or the path (agy ends the run at its first denial)."""
+    steps = agy_tool_steps(evs)
+    used = set()
+    out = []
+    for a in res.get("denied_actions") or []:
+        if isinstance(a, dict):
+            action, disp = a.get("action"), a.get("display_name")
+        else:
+            action, disp = a, None
+        if not action and not disp:
+            continue
+        names = {n for n in (_snake(disp) if disp else None, str(action) if action else None,
+                             "run_" + str(action) if action else None) if n}
+        step = None
+        for s in reversed(steps):
+            if s["index"] not in used and s["tool"] in names:
+                step = s
+                break
+        entry = {"kind": deny_kind(str(action or disp)), "detail": CX.sanitize(str(action or disp), 120),
+                 "action": str(action or disp)}
+        if step is not None:
+            used.add(step["index"])
+            entry["tool"] = step["tool"]
+            for k in AGY_DETAIL_KEYS:
+                v = step["params"].get(k)
+                if isinstance(v, str) and v.strip():
+                    entry["detail"] = CX.sanitize(v, 300)
+                    if k in ("CommandLine", "Command", "command"):
+                        entry["command"] = entry["detail"]
+                    break
+        out.append(entry)
+    return out
 
 
 def _agy_result_body(ev):
@@ -527,10 +662,7 @@ def parse_agy(out_dir, meta, run, rc):
         f["usage"] = usage_from(res.get("usage") or res.get("stats"))
         fr = res.get("finished_reason") or res.get("finish_reason") or res.get("stop_reason") or res.get("status") or res.get("subtype")
         f["finished_reason"] = fr if isinstance(fr, str) else None
-        for a in res.get("denied_actions") or []:
-            name = (a.get("action") or a.get("display_name")) if isinstance(a, dict) else a
-            if name:
-                f["denied"].append({"kind": deny_kind(str(name)), "detail": CX.sanitize(str(name), 120)})
+        f["denied"].extend(agy_denials(res, evs))
         if isinstance(f["finished_reason"], str) and "permission" in f["finished_reason"].lower():
             f["denied"].append({"kind": "other", "detail": "finished_reason " + f["finished_reason"]})
     if not nonblank(f["answer"]) and texts:
@@ -711,7 +843,7 @@ PARSERS = {"copilot": parse_copilot, "grok": parse_grok, "agy": parse_agy, "clau
            "copilot-cloud": parse_copilot_cloud}
 
 # DESIGN section 15.1, first match wins (13 missing slots in before failed).
-ORDER = ("wrong_tree", "spec_tampered", "cancelled", "timeout", "sandbox", "missing", "auth",
+ORDER = ("wrong_tree", "spec_tampered", "tampered", "cancelled", "timeout", "sandbox", "missing", "auth",
          "model_unavailable", "quota", "model_mismatch", "denied", "partial", "failed")
 
 
@@ -724,6 +856,8 @@ def classify(f, checks, meta, run, rc):
         flags.pop("dispatched", None)
     if checks.get("spec_ok") is False:
         flags.setdefault("spec_tampered", ".conductor/task.md changed during the run")
+    if checks.get("git_link_ok") is False:
+        flags.setdefault("tampered", str(checks.get("git_link_why") or "the worktree's .git was rewritten during the run"))
     if run.get("cancelled") or checks.get("cancelled") or rc == 130:
         flags.setdefault("cancelled", "interrupted (INT, TERM or HUP, or cx-job kill)")
     if run.get("timed_out") or checks.get("timed_out"):
@@ -818,17 +952,42 @@ def cmd_parse(a):
 SUMMARY_DROP = ("raw", "notes", "models_seen")
 
 
+def deny_hint(executor, kinds):
+    """The CX_DENIED hint (DESIGN section 15.2): what the executor may run and write, per lane.
+    It never suggests a skip-permissions or always-approve flag."""
+    hints = []
+    if "shell" in kinds:
+        if executor == "agy":
+            hints.append("agy may run only cx-route <name>, git status and ls (its per-run --settings), "
+                         "and its first other command ends the run: name the check in the task (cx-route <name>), add a missing "
+                         "check to .cx/routes.json commands, then re-dispatch")
+        else:
+            hints.append("only cx-route <name> (the task's .cx/routes.json checks) and git status may run: "
+                         "add a missing check to .cx/routes.json commands, or narrow the task")
+    if "write" in kinds:
+        if executor == "agy":
+            hints.append("agy may write only inside the task's worktree (write_file per run): narrow the task")
+        elif executor == "grok":
+            hints.append("grok may write only inside the task's worktree (plus /tmp, /var/tmp and ~/.grok/sessions: "
+                         "its sandbox profile): narrow the task")
+        else:
+            hints.append("writes outside the task's worktree are refused: narrow the task")
+    return "; ".join(hints) or "the denied actions were not performed"
+
+
 def cmd_emit(a):
     p = os.path.join(a.out, "result.json")
     res = load_json(p)
     if res is None:
         return 1
     if res.get("denied"):
-        kinds = sorted({str(d.get("kind")) for d in res["denied"] if isinstance(d, dict)})
-        hint = {"write": "grant the write (worktree_root, cx-init --user-grants) or narrow the task",
-                "shell": "add the command to .cx/routes.json commands (--allow)"}
-        CX.err("CX_DENIED " + CX.dumps_line({"count": len(res["denied"]), "kinds": kinds,
-               "hint": "; ".join(hint[k] for k in kinds if k in hint) or "the denied actions were not performed"}) + "\n")
+        dl = [d for d in res["denied"] if isinstance(d, dict)]
+        kinds = sorted({str(d.get("kind")) for d in dl})
+        line = {"count": len(res["denied"]), "kinds": kinds, "hint": deny_hint(res.get("executor"), kinds)}
+        cmds = [str(d["command"]) for d in dl if isinstance(d.get("command"), str)]
+        if cmds:
+            line["commands"] = [CX.sanitize(c, 200) for c in cmds[:3]]
+        CX.err("CX_DENIED " + CX.dumps_line(line) + "\n")
     model = res.get("model_served") or res.get("model_requested")
     if is_claude_model(model) or res.get("lane") == "claude":
         models = sorted({m for m in [res.get("model_served"), res.get("model_requested")] if isinstance(m, str)})
@@ -877,20 +1036,120 @@ def cmd_report(a):
 
 # --------------------------------------------------------------------------- probe and cache
 
+FLAG_TOKEN_RE = re.compile(r"(--?[A-Za-z][A-Za-z0-9-]*)(?:=.*)?", re.S)
+
+
+def argv_flags(argv):
+    """The flag tokens of an argv (after the executable; "--x=v" counts as "--x"; nothing after
+    a literal "--"), in order, without repeats."""
+    seen = []
+    for tok in argv[1:]:
+        if tok == "--":
+            break
+        m = FLAG_TOKEN_RE.fullmatch(tok)
+        if m and m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def _read_argv(path):
+    try:
+        with open(path, "rb") as fh:
+            parts = fh.read().decode("utf-8", "replace").split("\0")
+    except OSError:
+        return None
+    if parts and parts[-1] == "":
+        parts.pop()
+    return parts
+
+
+def shell_words(line):
+    """The words of one shell-quoted line (bash printf %q, including $'...' ANSI-C quoting, as
+    ghcp-delegate --print-command prints its Copilot argv); None when it does not parse."""
+    import codecs
+    import shlex
+
+    def ansi(m):
+        try:
+            v = codecs.decode(m.group(1).encode("latin-1", "backslashreplace"), "unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            v = m.group(1)
+        return "'" + v.replace("'", "'\"'\"'") + "'"
+    try:
+        return shlex.split(re.sub(r"\$'((?:[^'\\]|\\.)*)'", ansi, line.strip()))
+    except ValueError:
+        return None
+
+
+def help_has(text, token):
+    """TOKEN appears in a help text: a flag as a whole token, anything else (a permission kind
+    such as "shell(") as a substring."""
+    if FLAG_TOKEN_RE.fullmatch(token):
+        return re.search(r"(?<![A-Za-z0-9-])" + re.escape(token) + r"(?![A-Za-z0-9-])", text) is not None
+    return token in text
+
+
+def flag_contract(helps, argvs, needs, shells=()):
+    """The flag contract of DESIGN section 5.4: every flag the adapter is about to emit (the
+    argv files) and every extra token (needs) must appear in the live help it is checked against.
+    helps: {name: (path, label)}; argvs, needs: [(name, value)]. Returns the probe's "contract"
+    object, or None when nothing is checked."""
+    if not helps and not argvs and not needs:
+        return None
+    texts, unreadable, missing, checked = {}, [], [], 0
+    for name, (path, label) in helps.items():
+        t = read(path)
+        if t.strip():
+            texts[name] = t
+        else:
+            unreadable.append(label)
+    want = []
+    for name, path in argvs:
+        av = _read_argv(path)
+        if av is None:
+            unreadable.append("argv %s" % os.path.basename(path))
+            continue
+        want.extend((name, f) for f in argv_flags(av))
+    for name, path in shells:
+        words = shell_words(read(path).split("\n", 1)[0]) if read(path).strip() else None
+        if not words:
+            unreadable.append("command line %s" % os.path.basename(path))
+            continue
+        want.extend((name, f) for f in argv_flags(words))
+    want.extend(needs)
+    done = set()
+    for name, tok in want:
+        if (name, tok) in done:
+            continue
+        done.add((name, tok))
+        label = helps.get(name, (None, name))[1]
+        if name not in texts:
+            if label not in unreadable:
+                unreadable.append(label)
+            continue
+        checked += 1
+        if not help_has(texts[name], tok):
+            missing.append("%s (%s)" % (tok, label))
+    return {"ok": not missing and not unreadable, "checked": checked, "missing": missing,
+            "unreadable": unreadable}
+
+
+def _named(items, what):
+    res = []
+    for it in items or []:
+        name, sep, val = it.partition("=")
+        if not sep or not name or not val:
+            raise ValueError("--%s needs NAME=VALUE (got %r)" % (what, it))
+        res.append((name, val))
+    return res
+
+
 def cmd_probe(a):
-    """Builds the probe JSON (DESIGN section 15.2) from the files the adapter captured."""
+    """Builds the probe JSON (DESIGN section 15.2) from the files the adapter captured. The
+    version is recorded, never judged (no pins, DESIGN section 5.4): the live help decides."""
     ver_text = read(a.version_out) if a.version_out else ""
     version = CXL.first_semver(ver_text) if ver_text else None
-    vok = None
-    if version:
-        if a.pin:
-            vok = version == a.pin
-        elif a.min:
-            vok = CXL.vercmp(version, a.min) >= 0
-        else:
-            vok = True
-    elif a.bin:
-        vok = False
+    vok = True if version else (False if a.bin else None)
     logged = None
     models = []
     mok = None
@@ -929,11 +1188,38 @@ def cmd_probe(a):
             logged = a.auth_rc == 0
     if a.model_ok is not None:
         mok = a.model_ok == "true"
+    sandbox = None
+    if a.sandbox_out and os.path.exists(a.sandbox_out):
+        why = grok_nosandbox(read(a.sandbox_out))
+        # grok's sandbox log: the ProfileApplied event the probe appended (DESIGN section 1.3). Its
+        # enforced false refuses like a line saying the sandbox was not applied; no event changes
+        # nothing (the log is absent on other hosts or versions).
+        ev = CXL.grok_sandbox_event(a.sandbox_events, a.sandbox_events_from, a.sandbox_events_to,
+                                    a.sandbox_workspace) if a.sandbox_events and a.sandbox_workspace else None
+        if not why and ev and ev["enforced"] is False:
+            why = ("its sandbox log says --sandbox %s ran unenforced: ProfileApplied, enforced false, platform %s, in %s" % (
+                ev["profile"], ev["platform"], a.sandbox_events))
+        sandbox = {"ok": False if why else (True if a.sandbox_rc == 0 else None), "detail": why or (
+            None if a.sandbox_rc == 0 else "grok --sandbox strict models exited %s" % a.sandbox_rc),
+            "enforced": ev["enforced"] if ev else None, "platform": ev["platform"] if ev else None}
     if a.version_ok is not None:
         vok = a.version_ok == "true"
-    res = {"lane": a.lane, "bin": a.bin or None, "version": version, "version_ok": vok, "pin": a.pin or a.min or None,
-           "logged_in": logged, "models": models, "model": a.model or None, "model_ok": mok, "cached": False,
-           "paused": bool(a.paused), "wrapper": a.wrapper or None, "detail": detail}
+    try:
+        helps = {}
+        for name, val in _named(a.help_file, "help-file"):
+            path, sep, label = val.rpartition("::")
+            if not sep:
+                path, label = val, ""
+            helps[name] = (path, label or name)
+        contract = flag_contract(helps, _named(a.argv_file, "argv-file"), _named(a.need, "need"),
+                                 _named(a.argv_shell, "argv-shell"))
+    except ValueError as e:
+        CX.err("normalize: %s\n" % e)
+        return 1
+    res = {"lane": a.lane, "bin": a.bin or None, "version": version, "version_ok": vok,
+           "verified": a.verified or None, "logged_in": logged, "models": models, "model": a.model or None,
+           "model_ok": mok, "contract": contract, "sandbox": sandbox, "cached": False, "paused": bool(a.paused),
+           "wrapper": a.wrapper or None, "detail": detail}
     CX.out(json.dumps(res, ensure_ascii=False) + "\n")
     return 0
 
@@ -1202,14 +1488,27 @@ def cmd_json_list(a):
 
 def verdict(p):
     """The probe's verdict for adapter run (DESIGN section 15.1 free preflight): "<exit> <STATUS>
-    <reason>", first match: binary missing 13, version pin 26, agy paused 28, login 11, model 14."""
+    <reason>", first match: binary missing 13, flag contract 26 (the live help lacks a flag the
+    lane is about to emit; never the version: nothing is pinned), agy paused 28, grok's sandbox
+    not applicable here 2, login 11, model 14."""
     lane = p.get("lane")
+    c = p.get("contract") if isinstance(p.get("contract"), dict) else None
     if p.get("bin") is None and p.get("version_ok") is not True:
         line = "13 CLI_MISSING the %s CLI is not available" % lane
-    elif p.get("version_ok") is False:
-        line = "26 VERSION_MISMATCH %s %s does not match the pin %s: lane refused before running (cx-doctor)" % (lane, p.get("version") or "unknown", p.get("pin"))
+    elif c is not None and c.get("ok") is False:
+        what = c.get("missing") or []
+        if what:
+            why = "the help no longer lists %s" % ", ".join(str(x) for x in what[:4])
+        else:
+            why = "the help could not be read (%s)" % ", ".join(str(x) for x in (c.get("unreadable") or [])[:3])
+        line = "26 VERSION_MISMATCH flag contract: %s %s: %s; refused before running (the CLI changed: update the conductor or report it)" % (
+            lane, p.get("version") or "(version unknown)", why)
     elif p.get("paused"):
         line = "28 NO_CAPACITY agy dispatch is paused after a wrong_tree result: inspect the changed tree, then run cx-job unpause agy"
+    elif isinstance(p.get("sandbox"), dict) and p["sandbox"].get("ok") is False:
+        line = ("2 FAILED %s cannot apply its sandbox on this host (%s): it runs with --always-approve inside it, so the lane is "
+                "refused (on Linux and WSL it needs Landlock, kernel 5.13 or newer, and bubblewrap; cx-doctor D17)" % (
+                    lane, p["sandbox"].get("detail") or "grok --sandbox strict models"))
     elif p.get("logged_in") is False:
         line = "11 AUTH_REQUIRED %s is not logged in (cx-doctor --login-help %s)" % (lane, lane)
     elif p.get("model_ok") is False:
@@ -1253,6 +1552,38 @@ def cmd_worker_settings(a):
     perms["allow"] = allow
     tpl["permissions"] = perms
     CX.atomic_write(a.out, json.dumps(tpl, ensure_ascii=False, indent=2) + "\n")
+    return 0
+
+
+# The agy raw lane's per-run grants (DESIGN section 15.2, agy row; measured 2026-11-06 on agy
+# 1.5.1: --settings is session-only, command(<rule>) matches each simple command of a compound
+# line as a token prefix, write_file(<dir>) grants writes beneath <dir>, reads inside the
+# workspace need no grant, and one denial ends a headless run). agy has no filesystem sandbox, and
+# a token-prefix rule cannot forbid an option: command(git diff) would also allow git diff
+# --output=<any path> (a write anywhere) and git diff --no-index <any file> (a read anywhere),
+# git log and git show likewise, so agy reads its own changes with its file tools and git status.
+AGY_ALLOW_COMMANDS = ("cx-route", "git status", "ls")
+
+
+def agy_settings(wts):
+    allow = []
+    for w in wts:
+        w = (w or "").rstrip("/")
+        if w and not CTRL_RE.search(w) and "write_file(%s)" % w not in allow:
+            allow.append("write_file(%s)" % w)
+    allow.extend("command(%s)" % c for c in AGY_ALLOW_COMMANDS)
+    return {"permissions": {"allow": allow}}
+
+
+def cmd_agy_settings(a):
+    """$OUT/agy-settings.json for agy --settings: write_file(<worktree>) (and its physical path
+    when that differs) plus command() for cx-route, git status and ls. Never a skip-permissions
+    switch, never a global grant."""
+    try:
+        CX.atomic_write(a.out, json.dumps(agy_settings(a.wt or []), ensure_ascii=False, indent=1) + "\n", 0o600)
+    except OSError as e:
+        CX.err("normalize: cannot write %s: %s\n" % (a.out, e))
+        return 1
     return 0
 
 
@@ -1331,6 +1662,142 @@ def cmd_routes(a):
     return 0
 
 
+ROUTE_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+# The one shell command besides cx-route every executor may run (git diff, log and show take
+# --output=<path>, a write anywhere, and diff --no-index reads any file; DESIGN section 15.1).
+CX_ROUTE_ALSO = ("git status",)
+
+
+def route_names(routes_file, cmds):
+    """[(name, command)] for the task's commands: the .cx/routes.json name of each (a key of
+    "commands" whose value is that command), else cmd-1, cmd-2 ... in order."""
+    named = []
+    try:
+        with open(routes_file, encoding="utf-8-sig") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        d = None
+    rc = d.get("commands") if isinstance(d, dict) and isinstance(d.get("commands"), dict) else {}
+    for k in list(ROUTE_CMDS) + sorted(k for k in rc if k not in ROUTE_CMDS):
+        c = _clean_cmd(rc.get(k))
+        if c and isinstance(k, str) and ROUTE_NAME_RE.fullmatch(k):
+            named.append((k, c))
+    out, taken, n = [], set(), 0
+    for c in cmds:
+        c = _clean_cmd(c)
+        if not c or any(c == x for _, x in out):
+            continue
+        name = next((k for k, x in named if x == c and k not in taken), None)
+        while name is None:
+            n += 1
+            if "cmd-%d" % n not in taken and all(k != "cmd-%d" % n for k, _ in named):
+                name = "cmd-%d" % n
+        taken.add(name)
+        out.append((name, c))
+    return out
+
+
+def _route_bash(path):
+    """The absolute bash cx-route runs under (its shebang, with -p): /bin/bash (a system path, which
+    grok's strict profile reads), else the caller's bash (--bash, cx-run's $BASH)."""
+    for b in ("/bin/bash", path or "", "/usr/bin/bash"):
+        if b.startswith("/") and re.fullmatch(r"[A-Za-z0-9._/+-]+", b) and os.access(b, os.X_OK):
+            return b
+    return "/bin/bash"
+
+
+def cx_route_script(task_id, out_dir, run_dir, routes, bash=""):
+    """The text of the run's cx-route ($CX_HOME/routes/<id>/cx-route): self-contained (no runtime
+    file, no python), so it also runs inside grok's strict sandbox, which reads only the
+    worktree, system paths and the read_only grants of its profile. Whoever calls it controls its
+    environment, so nothing from there runs but the snapshotted command: bash -p (no BASH_ENV,
+    SHELLOPTS, BASHOPTS or imported functions), and the check gets the caller's exported
+    variables through env -i without BASH_ENV, ENV, SHELLOPTS, BASHOPTS, CDPATH and GLOBIGNORE,
+    and without the BASH_FUNC_* strings exported functions travel in."""
+    q = CX.shell_quote
+    lst = ["  printf '%%s\\n' %s" % q("cx-route: the checks of task %s (run one as: cx-route <name>):" % task_id)]
+    for name, c in routes:
+        lst.append("  printf '%%s\\n' %s" % q("  %s: %s" % (name, c)))
+    if not routes:
+        lst.append("  printf '%%s\\n' %s" % q("  (none: .cx/routes.json defines no check for this task)"))
+    arms = ["  %s) cmd=%s ;;" % (name, q(c)) for name, c in routes]
+    return "\n".join([
+        "#!%s -p" % _route_bash(bash),
+        "# shellcheck disable=SC2016  # the snapshotted commands are data, single-quoted on purpose",
+        "# cx-route - the checks of conductor task %s, as cx-run snapshotted them from .cx/routes.json" % CX.sanitize(task_id, 80),
+        "# at dispatch (%s/routes.json; docs/DESIGN.md section 15.1). Editing the worktree's" % CX.sanitize(out_dir, 4000),
+        "# .cx/routes.json changes nothing here. Generated by cx-run; do not edit.",
+        "#",
+        "# Usage: cx-route <name>   runs that check in %s; its exit status passes through" % CX.sanitize(run_dir, 4000),
+        "#        cx-route          lists the names and their commands (also -l, --list, -h, --help)",
+        "#",
+        "# Exit codes: the check's own status; 0 for the list; 127 for a name that is not in the",
+        "# snapshot, or for anything after the name (nothing runs then).",
+        "list() {",
+    ] + lst + [
+        "}",
+        'case "${1-}" in',
+        '  ""|-l|--list|-h|--help)',
+        '    if [ $# -le 1 ]; then list; exit 0; fi ;;',
+        "esac",
+        'if [ $# -ne 1 ]; then',
+        "  printf 'cx-route: give one check name and nothing else (%s arguments given)\\n' \"$#\" >&2",
+        "  list >&2",
+        "  exit 127",
+        "fi",
+        'case "$1" in',
+    ] + arms + [
+        "  *)",
+        "    printf \"cx-route: no check named '%s' in this task's snapshot\\n\" \"$1\" >&2",
+        "    list >&2",
+        "    exit 127 ;;",
+        "esac",
+        "# A clean shell for the check: nothing of the caller's shell setup runs (bash -p here and",
+        "# below; env -i drops BASH_FUNC_* and the startup variables for every process it starts).",
+        "keep=()",
+        "for n in $(compgen -e); do",
+        '  case "$n" in BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE) ;; *) keep+=("$n=${!n}") ;; esac',
+        "done",
+        "cd -- %s || exit 127" % q(run_dir),
+        'exec /usr/bin/env -i "${keep[@]+"${keep[@]}"}" "$BASH" -p -o pipefail -c "$cmd"',
+        "",
+    ])
+
+
+def cmd_route_snapshot(a):
+    """$OUT/routes.json and BIN/cx-route for one run (DESIGN section 15.1, cx-route; BIN is
+    $CX_HOME/routes/<id>, the one directory of the run that grok's profile may read, default
+    $OUT/bin): the task's commands named from .cx/routes.json at dispatch. The worker runs
+    checks only through cx-route <name>; a later edit of the worktree's routes.json never
+    reaches it."""
+    routes = route_names(a.routes, a.cmd or [])
+    if a.dry_run:
+        CX.out("".join("%s: %s\n" % (n, c) for n, c in routes))
+        return 0
+    snap = {"version": 1, "id": a.id, "dir": a.dir, "source": a.routes, "created_at": CX.iso(CX.utc_now()),
+            "routes": [{"name": n, "command": c} for n, c in routes], "also": list(CX_ROUTE_ALSO)}
+    bindir = a.bin or os.path.join(a.out, "bin")
+    try:
+        os.makedirs(a.out, exist_ok=True)
+        os.makedirs(bindir, exist_ok=True)
+        CX.atomic_write(os.path.join(a.out, "routes.json"), json.dumps(snap, ensure_ascii=False, indent=1) + "\n")
+        CX.atomic_write(os.path.join(bindir, "cx-route"), cx_route_script(a.id, a.out, a.dir, routes, a.bash), 0o755)
+    except OSError as e:
+        CX.err("normalize: cannot write the cx-route snapshot in %s: %s\n" % (a.out, e))
+        return 1
+    return 0
+
+
+def snapshot_routes(path):
+    """[(name, command)] of a route snapshot ($OUT/routes.json), [] when absent."""
+    d = load_json(path) if path else None
+    res = []
+    for r in (d or {}).get("routes") or []:
+        if isinstance(r, dict) and isinstance(r.get("name"), str) and _clean_cmd(r.get("command")):
+            res.append((r["name"], _clean_cmd(r["command"])))
+    return res
+
+
 TASK_RE = re.compile(r"^<!-- cx-task (\{.*\}) -->\s*$")
 
 
@@ -1395,12 +1862,13 @@ def cmd_task_render(a):
     head = {"id": a.id, "base": a.base, "lane": a.lane, "effort": a.effort, "allowed_paths": [],
             "lockfiles": False, "commands": cmds}
     title = CX.sanitize(text.strip().split("\n", 1)[0], 100)
-    q = lambda c: "`%s`" % c
+    names = dict((c, n) for n, c in snapshot_routes(a.snapshot)) if a.snapshot else {}
+    q = lambda c: "`cx-route %s` (`%s`)" % (names[c], c) if c in names else "`%s`" % c
     vals = {
         "json": json.dumps(head, ensure_ascii=False),
         "id": a.id, "title": title, "goal": text.strip(),
         "must_pass": "\n".join("- Must pass: %s" % q(c) for c in cmds) or "- No acceptance command is defined in .cx/routes.json: say how you checked the change.",
-        "commands": ", ".join(q(c) for c in cmds) or "none",
+        "commands": ", ".join(q(c) for c in cmds) or "none (.cx/routes.json defines no check)",
     }
     out = tpl
     for k, v in vals.items():
@@ -1427,8 +1895,11 @@ def main(argv):
     s.add_argument("--bin", default="")
     s.add_argument("--wrapper", default="")
     s.add_argument("--version-out", default="")
-    s.add_argument("--pin", default="")
-    s.add_argument("--min", default="")
+    s.add_argument("--verified", default="")
+    s.add_argument("--help-file", action="append", help="NAME=PATH[::LABEL] a captured --help")
+    s.add_argument("--argv-file", action="append", help="NAME=PATH a NUL-separated argv checked against help NAME")
+    s.add_argument("--argv-shell", action="append", help="NAME=PATH a printf %%q command line (ghcp-delegate --print-command) checked against help NAME")
+    s.add_argument("--need", action="append", help="NAME=TOKEN one more token help NAME must list")
     s.add_argument("--models-cli", default="")
     s.add_argument("--models-out", default="")
     s.add_argument("--models-rc", type=int, default=None)
@@ -1439,6 +1910,12 @@ def main(argv):
     s.add_argument("--auth-kind", default="")
     s.add_argument("--auth-rc", type=int, default=None)
     s.add_argument("--paused", action="store_true")
+    s.add_argument("--sandbox-out", default="", help="grok --sandbox strict models output (grok's sandbox applies here)")
+    s.add_argument("--sandbox-rc", type=int, default=None)
+    s.add_argument("--sandbox-events", default="", help="grok's sandbox log (sandbox-events.jsonl)")
+    s.add_argument("--sandbox-events-from", type=int, default=0, help="its size before the sandbox probe")
+    s.add_argument("--sandbox-events-to", type=int, default=0, help="its size after the sandbox probe")
+    s.add_argument("--sandbox-workspace", default="", help="the sandbox probe's working directory")
     s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("cache-get")
     s.add_argument("--key", required=True)
@@ -1486,6 +1963,10 @@ def main(argv):
     s.add_argument("--out", required=True)
     s.add_argument("--allow", action="append")
     s.set_defaults(fn=cmd_worker_settings)
+    s = sub.add_parser("agy-settings")
+    s.add_argument("--out", required=True)
+    s.add_argument("--wt", action="append")
+    s.set_defaults(fn=cmd_agy_settings)
     s = sub.add_parser("field")
     s.add_argument("file")
     s.add_argument("key")
@@ -1509,7 +1990,18 @@ def main(argv):
     s.add_argument("--effort", required=True)
     s.add_argument("--text-file", required=True)
     s.add_argument("--cmd", action="append")
+    s.add_argument("--snapshot", default="", help="the run's $OUT/routes.json (cx-route names)")
     s.set_defaults(fn=cmd_task_render)
+    s = sub.add_parser("route-snapshot")
+    s.add_argument("--routes", required=True, help="the main checkout's .cx/routes.json (names)")
+    s.add_argument("--out", required=True)
+    s.add_argument("--dir", required=True, help="where the checks run (the worktree or gate checkout)")
+    s.add_argument("--id", required=True)
+    s.add_argument("--cmd", action="append")
+    s.add_argument("--bin", default="", help="the directory of the run's cx-route ($CX_HOME/routes/<id>; default OUT/bin)")
+    s.add_argument("--bash", default="", help="cx-run's bash, when /bin/bash is missing")
+    s.add_argument("--dry-run", action="store_true", help="print name: command lines, write nothing")
+    s.set_defaults(fn=cmd_route_snapshot)
     a = ap.parse_args(argv)
     if not getattr(a, "fn", None):
         ap.print_help()

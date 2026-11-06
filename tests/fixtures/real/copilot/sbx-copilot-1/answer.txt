@@ -1,0 +1,6 @@
+- **Changed:** Added `divide(a, b)` at `src/calc.py:5-8`. It raises `ValueError("division by zero")` when `b == 0` and otherwise returns `a / b`.
+- **Added:** New `tests/test_divide.py` with three tests: `divide(6, 3) == 2`, `divide(1, 4) == 0.25`, and `divide(1, 0)` raising `ValueError`. `tests/test_calc.py` is unchanged.
+- **Not run:** `python3 -m unittest discover -s tests` was blocked by a permission prompt with no one to approve it, so I have no test result.
+- **Open issue:** The task asks for tests but forbids editing tests. I read that as allowing a new test file, since existing tests stay unchanged. Someone needs to run the test command.
+
+DIGEST: Added `divide(a, b)` with a `ValueError` on zero in `src/calc.py` and new tests in `tests/test_divide.py`, but the test command was blocked by a permission prompt, so nothing has been run.

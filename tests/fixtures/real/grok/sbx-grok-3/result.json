@@ -1,0 +1,66 @@
+{
+ "version": 1,
+ "ts": "2026-11-06T04:33:32Z",
+ "id": "live-grok-read-1",
+ "batch": null,
+ "lane": "grok",
+ "host": "linux",
+ "caller": "local",
+ "executor": "grok",
+ "cli_version": "1.0.70",
+ "pool": "xai-weekly",
+ "mode": "read",
+ "model_requested": "grok-4.7",
+ "model_served": "grok-4.7-build",
+ "effort_requested": "medium",
+ "effort_applied": "medium",
+ "exit": 0,
+ "status": "ok",
+ "reason": null,
+ "finished_reason": "end_turn",
+ "session": "60becc0d-ef9e-4d74-a958-f7199655eef7",
+ "usage": {
+  "input": 4742,
+  "output": 816,
+  "cache_read": 36608,
+  "cache_write": 0,
+  "reasoning": 702
+ },
+ "cost": {
+  "ai_credits": null,
+  "usd_est": 0.032684,
+  "quota_delta": null,
+  "estimated": true
+ },
+ "denied": [],
+ "worktree": {
+  "path": "/root/.conductor/gate/live-grok-read-1.1",
+  "host_path": null
+ },
+ "branch": null,
+ "base": "44b98915ff09cae247ea579d07b823f11e13e72a",
+ "commit": "44b98915ff09cae247ea579d07b823f11e13e72a",
+ "diffstat": null,
+ "gate": null,
+ "digest": {
+  "path": "/root/.conductor/out/live-grok-read-1/answer.txt",
+  "host_path": null
+ },
+ "out": {
+  "path": "/root/.conductor/out/live-grok-read-1",
+  "host_path": null
+ },
+ "duration_s": 15,
+ "models_seen": [
+  "grok-4.7-build"
+ ],
+ "claude_session": "6f06f457-4622-5fd3-a3e1-8c42653cf77c",
+ "claude_effort": "xhigh",
+ "raw": {
+  "stdout": "/root/.conductor/out/live-grok-read-1/grok.out",
+  "stderr": "/root/.conductor/out/live-grok-read-1/grok.err"
+ },
+ "notes": [
+  "grok served grok-4.7-build for grok-4.7: its build alias (accepted, DESIGN section 15.2)"
+ ]
+}

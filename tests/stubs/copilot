@@ -2,13 +2,23 @@
 # tests/stubs/copilot: --version -> "GitHub Copilot CLI ${STUB_COPILOT_VERSION:-1.0.105}."; the
 # doctor probe (-p . --model __cx_doctor_probe__ ...) -> the real stderr shape for
 # STUB_COPILOT_AUTH=ok|none|rofs, rc 1 (STUB_COPILOT_TOKEN_ONLY=GH_TOKEN: logged in only when
-# that variable is set). Everything else is billable (exit 99). Logs cwd and token presence.
+# that variable is set). --help -> ${STUB_COPILOT_HELP:-fixtures/real/copilot/help.txt} and help
+# permissions -> ${STUB_COPILOT_HELP_PERMS:-fixtures/real/copilot/help-permissions.txt} (the real
+# 1.0.105 texts; free). Everything else is billable (exit 99). Logs cwd and token presence.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump copilot
 stub_log copilot "gh_token=${GH_TOKEN:+set}" "github_token=${GITHUB_TOKEN:+set}" -- "$@"
 if [ $# -eq 1 ] && [ "$1" = --version ]; then
   printf 'GitHub Copilot CLI %s.\n' "${STUB_COPILOT_VERSION:-1.0.105}"
+  exit 0
+fi
+if [ $# -eq 1 ] && { [ "$1" = --help ] || [ "$1" = -h ]; }; then
+  cat "${STUB_COPILOT_HELP:-$STUB_FIX/real/copilot/help.txt}"
+  exit 0
+fi
+if [ $# -eq 2 ] && [ "$1" = help ] && [ "$2" = permissions ]; then
+  cat "${STUB_COPILOT_HELP_PERMS:-$STUB_FIX/real/copilot/help-permissions.txt}"
   exit 0
 fi
 if [ "${1-}" = -p ] && [ "${2-}" = . ] && [ "${3-}" = --model ] && [ "${4-}" = __cx_doctor_probe__ ]; then

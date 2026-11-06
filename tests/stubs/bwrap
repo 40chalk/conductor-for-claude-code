@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# tests/stubs/bwrap: bubblewrap stands in for the doctor's D17 lookup (it is only looked up,
+# never run): --version -> "bubblewrap 0.11.0"; anything else exits 98.
+if [ $# -eq 1 ] && [ "$1" = --version ]; then printf 'bubblewrap 0.11.0\n'; exit 0; fi
+exit 98

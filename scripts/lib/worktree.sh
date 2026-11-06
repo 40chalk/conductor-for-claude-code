@@ -21,22 +21,50 @@
 #   cx_wt_gate TOP COMMIT ID    a detached checkout of COMMIT at $CX_HOME/gate/ID.<n> (the first
 #                               free n); prints its path; rc 2 when git fails
 #   cx_wt_remove TOP DIR        git worktree remove --force DIR (rc ignored)
-#   cx_wt_changes WT BASE OUT   the executor's change against BASE, committed or not, untracked
+#   cx_wt_gcd DIR               sets CX_WT_GCD: the physical git common directory of DIR (a
+#                               checkout the conductor trusts: the main checkout, never a worktree
+#                               an executor wrote); rc 1 when DIR is no git checkout
+#   cx_wt_admin GCD WT          sets CX_WT_GITDIR: WT's private git directory as the repository's
+#                               own admin files name it (GCD/worktrees/<n>/gitdir is WT/.git),
+#                               never as WT/.git says; rc 1 (CX_WT_WHY) when GCD has no entry for WT
+#   cx_wt_gitdir GCD WT         cx_wt_admin, and WT/.git must still be the link file git wrote:
+#                               a regular file whose one line "gitdir: <path>" names that
+#                               directory; rc 1 (CX_WT_WHY) otherwise (the executor rewrote it)
+#   cx_wt_git GITDIR WT ARGS... git ARGS in WT with --git-dir GITDIR --work-tree WT and
+#                               CX_WT_GITC: the conductor's only way to run git in a worktree an
+#                               executor wrote
+#   cx_wt_changes TOP WT BASE OUT
+#                               the executor's change against BASE, committed or not, untracked
 #                               files included, through a scratch index (the worktree's own index
 #                               is never touched): writes OUT/changed.txt (name-status) and sets
 #                               CX_WT_DIFF (1|0), CX_WT_DIFFSTAT ("+A -R, N files" or ""),
-#                               CX_WT_BRANCH (the worktree's branch, empty when detached)
+#                               CX_WT_BRANCH (the worktree's branch, empty when detached),
+#                               CX_WT_ADD_ERR (git add's first error line: a file it could not
+#                               index, such as an embedded repository without a commit; the other
+#                               files are still counted) and CX_WT_LINK (1, or 0 with CX_WT_WHY
+#                               and rc 3 when WT/.git no longer links to its own git directory:
+#                               no git runs in WT then)
 #   cx_wt_rangestat TOP BASE C OUT
 #                               the same facts for the commits BASE...C (a pull request head)
 #   cx_wt_mark OUT WT           the running mark OUT/running (WT and its pwd -P form): agy's tree
 #                               snapshots, in every thread, leave a marked worktree out
+#
+# Git in a worktree an executor wrote (section 15.1): every write lane may rewrite the worktree's
+# .git file (it lies inside the worktree), and git would read the configuration of whatever
+# directory it names (core.fsmonitor runs a command on git add, git status and git diff). So the
+# conductor never lets git find the repository from the worktree: cx_wt_git names the private git
+# directory the main repository's admin files give, with CX_WT_GITC (no fsmonitor, hooks, pager,
+# ssh command or textconv, and no recursion into submodules or embedded repositories, whose own
+# configuration would apply there; git passes the -c values on to every git it starts).
 
 [ -n "${CX_PROG:-}" ] || CX_PROG=worktree
 # shellcheck source=common.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 declare -F cx_opt >/dev/null 2>&1 || . "$CX_LIB/options.sh"
 
-CX_WT_WHY="" CX_WT_DIFF=0 CX_WT_DIFFSTAT="" CX_WT_BRANCH=""
+CX_WT_WHY="" CX_WT_DIFF=0 CX_WT_DIFFSTAT="" CX_WT_BRANCH="" CX_WT_GCD="" CX_WT_GITDIR="" CX_WT_ADD_ERR="" CX_WT_LINK=1
+CX_WT_GITC=(-c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c core.sshCommand=false
+            -c diff.ignoreSubmodules=all -c submodule.recurse=false -c status.submoduleSummary=false)
 
 _cx_wt_real() { (cd -- "$1" 2>/dev/null && pwd -P); }
 
@@ -80,11 +108,12 @@ cx_wt_create() {
   CX_WT_WHY=""
   br="cx/$id"
   if [ -n "$reuse" ]; then
-    if [ -d "$wt" ] && cur="$(git -C "$wt" symbolic-ref -q --short HEAD 2>/dev/null)" && [ "$cur" = "$br" ] \
-       && [ "$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+    # Never git -C "$wt": an earlier executor may have rewritten its .git (section 15.1).
+    if [ -d "$wt" ] && cx_wt_gcd "$top" && cx_wt_gitdir "$CX_WT_GCD" "$wt" \
+       && cur="$(cx_wt_git "$CX_WT_GITDIR" "$wt" symbolic-ref -q --short HEAD 2>/dev/null)" && [ "$cur" = "$br" ]; then
       return 0
     fi
-    CX_WT_WHY="--reuse-worktree: $wt is not a worktree of $top on branch $br"
+    CX_WT_WHY="--reuse-worktree: $wt is not a worktree of $top on branch $br${CX_WT_WHY:+ ($CX_WT_WHY)}"
     return 1
   fi
   if git -C "$top" show-ref --verify --quiet "refs/heads/$br"; then
@@ -122,16 +151,77 @@ cx_wt_remove() {
   return 0
 }
 
+cx_wt_gcd() {
+  local g
+  CX_WT_GCD=""
+  g="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && [ -d "$g" ] || return 1
+  CX_WT_GCD="$(_cx_wt_real "$g")" && [ -n "$CX_WT_GCD" ]
+}
+
+cx_wt_admin() {
+  local gcd="$1" wt="$2" wtp g line
+  CX_WT_GITDIR="" CX_WT_WHY=""
+  wtp="$(_cx_wt_real "$wt")" && [ -n "$wtp" ] || { CX_WT_WHY="$wt does not exist"; return 1; }
+  for g in "$gcd"/worktrees/*/gitdir; do
+    [ -f "$g" ] || continue
+    line=""
+    IFS= read -r line < "$g" || [ -n "$line" ] || continue
+    case "$line" in /*) ;; *) line="${g%/gitdir}/$line" ;; esac
+    [ "$(_cx_wt_real "${line%/.git}")" = "$wtp" ] || continue
+    CX_WT_GITDIR="$(_cx_wt_real "${g%/gitdir}")"
+    [ -n "$CX_WT_GITDIR" ] && return 0
+  done
+  CX_WT_WHY="$wt is not a worktree of the repository at $gcd (no entry in its worktrees/)"
+  return 1
+}
+
+cx_wt_gitdir() {
+  local gcd="$1" wt="$2" c link
+  cx_wt_admin "$gcd" "$wt" || return 1
+  if [ -L "$wt/.git" ] || [ ! -f "$wt/.git" ]; then
+    CX_WT_WHY="$wt/.git is no longer the link file git wrote (now $( [ -L "$wt/.git" ] && echo "a symlink" || { [ -d "$wt/.git" ] && echo "a directory"; } || echo "missing or special"))"
+    return 1
+  fi
+  c="$(head -c 4097 -- "$wt/.git" 2>/dev/null)"
+  link="${c#gitdir: }"
+  if [ "${#c}" -gt 4096 ] || [ "$link" = "$c" ] || [ -z "$link" ] || [[ $link == *$'\n'* ]]; then
+    CX_WT_WHY="$wt/.git is no longer one gitdir: line"
+    return 1
+  fi
+  case "$link" in /*) ;; *) link="$wt/$link" ;; esac
+  if [ "$(_cx_wt_real "$link")" != "$CX_WT_GITDIR" ]; then
+    CX_WT_WHY="$wt/.git points at $link, not at its own git directory $CX_WT_GITDIR"
+    return 1
+  fi
+  return 0
+}
+
+cx_wt_git() {
+  local gd="$1" wt="$2"
+  shift 2
+  git -C "$wt" --git-dir="$gd" --work-tree="$wt" "${CX_WT_GITC[@]}" "$@"
+}
+
 cx_wt_changes() {
-  local wt="$1" base="$2" out="$3" idx real
-  CX_WT_DIFF=0 CX_WT_DIFFSTAT="" CX_WT_BRANCH=""
-  CX_WT_BRANCH="$(git -C "$wt" symbolic-ref -q --short HEAD 2>/dev/null)" || CX_WT_BRANCH=""
+  local top="$1" wt="$2" base="$3" out="$4" idx err gd
+  CX_WT_DIFF=0 CX_WT_DIFFSTAT="" CX_WT_BRANCH="" CX_WT_ADD_ERR="" CX_WT_LINK=1
+  : > "$out/changed.txt"
+  if ! cx_wt_gcd "$top"; then CX_WT_WHY="$top is not a git checkout"; CX_WT_LINK=0; return 3; fi
+  if ! cx_wt_gitdir "$CX_WT_GCD" "$wt"; then CX_WT_LINK=0; return 3; fi
+  gd="$CX_WT_GITDIR"
+  CX_WT_BRANCH="$(cx_wt_git "$gd" "$wt" symbolic-ref -q --short HEAD 2>/dev/null)" || CX_WT_BRANCH=""
   idx="$(mktemp "${TMPDIR:-/tmp}/cx-idx.XXXXXXXX")" || return 2
-  real="$(git -C "$wt" rev-parse --path-format=absolute --git-path index 2>/dev/null)"
-  if [ -n "$real" ] && [ -f "$real" ]; then cp -f -- "$real" "$idx"; else rm -f -- "$idx"; fi
-  GIT_INDEX_FILE="$idx" git -C "$wt" add -A >/dev/null 2>&1
-  GIT_INDEX_FILE="$idx" git -C "$wt" diff --cached --no-renames --name-status "$base" > "$out/changed.txt" 2>/dev/null
-  _cx_wt_numstat < <(GIT_INDEX_FILE="$idx" git -C "$wt" diff --cached --no-renames --numstat "$base" 2>/dev/null)
+  err="$(mktemp "${TMPDIR:-/tmp}/cx-add.XXXXXXXX")" || { rm -f -- "$idx"; return 2; }
+  if [ -f "$gd/index" ]; then cp -f -- "$gd/index" "$idx"; else rm -f -- "$idx"; fi
+  # --ignore-errors: a file git cannot index (an embedded repository without a commit) must not
+  # hide every other change of the run.
+  if ! GIT_INDEX_FILE="$idx" cx_wt_git "$gd" "$wt" add -A --ignore-errors >/dev/null 2>"$err"; then
+    CX_WT_ADD_ERR="$(grep -m 1 -E '^(error|fatal):' "$err" 2>/dev/null | head -c 300)"
+    [ -n "$CX_WT_ADD_ERR" ] || CX_WT_ADD_ERR="git add -A failed"
+  fi
+  rm -f -- "$err"
+  GIT_INDEX_FILE="$idx" cx_wt_git "$gd" "$wt" diff --cached --no-renames --no-ext-diff --no-textconv --name-status "$base" > "$out/changed.txt" 2>/dev/null
+  _cx_wt_numstat < <(GIT_INDEX_FILE="$idx" cx_wt_git "$gd" "$wt" diff --cached --no-renames --no-ext-diff --no-textconv --numstat "$base" 2>/dev/null)
   rm -f -- "$idx"
   return 0
 }

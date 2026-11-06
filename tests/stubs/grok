@@ -1,26 +1,77 @@
 #!/usr/bin/env bash
-# tests/stubs/grok: --version -> "grok ${STUB_GROK_VERSION:-1.0.70} (f50904eaee6c)"; models ->
+# tests/stubs/grok: --version -> "grok ${STUB_GROK_VERSION:-1.0.70} (f50904eaee6c)"; --help ->
+# ${STUB_GROK_HELP:-the real grok 1.0.70 help, fixtures/real/grok/help.txt} (free); models ->
 # fixtures/grok-models-auth.txt when STUB_GROK_AUTH=1, else the verified unauthenticated text,
 # rc ${STUB_GROK_MODELS_RC:-0} (STUB_GROK_MODELS_FAIL=network: one error line, no ids, rc 1);
 # usage -> fixture; STUB_ENV_FILE receives its environment. A prompt run (--prompt-file or
-# -p/--single) needs STUB_GROK_RUN, else it is billable; its JSON is SYNTHETIC (text, sessionId,
-# modelUsage, usage, stopReason; DESIGN section 20 item 7). Scenarios: ok (writes cx-grok.txt in
-# --cwd unless --json-schema), denied ("permission required: Bash(npm install)" on stderr, rc 0),
+# -p/--single) needs STUB_GROK_RUN, else it is billable; its JSON is SYNTHETIC in the keys grok
+# 1.0.70 really prints (text, sessionId, modelUsage, usage, stopReason; with --json-schema also
+# structuredOutput, and a text that joins the turns: "[ ][...]"). Scenarios: ok (writes
+# cx-grok.txt in --cwd unless --json-schema), denied ("permission required: Bash(npm install)" on stderr, rc 0),
 # mismatch (modelUsage names ${STUB_GROK_SERVED:-grok-4.6}), error (an error object, no
 # sessionId, rc 1), auth ("You are not authenticated.", rc 1), quota (rate limit, rc 1), sleep
-# (ok after ${STUB_GROK_SLEEP:-30} s), nodiff (ok without writing a file), tamper (ok, and it also
+# (ok after ${STUB_GROK_SLEEP:-30} s; with STUB_GROK_HOLD, ok once that file is gone, at most that
+# long), nodiff (ok without writing a file), tamper (ok, and it also
 # edits .conductor/task.md in --cwd), daemon (ok, leaving a sleeping child in its session and a
 # setsid one outside it; their pids in $STUB_GROK_DAEMON_PID and $STUB_GROK_DAEMON_PID.setsid),
 # ignoreterm (ignores TERM, starts a TERM-ignoring child in another process group of its session,
-# pid in $STUB_GROK_DAEMON_PID, then sleeps 60 s).
+# pid in $STUB_GROK_DAEMON_PID, then sleeps 60 s), route (ok, after it overwrote --cwd's
+# .cx/routes.json and ran cx-route ${STUB_GROK_ROUTE:-test} and cx-route nope from PATH, their
+# output and exit codes in --cwd/cx-route.out), gitlink (ok, and it rewrites --cwd/.git to point
+# at --cwd/.evil, a git directory whose core.fsmonitor touches ${STUB_GROK_PWNED:-/dev/null}),
+# embedded (ok, plus an embedded repository without a commit in --cwd/sub, which git add cannot
+# index).
+# --sandbox <profile> models (the free sandbox probe) -> the models listing, unless
+# STUB_GROK_SANDBOX says the sandbox cannot apply: refuse (grok 1.0.70's real "warning: sandbox
+# could not be applied" and "Refusing to start with its protections missing" lines, rc 1),
+# nobwrap (its bubblewrap refusal, rc 1) or warn (the warning only, then the listing, rc 0: the
+# fail-open grok's README describes). A prompt run with STUB_GROK_SANDBOX_RUN=warn prints the
+# warning on stderr and goes on; refuse prints both lines and exits 1 before doing anything.
+# STUB_GROK_SANDBOX_EVENT makes that sandbox probe append one ProfileApplied line to grok's
+# sandbox log ${GROK_HOME:-$HOME/.grok}/sessions/sandbox-events.jsonl, in the shape grok 1.0.70
+# logs (fixtures/real/grok/sandbox-events-1.0.70.jsonl): enforced (enforced true, platform
+# linux/landlock, workspace = its cwd), unenforced (enforced false, platform linux/unsupported:
+# SYNTHETIC, no real unenforced event has been seen) or other (that unenforced line for another
+# workspace, /elsewhere); unset: no line, as on a host whose grok logs nothing.
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump grok
 stub_log grok -- "$@"
+nosb_warn() { printf 'warning: sandbox could not be applied: Landlock is not supported by this kernel\n' >&2; }
+nosb_refuse() {
+  nosb_warn
+  printf "error: could not apply the '%s' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n" "$1" >&2
+}
+sbx_event() {
+  local ws enf=true plat=linux/landlock d="${GROK_HOME:-$HOME/.grok}/sessions"
+  ws="$(pwd -P)"
+  case "${STUB_GROK_SANDBOX_EVENT:-}" in
+    enforced) ;;
+    unenforced) enf=false plat=linux/unsupported ;;
+    other) enf=false plat=linux/unsupported ws=/elsewhere ;;
+    *) return 0 ;;
+  esac
+  mkdir -p -- "$d"
+  printf '{"timestamp":"%s","event_type":"ProfileApplied","profile":"%s","workspace":"%s","platform":"%s","enforced":%s,"restrict_network":true,"read_write_paths":["%s","%s","/tmp","/var/tmp"],"read_only_paths":["/usr","/etc","%s"]}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$ws" "$plat" "$enf" "$ws" "$d" "$ws" >> "$d/sandbox-events.jsonl"
+}
+if [ "${1-}" = --sandbox ] && [ $# -eq 3 ] && [ "$3" = models ]; then
+  sbx_event "$2"
+  case "${STUB_GROK_SANDBOX:-}" in
+    refuse) nosb_refuse "$2"; exit 1 ;;
+    nobwrap) printf 'error: Refusing to start with denied paths unprotected. Install bubblewrap with %sapt install -y bubblewrap%s\n' '`' '`' >&2; exit 1 ;;
+    warn) nosb_warn ;;
+  esac
+  shift 2
+fi
 case "${1-}" in
   --version)
     [ $# -eq 1 ] || stub_billable grok "$@"
     printf 'grok %s (f50904eaee6c)\n' "${STUB_GROK_VERSION:-1.0.70}"
+    exit 0 ;;
+  -h|--help)
+    [ $# -eq 1 ] || stub_billable grok "$@"
+    cat "${STUB_GROK_HELP:-$STUB_FIX/real/grok/help.txt}"
     exit 0 ;;
   models)
     [ $# -eq 1 ] || stub_billable grok "$@"
@@ -37,6 +88,10 @@ esac
 run="${STUB_GROK_RUN:-}" model="" cwd="$PWD" sid="" schema="" prompt=""
 for a in "$@"; do case "$a" in --prompt-file|-p|--single) prompt=1 ;; esac; done
 [ -n "$run" ] && [ -n "$prompt" ] || stub_billable grok "$@"
+case "${STUB_GROK_SANDBOX_RUN:-}" in
+  refuse) nosb_refuse "${STUB_GROK_PROFILE:-strict}"; exit 1 ;;
+  warn) nosb_warn ;;
+esac
 while [ $# -gt 0 ]; do
   case "$1" in
     -m|--model) model="$2"; shift 2 ;;
@@ -53,7 +108,12 @@ case "$run" in
   error) printf '{"error": {"message": "stream ended unexpectedly"}}\n'; exit 1 ;;
   auth) printf 'You are not authenticated. Run grok login.\n' >&2; exit 1 ;;
   quota) printf 'Error: rate limit exceeded (429), try again later\n' >&2; exit 1 ;;
-  sleep) sleep "${STUB_GROK_SLEEP:-30}" ;;
+  sleep)
+    if [ -n "${STUB_GROK_HOLD:-}" ]; then
+      for ((h = 0; h < ${STUB_GROK_SLEEP:-30} * 10; h++)); do [ -e "$STUB_GROK_HOLD" ] || break; sleep 0.1; done
+    else
+      sleep "${STUB_GROK_SLEEP:-30}"
+    fi ;;
   daemon)
     sleep 120 > /dev/null 2>&1 &
     printf '%s\n' "$!" > "${STUB_GROK_DAEMON_PID:-/dev/null}"
@@ -66,12 +126,29 @@ case "$run" in
     printf '%s\n' "$!" > "${STUB_GROK_DAEMON_PID:-/dev/null}"
     set +m
     sleep 60 ;;
+  route)
+    if [ -d "$cwd/.cx" ]; then printf '{"version": 1, "commands": {"test": "echo HACKED"}}\n' > "$cwd/.cx/routes.json"; fi
+    ( cd -- "$cwd" || exit 1
+      r1="$(cx-route "${STUB_GROK_ROUTE:-test}" 2>&1)"; c1=$?
+      r2="$(cx-route nope 2>&1)"; c2=$?
+      printf '%s\nrc=%s\n%s\nrc=%s\n' "$r1" "$c1" "$r2" "$c2" > cx-route.out ) ;;
+  gitlink)
+    git init -q --bare "$cwd/.evil" && git -C "$cwd/.evil" config core.bare false \
+      && git -C "$cwd/.evil" config core.fsmonitor "touch ${STUB_GROK_PWNED:-/dev/null}" \
+      && printf 'gitdir: .evil\n' > "$cwd/.git" ;;
+  embedded) mkdir -p "$cwd/sub" && git -C "$cwd/sub" init -q ;;
   ok|denied|mismatch|nodiff|tamper) ;;
   *) stub_billable grok "$@" ;;
 esac
-text='Created cx-grok.txt:1.\nDIGEST: created cx-grok.txt.'
-if [ -n "$schema" ]; then text='[{\"file\": \"README.md\", \"line\": 1, \"why\": \"title\"}]'; elif [ "$run" != nodiff ]; then printf 'from grok\n' > "$cwd/cx-grok.txt"; fi
+text='Created cx-grok.txt:1.\nDIGEST: created cx-grok.txt.' so=""
+if [ -n "$schema" ]; then
+  # As grok 1.0.70 answers with --json-schema (fixtures/real/grok/sbx-grok-3): structuredOutput
+  # holds the answer, while text joins every turn's message with no separator ("[ ]" from the
+  # first turn, then the array), so it is not valid JSON.
+  text='[ ][{\"file\":\"README.md\",\"line\":1,\"why\":\"title\"}]'
+  so=', "structuredOutput": [{"file": "README.md", "line": 1, "why": "title"}]'
+elif [ "$run" != nodiff ]; then printf 'from grok\n' > "$cwd/cx-grok.txt"; fi
 [ "$run" = tamper ] && printf 'tampered\n' >> "$cwd/.conductor/task.md"
 [ "$run" = denied ] && printf 'permission required: Bash(npm install)\n' >&2
-printf '{"text": "%s", "sessionId": "%s", "modelUsage": {"%s": {"inputTokens": 900, "outputTokens": 120}}, "usage": {"input_tokens": 900, "output_tokens": 120, "cache_read_tokens": 300}, "stopReason": "end_turn"}\n' "$text" "$sid" "$served"
+printf '{"text": "%s", "sessionId": "%s", "modelUsage": {"%s": {"inputTokens": 900, "outputTokens": 120}}, "usage": {"input_tokens": 900, "output_tokens": 120, "cache_read_tokens": 300}, "stopReason": "end_turn"%s}\n' "$text" "$sid" "$served" "$so"
 exit 0

@@ -1,0 +1,28 @@
+== /root/cx-live/textutil
+HEAD e138589306e6c0cd0576fc5bc9b87d95fd183be1 refs/heads/main
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+== /root/.cx-wt/textutil-live-grok-1
+link cd289f22e7a366ff2e25aeb10d4c009f3d953f2ca1c18941d6fa0a9df1a8e18d
+HEAD e138589306e6c0cd0576fc5bc9b87d95fd183be1 refs/heads/cx/live-grok-1
+ M textutil.py
+f04824a9154f3d0da9a2552a46da31bbbf19b3dd2c759d574ce118250f2dab0d  -
+ignored-dir .conductor/
+== /root/cx-live/textutil/.git#repo
+stash
+config
+0ccbb3ab3a91a81952aaaab4d84e5cd90820a13adcd8407b417bd5a1ac15b37b  -
+exclude 0a910108621a19413e98397d543d64a309ff054436e6baf114a73939caa998dd  -
+0223497a0b8b033aa58a3a521b8629869386cf7ab0e2f101963d328aa62193f7  hooks/applypatch-msg.sample
+1f74d5e9292979b573ebd59741d46cb93ff391acdd083d340b94370753d92437  hooks/commit-msg.sample
+e0549964e93897b519bd8e333c037e51fff0f88ba13e086a331592bf801fa1d0  hooks/fsmonitor-watchman.sample
+81765af2daef323061dcbc5e61fc16481cb74b3bac9ad8a174b186523586f6c5  hooks/post-update.sample
+e15c5b469ea3e0a695bea6f2c82bcf8e62821074939ddd85b77e0007ff165475  hooks/pre-applypatch.sample
+f9af7d95eb1231ecf2eba9770fedfa8d4797a12b02d7240e98d568201251244a  hooks/pre-commit.sample
+d3825a70337940ebbd0a5c072984e13245920cdf8898bd225c8d27a6dfc9cb53  hooks/pre-merge-commit.sample
+ecce9c7e04d3f5dd9d8ada81753dd1d549a9634b26770042b58dda00217d086a  hooks/pre-push.sample
+4febce867790052338076f4e66cc47efb14879d18097d1d61c8261859eaaa7b3  hooks/pre-rebase.sample
+a4c3d2b9c7bb3fd8d1441c31bd4ee71a595d66b44fcf49ddb310252320169989  hooks/pre-receive.sample
+e9ddcaa4189fddd25ed97fc8c789eca7b6ca16390b2392ae3276f0c8e1aa4619  hooks/prepare-commit-msg.sample
+a53d0741798b287c6dd7afa64aee473f305e65d3f49463bb9d7408ec3b12bf5f  hooks/push-to-checkout.sample
+44ebfc923dc5466bc009602f0ecf067b9c65459abfe8868ddc49b78e6ced7a92  hooks/sendemail-validate.sample
+8d5f2fa83e103cf08b57eaa67521df9194f45cbdbcb37da52ad586097a14d106  hooks/update.sample

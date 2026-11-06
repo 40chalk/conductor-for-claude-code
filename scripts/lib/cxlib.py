@@ -16,6 +16,10 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   json-get FILE DOTTED.KEY     a scalar (JSON for objects and lists); exit 1 when absent
   toml-get FILE SECTION KEY    raw value; exit 1 when absent
   toml-table FILE NAME         exit 0 when a table whose last key segment is NAME exists
+  landlock                     "abi N", "none <why>" or "unknown <why>": the kernel's Landlock (D17)
+  grok-sandbox-event --file F --from N --to M --workspace W
+                               "enforced|unenforced|none<TAB>platform<TAB>profile": grok's sandbox
+                               log lines appended between sizes N and M for workspace W (D17)
   const NAME                   prints a message constant (CURSOR_WORKER_MSG, CURSOR_POOL_MSG)
   options-check                effective options (CLAUDE_PLUGIN_OPTION_*) validated (section 5.3)
   conductor-options FILE       the conductor's saved options in FILE as JSON
@@ -34,8 +38,10 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   init-detect DIR              detection JSON (section 9.3)
   init-plan ...                detection plus cx-init's overrides -> plan JSON
   init-apply ...               bundle writer (section 9.2); exit 0 or 5
-  user-grants ...              cx-init --user-grants (section 15.7): the agy grant, the grok
-                               sandbox profile and [cli] auto_update; exit 0 or 5
+  user-grants ...              cx-init --user-grants (section 15.7): the repository's grok
+                               sandbox profile (and a note on agy's 0.2.0 global grants); exit 0 or 5
+  grok-profile ...             the repository's grok sandbox profile, under a lock (section 15.7)
+  agy-grants FILE              the global write_file/command grants of agy's settings (D18 info)
   pools-mtd --file F [--set N] reads or writes the month-to-date record (section 8.4)
 """
 
@@ -49,7 +55,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 CURSOR_WORKER_MSG = "a grok worker process registers this machine with Cursor as a private worker; stop it"
 CURSOR_POOL_MSG = "interactive Cursor IDE use on Grok/Composer drains the same weekly pool"
@@ -369,6 +375,116 @@ def cmd_toml_get(a):
     if v is None:
         return 1
     out(v + "\n")
+    return 0
+
+
+def landlock_abi():
+    """("abi", N) when the kernel offers Landlock (landlock_create_ruleset's version query),
+    ("none", why) when it definitely does not (ENOSYS: not built in; EOPNOTSUPP: disabled), else
+    ("unknown", why) (not Linux, no ctypes, or a seccomp filter answering EPERM)."""
+    import errno
+    if not sys.platform.startswith("linux"):
+        return "unknown", "not Linux"
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        # landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION): syscall 444 on every
+        # architecture (it was added after the syscall numbers were unified).
+        r = libc.syscall(444, None, ctypes.c_size_t(0), ctypes.c_uint32(1))
+        e = ctypes.get_errno()
+    except (OSError, AttributeError, ImportError) as x:
+        return "unknown", "cannot query (%s)" % x
+    if r >= 1:
+        return "abi", str(r)
+    if e == errno.ENOSYS:
+        return "none", "ENOSYS: the kernel has no Landlock"
+    if e == errno.EOPNOTSUPP:
+        return "none", "EOPNOTSUPP: Landlock is disabled at boot"
+    return "unknown", "cannot query (%s)" % (errno.errorcode.get(e, e))
+
+
+def cmd_landlock(a):
+    """landlock: prints "abi N", "none <why>" or "unknown <why>" (DESIGN section 8.3 D17)."""
+    k, v = landlock_abi()
+    out("%s %s\n" % (k, v))
+    return 0
+
+
+GROK_EVENTS_MAX = 1 << 20
+
+
+def grok_sandbox_event(path, start, end, workspace):
+    """grok's sandbox log (1.0.70, measured 2026-11-06: ~/.grok/sessions/sandbox-events.jsonl
+    gets one JSON line per sandboxed start, {"timestamp", "event_type": "ProfileApplied",
+    "profile", "workspace", "platform", "enforced", "restrict_network", "read_write_paths"},
+    plus "read_only_paths" for strict and the profiles extending it (the built-in read-only
+    logs none); tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl). Reads only bytes
+    [START, END) of PATH, what grok appended while one probe ran ([0, END) when the file shrank
+    meanwhile; at most 1 MiB), never when PATH itself is a symlink (O_NOFOLLOW: its last path
+    component only; a symlinked directory above it is followed) and never blocking on a FIFO;
+    lines are split on "\n" only. Returns {"profile", "platform", "enforced"} of the ProfileApplied event
+    whose workspace is WORKSPACE (an event with enforced false wins), else None: the event can
+    only add a refusal, never lift one (an absent log or event changes nothing)."""
+    import stat
+    if not path or not workspace or end is None or end <= 0:
+        return None
+    start = start if isinstance(start, int) and 0 <= start <= end else 0
+    if end <= start:
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    data = b""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        os.lseek(fd, start, os.SEEK_SET)
+        n = min(end - start, GROK_EVENTS_MAX)
+        while len(data) < n:
+            chunk = os.read(fd, n - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    want = {os.path.abspath(workspace), os.path.realpath(workspace)}
+    found = None
+    for line in data.decode("utf-8", "replace").split("\n"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("event_type") != "ProfileApplied":
+            continue
+        ws = ev.get("workspace")
+        if not isinstance(ws, str) or not ws or (os.path.abspath(ws) not in want and os.path.realpath(ws) not in want):
+            continue
+        enf = ev.get("enforced")
+        if not isinstance(enf, bool):
+            continue
+        rec = {"profile": sanitize(ev.get("profile") or "?", 80), "platform": sanitize(ev.get("platform") or "unknown", 80),
+               "enforced": enf}
+        if enf is False:
+            return rec
+        found = found or rec
+    return found
+
+
+def cmd_grok_sandbox_event(a):
+    """grok-sandbox-event --file F --from N --to M --workspace W: prints "enforced", "unenforced"
+    or "none", then the platform and the profile, tab-separated (DESIGN section 8.3 D17)."""
+    ev = grok_sandbox_event(a.file, a.start, a.end, a.workspace)
+    if ev is None:
+        out("none\t-\t-\n")
+    else:
+        out("%s\t%s\t%s\n" % ("enforced" if ev["enforced"] else "unenforced", ev["platform"].replace("\t", " "),
+                                ev["profile"].replace("\t", " ")))
     return 0
 
 
@@ -1593,7 +1709,7 @@ def cmd_doctor_session(a):
     return 0
 
 
-SECTIONS = ["Session", "Host", "Runtime", "Options", "CLIs", "Version pins", "Logins (free probes)",
+SECTIONS = ["Session", "Host", "Runtime", "Options", "CLIs", "Versions", "Logins (free probes)",
             "Sibling plugins", "Windows (Git Bash)", "Pools"]
 GLYPH = {"ok": "✓", "warn": "!", "fail": "✗"}
 
@@ -2160,6 +2276,190 @@ def cmd_init_apply(a):
     return 5 if conflict else 0
 
 
+# --------------------------------------------------------------------------- grok sandbox profiles
+
+# The profile text conductor 0.2.0 appended to ~/.grok/sandbox.toml (templates/grok-sandbox.toml of
+# 0.2.0, name cx-workspace): its deny globs are invalid (grok's deny takes literal paths), so the
+# writers below remove this exact block (nothing else) wherever they touch the file.
+GROK_OLD_BLOCK = """# conductor: the grok sandbox profile every conductor grok writer runs under (option
+# grok_sandbox_profile; docs/DESIGN.md section 15.7). Added to ~/.grok/sandbox.toml by
+# cx-init --user-grants when the profile is absent. It extends grok's built-in workspace
+# profile (writes inside the working directory) and denies secrets. The key names are
+# docs-only (DESIGN section 20): check the effective profile with `grok inspect --json` in a
+# conductor worktree.
+[profiles.cx-workspace]
+extends = "workspace"
+deny = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*"]
+"""
+
+
+def grok_profile_name(gcd):
+    """cx-<repo>-<8 hex>: the repository's main-checkout name (sanitized, at most 24
+    characters) and the start of the sha256 of its git common directory."""
+    import hashlib
+    gcd = gcd.rstrip("/") or "/"
+    base = os.path.basename(gcd)
+    base = os.path.basename(os.path.dirname(gcd)) if base == ".git" else re.sub(r"\.git$", "", base)
+    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:24].strip("-") or "repo"
+    return "cx-%s-%s" % (slug, hashlib.sha256(gcd.encode("utf-8", "surrogateescape")).hexdigest()[:8])
+
+
+def _toml_str_list(items):
+    return "[" + ", ".join(json.dumps(i, ensure_ascii=True) for i in items) + "]"
+
+
+def grok_profile_block(template, name, gcd, routes_root):
+    repo = os.path.dirname(gcd.rstrip("/")) if os.path.basename(gcd.rstrip("/")) == ".git" else gcd
+    body = template.replace("{{name}}", name).replace("{{repo}}", sanitize(repo, 300)).replace(
+        "{{read_only}}", _toml_str_list([gcd, routes_root]))
+    if not body.endswith("\n"):
+        body += "\n"
+    return "# cx:begin %s\n%s# cx:end %s\n" % (name, body, name)
+
+
+def _toml_ok(text):
+    """True / False when tomllib can judge TEXT, None without tomllib (Python < 3.11)."""
+    try:
+        import tomllib
+    except ImportError:
+        return None
+    try:
+        tomllib.loads(text)
+        return True
+    except Exception:
+        return False
+
+
+def _toml_profile(text, name):
+    """(parsed, profile): parsed is None without tomllib, False when TEXT does not parse; profile
+    is TEXT's [profiles.NAME] table (None when absent)."""
+    try:
+        import tomllib
+    except ImportError:
+        return None, None
+    try:
+        d = tomllib.loads(text)
+    except Exception:
+        return False, None
+    p = d.get("profiles")
+    return True, (p.get(name) if isinstance(p, dict) else None)
+
+
+def _grok_unmarked_re(name):
+    """A table [profiles.NAME] or [profiles.NAME.<sub>] (bare, "quoted" or 'literal' key) with
+    its lines up to the next table header."""
+    n = re.escape(name)
+    return re.compile(r"^[ \t]*\[[ \t]*profiles[ \t]*\.[ \t]*(?:%s|\"%s\"|'%s')[ \t]*(?:\.[^\]\n]*)?\][^\n]*(?:\n|\Z)"
+                      r"(?:(?![ \t]*\[|# cx:(?:begin|end) )[^\n]*(?:\n|\Z))*" % (n, n, n), re.M)
+
+
+def grok_profile_plan(path, template, name, gcd, routes_root):
+    """(action, new_text, notes) for the repository's profile in sandbox.toml PATH: create,
+    update, same or conflict (the result would not parse, or would not hold exactly the
+    rendered profile). The name cx-<repo>-<hash> is conductor's own: no person writes it, and a
+    grok run may rewrite sandbox.toml (grok 1.0.70's built-in read-only profile, used by read and
+    review runs, writes all of ~/.grok; strict and the profiles extending it keep ~/.grok
+    read-only but ~/.grok/sessions, measured, although grok's README says strict writes ~/.grok),
+    so every definition of NAME is replaced by the rendered block, between the cx:begin/cx:end
+    lines or not (markers a run stripped never make a widened profile "the user's")."""
+    notes = []
+    tgt = _ug_target(path)
+    old = read_text(tgt) if os.path.exists(tgt) else ""
+    new = old
+    if GROK_OLD_BLOCK in new:
+        new = new.replace("\n\n" + GROK_OLD_BLOCK, "\n").replace("\n" + GROK_OLD_BLOCK, "\n").replace(GROK_OLD_BLOCK, "")
+        notes.append("removed the 0.2.0 cx-workspace profile from %s (its deny globs are not valid grok paths)" % path)
+    block = grok_profile_block(template, name, gcd, routes_root)
+    hole = "\0cx-profile\0"
+    marked = re.compile(r"(?ms)^# cx:begin %s\n.*?^# cx:end %s(?:\n|\Z)" % (re.escape(name), re.escape(name)))
+    m = marked.search(new)
+    if m:
+        new = new[:m.start()] + hole + marked.sub("", new[m.end():])
+    unmarked = _grok_unmarked_re(name)
+    if unmarked.search(new.replace(hole, "")):
+        notes.append("%s defined [profiles.%s] outside conductor's cx:begin/cx:end lines (a grok writer may have rewritten "
+                     "the file): replaced it with conductor's own profile of that name" % (path, name))
+        parts = new.split(hole)
+        new = hole.join(unmarked.sub("", x) for x in parts)
+    if hole in new:
+        new = new.replace(hole, block, 1)
+    else:
+        new = new.rstrip("\n")
+        new = new + ("\n\n" if new.strip() else "") + block
+    # Checked also when nothing changes: grok must read exactly the rendered profile.
+    parsed, prof = _toml_profile(new, name)
+    if parsed is False:
+        return "conflict", old, notes + ["%s would not parse%s (is it valid TOML now?): nothing written" % (path, "" if new == old else " after the edit")]
+    if parsed is True and prof != _toml_profile(block, name)[1]:
+        return "conflict", old, notes + ["%s defines [profiles.%s] another way too (an inline table or dotted keys): nothing "
+                                         "written; remove every other definition of it by hand" % (path, name)]
+    if new == old:
+        return "same", new, notes
+    return ("update" if old else "create"), new, notes
+
+
+def _write_user_file(path, data, existed):
+    """Through a symlinked dotfile to its target; <file>.cx-bak first when it existed; the
+    file's own mode is kept (0600 for a new one: sandbox.toml holds no secret, grok makes it 0600)."""
+    tgt = _ug_target(path)
+    mode = 0o600
+    if existed:
+        shutil.copy2(tgt, path + ".cx-bak")
+        try:
+            mode = os.stat(tgt).st_mode & 0o7777
+        except OSError:
+            pass
+    atomic_write(tgt, data, mode)
+
+
+def cmd_grok_profile(a):
+    """grok-profile --gcd D --name-only | --sandbox F --template T --routes-root R [--lock L]
+    [--dry-run]: the repository's sandbox profile (DESIGN section 15.7), written idempotently
+    under the lock; prints "<action> <name>" (and notes); exit 0, 5 conflict, 2 error."""
+    gcd = os.path.realpath(a.gcd)
+    name = grok_profile_name(gcd)
+    if a.name_only:
+        out(name + "\n")
+        return 0
+    if not (a.sandbox and a.template and a.routes_root):
+        err("cxlib: grok-profile needs --sandbox, --template and --routes-root\n")
+        return 2
+    lk = None
+    try:
+        if a.lock:
+            import fcntl
+            os.makedirs(os.path.dirname(os.path.abspath(a.lock)), exist_ok=True)
+            lk = open(a.lock, "a")
+            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+        act, new, notes = grok_profile_plan(a.sandbox, read_text(a.template), name, gcd, a.routes_root)
+        if act in ("create", "update") and not a.dry_run:
+            _write_user_file(a.sandbox, new, os.path.exists(_ug_target(a.sandbox)))
+    except OSError as e:
+        err("cxlib: grok-profile: %s\n" % e)
+        return 2
+    finally:
+        if lk is not None:
+            lk.close()
+    out("%s %s%s\n" % (act, name, "".join("; " + sanitize(n, 300) for n in notes)))
+    return 5 if act == "conflict" else 0
+
+
+def agy_global_grants(path):
+    """The write_file(...) and command(...) rules of agy's user settings (conductor 0.2.0's
+    cx-init --user-grants wrote them; agy runs now get per-run --settings grants)."""
+    obj = load_json_file(path)
+    if not isinstance(obj, dict) or not isinstance(obj.get("permissions"), dict):
+        return []
+    al = obj["permissions"].get("allow")
+    return [x for x in (al if isinstance(al, list) else []) if isinstance(x, str) and re.match(r"\s*(write_file|command)\(", x)]
+
+
+def cmd_agy_grants(a):
+    g = agy_global_grants(a.file)
+    out(json.dumps(g, ensure_ascii=False) + "\n")
+    return 0 if g else 1
+
+
 # --------------------------------------------------------------------------- cx-init --user-grants
 
 def _ug_target(path):
@@ -2167,25 +2467,16 @@ def _ug_target(path):
     return os.path.realpath(path) if os.path.islink(path) else path
 
 
-def _ug_profile_defined(path, name):
-    data = _toml_load(path)
-    if data is not None:
-        prof = data.get("profiles") if isinstance(data.get("profiles"), dict) else {}
-        return isinstance(prof.get(name), dict)
-    _, headers = _toml_scan(path)
-    return any(h in ("profiles." + name, name) for h in headers)
-
-
 def cmd_user_grants(a):
-    """cx-init --user-grants (DESIGN section 15.7): user-level, once per machine, idempotent.
-    (1) agy: write_file(<worktree_root>) and one command(<cmd>) per routes command merged into
-        ~/.gemini/antigravity-cli/settings.json permissions.allow (other keys kept);
-    (2) grok: the grok_sandbox_profile profile from templates/grok-sandbox.toml appended to
-        ~/.grok/sandbox.toml when that profile is absent;
-    (3) grok: [cli] auto_update = false in ~/.grok/config.toml when the key is absent.
-    A file that changes is first copied to <file>.cx-bak. All or nothing: a file that cannot be
-    merged (invalid JSON, permissions or allow of the wrong type) is a conflict, and nothing at
-    all is written (exit 5)."""
+    """cx-init --user-grants (DESIGN section 15.7): user-level, idempotent. It writes the grok
+    sandbox profile of the repository at --repo (--gcd: its git common directory) into
+    ~/.grok/sandbox.toml (cx-run's grok lane writes the same profile on a repository's first
+    run) and removes conductor 0.2.0's invalid cx-workspace profile. agy needs no user-level
+    grant any more (each raw run passes its own --settings), so nothing is written for agy: a
+    note lists the global grants 0.2.0 left in ~/.gemini/antigravity-cli/settings.json. Grok's
+    auto-update setting is the user's (nothing pins a CLI version). A file that changes is first
+    copied to <file>.cx-bak; a result that would not parse is a conflict and nothing is written
+    (exit 5)."""
     home = a.home
     grok_home = a.grok_home or os.path.join(home, ".grok")
     root = a.root.rstrip("/") or "/"
@@ -2196,62 +2487,40 @@ def cmd_user_grants(a):
             cmds.append(c)
     results, writes, notes = [], [], []
 
-    # (1) agy
+    # agy: nothing to write; report the global grants an older conductor left
     gf = os.path.join(home, ".gemini", "antigravity-cli", "settings.json")
-    want = ["write_file(%s)" % root] + ["command(%s)" % c for c in cmds]
-    if os.path.exists(gf):
-        obj = load_json_file(gf)
-        perms = obj.get("permissions", {}) if isinstance(obj, dict) else None
-        allow = perms.get("allow", []) if isinstance(perms, dict) else None
-        if not isinstance(obj, dict):
-            results.append({"path": gf, "action": "conflict", "reason": "not a JSON object; fix it by hand"})
-        elif not isinstance(perms, dict) or not isinstance(allow, list):
-            results.append({"path": gf, "action": "conflict", "reason": "permissions.allow is not a list; fix it by hand"})
-        else:
-            have = [re.sub(r"/+\)$", ")", x.strip()) for x in allow if isinstance(x, str)]
-            add = [w for w in want if w not in have]
-            if add:
-                obj.setdefault("permissions", perms)
-                perms["allow"] = list(allow) + add
-                writes.append((gf, json.dumps(obj, ensure_ascii=False, indent=2) + "\n", True))
-                results.append({"path": gf, "action": "update", "reason": "added " + ", ".join(add)})
-            else:
-                results.append({"path": gf, "action": "same", "reason": ""})
-    else:
-        writes.append((gf, json.dumps({"permissions": {"allow": want}}, ensure_ascii=False, indent=2) + "\n", False))
-        results.append({"path": gf, "action": "create", "reason": "added " + ", ".join(want)})
-    if not cmds:
-        notes.append("no routes commands found (run it inside a repo with .cx/routes.json to grant them): only write_file was considered")
+    left = agy_global_grants(gf) if os.path.exists(gf) else []
+    if left:
+        notes.append("%s still holds global agy grants (%s), written by conductor 0.2.0's cx-init --user-grants: "
+                     "conductor runs no longer need them (each agy run gets its own --settings grants), and they apply "
+                     "to every agy session of yours; remove them by hand if you do not want them" % (gf, ", ".join(left[:4]) + (" ..." if len(left) > 4 else "")))
 
-    # (2) grok sandbox profile
+    # grok: the repository's sandbox profile
     sf = os.path.join(grok_home, "sandbox.toml")
-    tpl = read_text(a.template).replace("{{name}}", a.profile)
-    if os.path.exists(sf) and _ug_profile_defined(sf, a.profile):
-        results.append({"path": sf, "action": "same", "reason": ""})
-    else:
-        old = read_text(sf) if os.path.exists(sf) else ""
-        new = old + ("" if not old or old.endswith("\n") else "\n") + ("\n" if old.strip() else "") + tpl
-        writes.append((sf, new, bool(old)))
-        results.append({"path": sf, "action": "update" if old else "create", "reason": "added profile %s (extends workspace; denies secrets; syntax docs-only)" % a.profile})
-
-    # (3) grok config: [cli] auto_update = false
-    cf = os.path.join(grok_home, "config.toml")
-    old = read_text(cf) if os.path.exists(cf) else ""
-    cur = toml_get(cf, "cli", "auto_update") if old else None
-    if cur is not None:
-        results.append({"path": cf, "action": "same", "reason": ""})
-        if str(cur).strip().lower() != "false":
-            notes.append("%s sets [cli] auto_update = %s: set it to false (the conductor pins grok %s)" % (cf, cur, a.grok_pin))
-    else:
-        lines = old.split("\n") if old else []
-        idx = next((i for i, ln in enumerate(lines) if re.match(r"^\s*\[\s*cli\s*\]\s*(#.*)?$", ln)), None)
-        if idx is not None:
-            lines.insert(idx + 1, "auto_update = false")
-            new = "\n".join(lines)
+    prof = (a.profile or "auto").strip()
+    tpl = read_text(a.template)
+    if prof not in ("", "auto", "cx-workspace"):
+        notes.append("option grok_sandbox_profile names your own profile %s: it is used as it is (it must let grok read the "
+                     "repository's git directory and %s); nothing written for it" % (prof, a.routes_root or "~/.conductor/routes"))
+    if a.gcd and prof in ("", "auto", "cx-workspace"):
+        gcd = os.path.realpath(a.gcd)
+        act, new, n2 = grok_profile_plan(sf, tpl, grok_profile_name(gcd), gcd, a.routes_root)
+        notes.extend(n2)
+        if act in ("create", "update"):
+            writes.append((sf, new, os.path.exists(_ug_target(sf))))
+            results.append({"path": sf, "action": act, "reason": "profile %s (extends strict; read_only %s and %s)" % (grok_profile_name(gcd), gcd, a.routes_root)})
+        elif act == "conflict":
+            results.append({"path": sf, "action": "conflict", "reason": n2[-1] if n2 else "would not parse"})
         else:
-            new = old + ("" if not old or old.endswith("\n") else "\n") + ("\n" if old.strip() else "") + "[cli]\nauto_update = false\n"
-        writes.append((cf, new, bool(old)))
-        results.append({"path": cf, "action": "update" if old else "create", "reason": "added [cli] auto_update = false"})
+            results.append({"path": sf, "action": "same", "reason": ""})
+    else:
+        if os.path.exists(sf) and GROK_OLD_BLOCK in read_text(_ug_target(sf)):
+            old = read_text(_ug_target(sf))
+            new = old.replace("\n\n" + GROK_OLD_BLOCK, "\n").replace("\n" + GROK_OLD_BLOCK, "\n").replace(GROK_OLD_BLOCK, "")
+            writes.append((sf, new, True))
+            results.append({"path": sf, "action": "update", "reason": "removed the 0.2.0 cx-workspace profile (invalid deny globs)"})
+        if not a.gcd:
+            notes.append("not inside a git repository: no grok profile written (run it inside the repository, or let its first grok run write it)")
 
     conflict = any(r["action"] == "conflict" for r in results)
     written, unchanged, conflicts = [], [], []
@@ -2259,10 +2528,7 @@ def cmd_user_grants(a):
         (conflicts if r["action"] == "conflict" else unchanged if r["action"] == "same" else written).append(r["path"])
     if not a.dry_run and not conflict:
         for path, data, existed in writes:
-            tgt = _ug_target(path)
-            if existed:
-                shutil.copy2(tgt, path + ".cx-bak")
-            atomic_write(tgt, data)
+            _write_user_file(path, data, existed)
     if a.json:
         out(json.dumps({"user_grants": True, "dry_run": bool(a.dry_run), "files": results, "notes": notes},
                        ensure_ascii=False, indent=1) + "\n")
@@ -2279,12 +2545,13 @@ def cmd_user_grants(a):
         out("".join(buf))
         sys.stdout.flush()
         for n in notes:
-            err("cx-init: %s\n" % sanitize(n, 400))
+            err("cx-init: %s\n" % sanitize(n, 600))
     sys.stdout.flush()
     err("CX_INIT %s\n" % dumps_line({"repo": a.repo or "", "dry_run": bool(a.dry_run),
                                      "written": [] if (a.dry_run or conflict) else written,
                                      "unchanged": unchanged, "conflicts": conflicts, "excluded": False,
-                                     "detected": {"user_grants": True, "commands": cmds, "worktree_root": root}}))
+                                     "detected": {"user_grants": True, "commands": cmds, "worktree_root": root,
+                                                  "grok_profile": grok_profile_name(os.path.realpath(a.gcd)) if a.gcd else None}}))
     return 5 if conflict else 0
 
 
@@ -2327,6 +2594,14 @@ def main(argv):
     s.add_argument("file")
     s.add_argument("name")
     s.set_defaults(fn=cmd_toml_table)
+    s = sub.add_parser("landlock")
+    s.set_defaults(fn=cmd_landlock)
+    s = sub.add_parser("grok-sandbox-event")
+    s.add_argument("--file", required=True)
+    s.add_argument("--from", dest="start", type=int, default=0)
+    s.add_argument("--to", dest="end", type=int, default=0)
+    s.add_argument("--workspace", required=True)
+    s.set_defaults(fn=cmd_grok_sandbox_event)
     s = sub.add_parser("const")
     s.add_argument("name")
     s.set_defaults(fn=cmd_const)
@@ -2447,12 +2722,25 @@ def main(argv):
     s.add_argument("--root", required=True)
     s.add_argument("--profile", required=True)
     s.add_argument("--template", required=True)
-    s.add_argument("--grok-pin", default="")
+    s.add_argument("--gcd", default="", help="the repository's git common directory (its grok profile)")
+    s.add_argument("--routes-root", default="", help="$CX_HOME/routes (read_only in the grok profile: each run's cx-route)")
     s.add_argument("--repo", default="")
     s.add_argument("--cmd", action="append")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_user_grants)
+    s = sub.add_parser("grok-profile")
+    s.add_argument("--gcd", required=True)
+    s.add_argument("--name-only", action="store_true")
+    s.add_argument("--sandbox", default="")
+    s.add_argument("--template", default="")
+    s.add_argument("--routes-root", default="")
+    s.add_argument("--lock", default="")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_grok_profile)
+    s = sub.add_parser("agy-grants")
+    s.add_argument("file")
+    s.set_defaults(fn=cmd_agy_grants)
     s = sub.add_parser("pools-mtd")
     s.add_argument("--file", required=True)
     s.add_argument("--set")

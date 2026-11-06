@@ -1,0 +1,1 @@
+I'll read `.conductor/task.md` and follow it exactly.The task is to add a docstring to every function in `src/calc.py`. I'll read that file before changing it.

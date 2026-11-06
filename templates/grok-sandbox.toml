@@ -1,9 +1,14 @@
-# conductor: the grok sandbox profile every conductor grok writer runs under (option
-# grok_sandbox_profile; docs/DESIGN.md section 15.7). Added to ~/.grok/sandbox.toml by
-# cx-init --user-grants when the profile is absent. It extends grok's built-in workspace
-# profile (writes inside the working directory) and denies secrets. The key names are
-# docs-only (DESIGN section 20): check the effective profile with `grok inspect --json` in a
-# conductor worktree.
+# conductor: the grok sandbox profile of the repository {{repo}}: every conductor grok
+# writer there runs under it (docs/DESIGN.md section 15.7). cx-run's grok lane and cx-init
+# --user-grants write it; the lines between cx:begin and cx:end are rewritten when they
+# differ, and any other [profiles.{{name}}] in this file is replaced (the name is
+# conductor's own), so put your own profiles outside them, under other names. It extends
+# grok's strict profile (reads the working directory and system paths; writes it,
+# ~/.grok/sessions, /tmp and /var/tmp, with ~/.grok itself read-only, as grok 1.0.70 applies
+# it; no child network) with read-only access to the repository's git directory (git status
+# in a worktree) and to the conductor's routes directory (each run's cx-route; never the out
+# directories, which hold other runs' tasks, diffs and digests). grok's own ~/.grok/sessions,
+# which every grok run can read and write, still holds every grok session's transcript.
 [profiles.{{name}}]
-extends = "workspace"
-deny = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*"]
+extends = "strict"
+read_only = {{read_only}}

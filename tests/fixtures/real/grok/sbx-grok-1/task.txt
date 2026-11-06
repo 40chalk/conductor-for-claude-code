@@ -1,0 +1,1 @@
+add a docstring to every function in src/calc.py

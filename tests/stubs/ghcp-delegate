@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/stubs/ghcp-delegate: stands in for ghcp's wrapper (reached through a fake ghcp install
 # dir that execs it). --help -> fixtures/real/ghcp/ghcp-delegate-help.txt; --print-command ->
-# one copilot argv line (free). A run needs STUB_GHCP_RUN, else it is billable (exit 99):
+# one copilot argv line (free; each --allow-shell P as --allow-tool 'shell(P)', as ghcp 0.1.0 does). A run needs STUB_GHCP_RUN, else it is billable (exit 99):
 #   ok-pong denied-write autodenied-shell fusion-max-pong fusion-fallback quota auth
 #            replay fixtures/real/ghcp/<name>.{out,err,rc}: the real ghcp 0.1.0 wrapper's output
 #            over ghcp's real Copilot 1.0.105 recordings (quota: ghcp's synthetic stub text)
@@ -20,13 +20,15 @@ stub_log ghcp-delegate "copilot_bin=${GHCP_COPILOT_BIN:-}" "run=${STUB_GHCP_RUN:
 case "${1-}" in -h|--help) cat "$STUB_FIX/real/ghcp/ghcp-delegate-help.txt"; exit 0 ;; esac
 case "${GHCP_COPILOT_BIN:-}" in /*) ;; *) printf 'ghcp-delegate stub: GHCP_COPILOT_BIN is not absolute\n' >&2; exit 98 ;; esac
 model="" effort="" fusion="" dir="" write="" print="" prompt=""
+shells=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --model|-m) model="$2"; shift 2 ;;
     --effort) effort="$2"; shift 2 ;;
     --fusion) fusion="$2"; shift 2 ;;
     --dir|-d) [ -n "$dir" ] || dir="$2"; shift 2 ;;
-    --add-dir|--allow-shell|--timeout|--allow-url|--name|--resume|--share|--tier|-t|--auto-tier) shift 2 ;;
+    --allow-shell) shells+=("$2"); shift 2 ;;
+    --add-dir|--timeout|--allow-url|--name|--resume|--share|--tier|-t|--auto-tier) shift 2 ;;
     --write) write=1; shift ;;
     --print-command) print=1; shift ;;
     --digest|--web|--github|--yolo|--all-paths|--sandbox|-c|--continue) shift ;;
@@ -36,7 +38,8 @@ while [ $# -gt 0 ]; do
 done
 if [ -n "$print" ]; then
   if [ -n "$fusion" ]; then m=(--model fusion --auto-tier "hydrafusion${fusion/standard/}"); m[3]="${m[3]/hydrafusionmax/hydrafusion-max}"; else m=(--model "$model" --reasoning-effort "$effort"); fi
-  w=(--deny-tool write --deny-tool shell); [ -n "$write" ] && w=(--allow-tool write)
+  w=(--deny-tool write); [ -n "$write" ] && w=(--allow-tool write)
+  if [ "${#shells[@]}" -gt 0 ]; then for p in "${shells[@]}"; do w+=(--allow-tool "shell($p)"); done; else w+=(--deny-tool shell); fi
   printf '%q ' "$GHCP_COPILOT_BIN" -p "$prompt" --output-format json --no-ask-user --no-auto-update --no-color -C "${dir:-$PWD}" "${m[@]}" "${w[@]}" --disable-builtin-mcps; printf '\n'
   exit 0
 fi

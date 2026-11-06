@@ -177,7 +177,8 @@ environment variable, forwarded from Git Bash; `CX_KILL_GRACE_SECS` (10) and
 
 0 ok · 1 usage (no `CX_SIGNAL`) · 2 FAILED · 3 EMPTY_OUTPUT · 4 CHECKS_FAILED · 5 EXISTS ·
 10–16 as ghcp · 20 GATE_FAILED (`cx-run --finish` of the cloud lane) · 21 MODEL_MISMATCH · 22
-WRONG_TREE (agy paused) · 23 SPEC_TAMPERED · 24 BRANCH_TAMPERED (the skill's Step 3) · 25
+WRONG_TREE (agy paused) · 23 SPEC_TAMPERED · 24 TAMPERED (cx-run: the worktree's `.git`
+rewritten; the skill's Step 3: BRANCH_TAMPERED) · 25
 ENV_FAILED · 26 VERSION_MISMATCH · 27 PARTIAL · 28 NO_CAPACITY (slots, cap 0, agy paused) · 40
 FORWARD_FAILED · 41 RUNTIME_MISSING · 42 PATH_UNMAPPABLE · 43 HOST_UNSUPPORTED · 44 CRLF_CORRUPT ·
 75 RUNNING (`cx-job`) · 126 worker shim · 130 CANCELLED. `cx-run` owns the single signal of a
@@ -223,6 +224,13 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   `CLAUDE_CODE_ENTRYPOINT`, never read `CLAUDE_CODE_VERSION` or `CLAUDE_PROJECT_DIR` in scripts
   (`[P62]`; D30's wording lines are allow-listed).
 - Nothing conductor-specific is ever written into a repo's `CLAUDE.md` or `.claude/`.
+- The scripts' git in a worktree an executor wrote runs only through `worktree.sh`'s
+  `cx_wt_git` (the git directory from the main repository's admin files, never the worktree's
+  own `.git`; `CX_WT_GITC`: no fsmonitor, hooks, pager, textconv or submodules), never
+  `git -C "$WT"`; a rewritten link is 24 `tampered` (the skill's Step 3 runs only after an ok
+  run, so after that check). Executors get only `cx-route <name>` and
+  `git status` (agy also `ls`), never `git diff`/`log`/`show` (`--output=` writes any file);
+  the run's `cx-route` lives in `$CX_HOME/routes/<id>/` (grok's profile reads only that root).
 - Executors run only inside `cx-run` (the adapters) and, for the hand steps and Windows tool
   calls, `cx-wsl`; both take the pool slot. Never put a secret on a command line (argv is
   world-readable in `/proc`): the Copilot token travels in the environment only. An adapter's
@@ -237,7 +245,7 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
 - **Adapter or lane**: `scripts/adapters/<lane>.sh` and its header, `adapter.sh`'s options,
   `normalize.py` (`PARSERS`, the lane's facts), the stub's scenarios (`STUB_*_RUN` in
   `tests/stubs/*`), the A1 help fixture (`tests/fixtures/real/*/help.txt`; agy's is
-  `tests/fixtures/agy-help.synthetic.txt` until `agy --help` is captured), `cx-run`'s
+  the captured `tests/fixtures/real/agy/help.txt`), `cx-run`'s
   `lane_args`/`lane_adapter`, DESIGN §15.2, the skill's lane rows.
 - **Option**: `plugin.json`, `CX_OPT_DEFAULTS` and `CX_OPT_NAMES`, `cx_opt_check` and
   `cxlib.check_option`, DESIGN §5.1, README table, `OPT_EXPECT` in the tests.
@@ -302,7 +310,7 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   forwarded target's environment, cwd and argv.
 - `tests/fixtures/` is marked `-text` (intentional CRLF and UTF-16LE bytes); its README labels
   each file verified or synthetic (`real/` holds the captured help texts and ghcp's real Copilot
-  recordings; agy's help is synthetic). Some checks are timing-based (agy hang with
+  recordings, and agy 1.4.12's help). Some checks are timing-based (agy hang with
   `CX_PROBE_TIMEOUT=2`, INT cancellation within 6 s, cx-job kill's KILL after 10 s, the adapter's
   KILL grace, the slot waits) and could flake on a loaded machine.
 
@@ -319,6 +327,6 @@ exit code; the `Task(...)`/`Agent(...)` deny-rule syntax and how env-prefixed al
 children's `CLAUDE_CODE_SESSION_ATTENDED`, and what a compacting subagent's SessionStart payload
 holds (DESIGN §20 items 40–61); that Copilot signs in with `COPILOT_GITHUB_TOKEN`, that
 `gh repo view` resolves SSH host aliases, and `ghcp-cloud`'s host-qualified `-R` (items 62–65);
-agy's raw flags (`--add-dir`, `--print-timeout`, `--output-format stream-json`,
-`--disable-slash-commands`, `--new-project`: docs-only, `agy --help` is not captured), its
-stream-json events, grok's JSON result fields and claude -p's result shape (§20).
+agy's stream-json events, whether `--effort xhigh|max` applies to the Opus slugs and whether
+its `-p /model|/usage|/config` slash forms cost quota (items 67, 68; its flags themselves are
+verified against the captured 1.4.12 help), and claude -p's result shape (§20).

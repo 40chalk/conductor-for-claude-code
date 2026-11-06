@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# tests/stubs/agy: --version -> ${STUB_AGY_VERSION:-1.4.12}; models [--output-format json] ->
+# tests/stubs/agy: --version -> ${STUB_AGY_VERSION:-1.4.12}; --help -> ${STUB_AGY_HELP:-the real
+# agy 1.4.12 help, fixtures/real/agy/help.txt} (free); models [--output-format json] ->
 # fixtures (empty when STUB_AGY_AUTH=0; a {"status": "ERROR", ...} envelope or a "not signed in"
 # line, rc 0, when STUB_AGY_AUTH=envelope; sleeps 60 s when STUB_AGY_HANG=1); -p /usage|/model|/config
 # -> fixture JSON; the registration --new-project --output-format json -p /model -> a JSON line
@@ -17,6 +18,9 @@
 #   quota|auth a quota / sign-in error on stderr, rc 1
 #   noinit     no output, sleeps 300 s (the adapter's init timeout)
 #   sleep      ok after ${STUB_AGY_SLEEP:-30} seconds
+#   replay     the REAL run in ${STUB_AGY_REPLAY:-fixtures/real/agy/sbx-agy-1}: its agy.out
+#              (verified agy 1.4.12 stream-json: one run_command denied) and agy.err, rc 0
+# STUB_AGY_SETTINGS_COPY: a run copies the file its --settings names there.
 # STUB_EVENTS: "start agy-launch" at the registration, "end agy-launch" right after a run's init
 # event (both inside the adapter's launch lock), "start/end agy-run" around an ok or sleep run;
 # STUB_GATE: such a run waits after its init event until that file exists.
@@ -28,6 +32,10 @@ case "${1-}" in
   --version)
     [ $# -eq 1 ] || stub_billable agy "$@"
     printf '%s\n' "${STUB_AGY_VERSION:-1.4.12}"
+    exit 0 ;;
+  -h|--help)
+    [ $# -eq 1 ] || stub_billable agy "$@"
+    cat "${STUB_AGY_HELP:-$STUB_FIX/real/agy/help.txt}"
     exit 0 ;;
   models)
     [ "${STUB_AGY_HANG:-}" = 1 ] && exec sleep 60
@@ -54,12 +62,13 @@ case "${1-}" in
       exit "${STUB_AGY_REGISTER_RC:-0}"
     fi ;;
 esac
-model="" prompt="" fmt=""
+model="" prompt="" fmt="" settings=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --model) model="$2"; shift 2 ;;
     -p) prompt="$2"; shift 2 ;;
     --output-format) fmt="$2"; shift 2 ;;
+    --settings) settings="$2"; shift 2 ;;
     --add-dir|--print-timeout|--mode|--conversation) shift 2 ;;
     *) shift ;;
   esac
@@ -67,6 +76,7 @@ done
 run="${STUB_AGY_RUN:-}"
 if [ -z "$run" ] || [ -z "$prompt" ] || [ "$fmt" != stream-json ]; then stub_billable agy "$@"; fi
 served="${STUB_AGY_SERVED:-$model}"
+[ -z "${STUB_AGY_SETTINGS_COPY:-}" ] || [ -z "$settings" ] || cp -f -- "$settings" "$STUB_AGY_SETTINGS_COPY" 2>/dev/null
 ev_init() { printf '{"type": "init", "session_id": "00000000-0000-4000-8000-0000000000a1", "model": "%s", "cwd": "%s"}\n' "$1" "$PWD"; }
 ev_msg() { printf '{"type": "message", "role": "assistant", "content": "Working on the task."}\n'; }
 ev_result() {  # RESPONSE [DENIED_JSON]
@@ -97,5 +107,9 @@ case "$run" in
   quota) printf 'Error: RESOURCE_EXHAUSTED: quota exceeded for this model\n' >&2; exit 1 ;;
   auth) printf 'Error: unauthenticated: please sign in (run agy)\n' >&2; exit 1 ;;
   noinit) trap '' TERM; sleep 300; exit 0 ;;
+  replay)
+    r="${STUB_AGY_REPLAY:-$STUB_FIX/real/agy/sbx-agy-1}"
+    cat "$r/agy.out"; cat "$r/agy.err" >&2
+    exit 0 ;;
 esac
 stub_billable agy "$@"

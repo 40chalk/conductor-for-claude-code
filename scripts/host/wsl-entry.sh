@@ -7,7 +7,7 @@
 # with CX_FWD_WIN (the Windows path of the transport directory) passed through WSLENV. It has no
 # argv contract. It maps the transport directory, writes "started", checks the meta version,
 # builds the target's environment from scratch (env -i plus a fixed list: the login and
-# keyring variables, PATH from the host record, the auto-update pins, the allow-listed
+# keyring variables, PATH from the host record, the auto-update switches, the allow-listed
 # variables from the transport, CX_FORWARDED=1 CX_CALLER=gitbash CX_CALLER_CWD_WIN
 # CX_WIN_SETTINGS), maps the caller's cwd, emits CX_FORWARD (not for cx-wsl) and runs
 # scripts/<cmd>.sh from this runtime copy, writing its process group to "pgid" so the Git Bash

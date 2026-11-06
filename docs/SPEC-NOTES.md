@@ -126,7 +126,7 @@ into DESIGN.md and delete them here.
     PATH it builds comes from it. A sibling wrapper that moved is re-resolved once from
     `installed_plugins.json` for the call, but the record is not rewritten (`cx-doctor` does
     that). For `ghcp-*`, `GHCP_COPILOT_BIN` is set to the record's `bin.copilot` when unset: it
-    is the binary the doctor checked against the pin, and an unset or invalid value makes ghcp
+    is the binary the doctor checked, and an unset or invalid value makes ghcp
     fall back to whatever `copilot` is on PATH. The lookup is `cxlib.py wsl-resolve` (no Python
     in bash).
 30. **No `CX_FORWARD` for cx-wsl.** §7.4 step 7 emits `CX_FORWARD` for every forwarded command,
@@ -514,3 +514,117 @@ spec left open.
    suite sets 2. Not an option and not forwarded (a forwarded run uses the default).
 6. **agy-delegate prompts starting with `-`** go on stdin (its documented `-` form) instead of
    after `--`, which agy-delegate's help does not document.
+
+## 0.2.1 (2026-11-06): choices the live-probe decisions left open
+
+1. **`cx-route` is generated, self-contained bash** (`$CX_HOME/routes/<id>/cx-route`, written by
+   `normalize.py route-snapshot` with the commands inlined), not a shipped script reading a
+   snapshot: grok's `strict` profile reads only the worktree, system paths and its `read_only`
+   grants, so the command must need no runtime file and no python. Its own refusals exit 127
+   (a name not in the snapshot, any argument after the name); every other status is the
+   check's. Names: the `.cx/routes.json` key holding the command, else `cmd-N`. Its shebang is
+   `#!/bin/bash -p` (else cx-run's own bash), and it hands the check the caller's exported
+   variables through `env -i` minus the shell startup ones and `BASH_FUNC_*`: whoever calls it
+   controls its environment, but a full `env -i` would break checks that need toolchain
+   variables.
+2. **The grok profile grants `$CX_HOME/routes` read-only** besides the git common directory: a
+   per-repository profile cannot name a per-run directory, so each run's `cx-route` lives in its
+   own `$CX_HOME/routes/<id>/` (only the script: the checks' commands and paths), never in the
+   out directory. Other runs' digests, task files and diffs in `$CX_HOME/out`, `$CX_HOME/secrets`
+   and the ledger stay unreadable to grok writers (until the 2026-11-06 review the profile
+   granted all of `$CX_HOME/out`). grok's own session store is not: every grok run reads and
+   writes `~/.grok/sessions`, which holds other grok runs' transcripts (item 15).
+   `$OUT/routes.json` stays in the out directory: only the conductor reads it.
+3. **`$CX_HOME/routes/<id>` comes right after the worker shims on PATH**, so the shims still win
+   over any CLI name and nothing on the record path can shadow `cx-route`.
+4. **The flag contract is cached with the probe** (10 minutes) and keyed by the argv's flags
+   and the binaries' resolved path, mtime and size, so a CLI that updated itself is checked
+   again on the next run, while a help text change without a new binary waits for the cache.
+5. **Option `grok_sandbox_profile` defaults to `auto`**; the 0.2.0 default `cx-workspace` (which
+   Claude Code may have saved into settings) counts as `auto`, so no saved value keeps the
+   invalid profile in use.
+6. **agy wrapper mode keeps no grants** (agy-delegate has no `--settings`): a write in wrapper
+   mode is denied unless the user's own agy settings allow it; the adapter says so. Raw mode,
+   the default, carries the per-run grants; the Gemini review lane only reads.
+7. **The review prompt is lane-aware**: agy (agy-delegate, no grants) is told to read with its
+   own file tools and run no shell command; the other executors may run `cx-route <name>`.
+
+### The 2026-11-06 security review (choices it left open)
+
+8. **`git diff`, `git log` and `git show` are out of every grant** (agy, Copilot, the headless
+   Claude worker), against decisions 3 and 5 of the probes: their `--output=<path>` writes any
+   file and `git diff --no-index` reads any file, and neither agy's token-prefix rules nor
+   Copilot's first-level-subcommand approvals can forbid an option. `git status` (and agy's
+   `ls`) stay; executors read their own changes with their file tools. Whether Copilot's path
+   verification would have caught `--output=/abs` is not tested (moot now).
+9. **A rewritten worktree `.git` is `tampered` (24)**, the §4.1 row for "a protected path
+   changed": the closest existing status, and no new exit code. The conductor-side git keeps
+   the user's global and system git configuration (only the worktree's own link is untrusted:
+   grok cannot write `~/.gitconfig`, and the lanes without an OS sandbox can already run any
+   code through the repository's checks), overriding only the keys that run programs
+   (`core.fsmonitor`, `core.hooksPath`, `core.pager`, `core.sshCommand`) and never entering
+   submodules or embedded repositories (`-c diff.ignoreSubmodules=all`, which git passes on to
+   every git it starts, and `--ignore-submodules=all` for status and diff).
+10. **The grok profile name is conductor's own**: any `[profiles.<name>]` table outside the
+    markers is replaced (a writer may have stripped them); with tomllib (Python 3.11 and
+    newer) the parsed profile must then equal the rendered one, else the run is refused
+    (dotted keys or an inline table defining it again). Without tomllib only the tables are
+    swept. A worktree `.grok/sandbox.toml` refuses a grok write run outright, since which
+    definition grok prefers is unverified (DESIGN §20 item 73).
+11. **grok's sandbox is checked with grok itself**: the preflight runs `grok --sandbox strict
+    models` (free) and refuses the lane (2 `FAILED`, not a new code) on a line saying the
+    sandbox was not applied; a run's stderr with that line is 2 as well, with a reason saying
+    it ran unconfined when grok went on. The doctor also reports the Landlock ABI
+    (`cxlib.py landlock`; a warning when the kernel has none), but grok's own answer decides
+    the lane.
+
+### The 2026-11-06 live runs (build container, conductor 0.2.1)
+
+12. **grok's sandbox log is read, but can only add a refusal.** grok 1.0.70 appends one JSON
+    line per sandboxed start to `${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl`
+    (`timestamp`, `event_type` `ProfileApplied`, `profile`, `workspace`, `platform`, `enforced`,
+    `restrict_network`, `read_write_paths`, plus `read_only_paths` for `strict` and the profiles
+    extending it; the built-in `read-only` logs none; the real lines are
+    `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`): the preflight and D17 take the
+    file's size before and after their `grok --sandbox strict models` and read only those bytes
+    (at most 1 MiB, split on `"\n"`, never when the log file itself is a symlink and never from
+    a FIFO; a symlinked `~/.grok` or `~/.grok/sessions` above it is followed), matching the
+    workspace against the probe's cwd (as given or resolved); an event with `enforced` false
+    wins over an enforced one for the same workspace. The sizes come from GNU `stat -c %s`, and
+    D17 reads the log only when python3 runs: on a host without them (macOS, untested) the log
+    is not read and nothing changes. `enforced` false refuses like a line saying the sandbox was
+    not applied (2 `FAILED`, the same reason text with the event first); `enforced` true records
+    the platform; no log, no event, or a non-boolean `enforced` changes nothing. Every grok run
+    can write `~/.grok/sessions` (a read or review run all of `~/.grok`), so the log is not
+    trusted to lift a refusal: a forged `enforced` true changes nothing, a forged false only
+    refuses. The run itself is not checked against the log (only the probe), and the shape of an
+    unenforced event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is
+    synthetic, DESIGN §20 item 72).
+13. **With `--json-schema`, grok's `structuredOutput` is the answer** (as `json.dumps`, not
+    ASCII-escaped), even when `text` is a string: `text` joins every turn's message with no
+    separator. Without `--json-schema`, `text` stays the digest as it is (turn boundaries
+    cannot be recovered from it); `output` and `data` are still read only when there is no
+    `text`. When grok gives no `structuredOutput` under `--json-schema` (unseen), `text` stays
+    the answer and a note says it is not the structured one (it may not be valid JSON): the run
+    is not failed for it. Nothing downstream parses a read or
+    review answer: it goes to `answer.txt` and cx-run's stdout.
+14. **`cx-job` explains a task id but never resolves it**: `wait`, `result`, `status` and `kill`
+    given a task id (`--id`) of exactly one job still exit 1, with a note naming its JOB_ID. A
+    prefix of one JOB_ID that is also the task id of another job (cx-run accepts ids of digits
+    alone, such as `20261106`) is refused as ambiguous (exit 1), so a task id never makes cx-job
+    wait on, or kill, a job; only a full JOB_ID always names its own job. A task id that came
+    from a task file or was generated is not in the job's stored arguments, so it gets the plain
+    "no job" note and never counts against a prefix.
+15. **What a grok run can write in `~/.grok`** (measured with the sandbox log, 2026-11-06):
+    `strict` and the profiles extending it (conductor's grok writers) write the workspace,
+    `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` itself read-only, although grok's
+    README says strict writes `~/.grok`; the built-in `read-only` (read and review runs, the
+    skill's Step 3 commit-message call) writes all of `~/.grok`, `/tmp` and `/var/tmp`. So the
+    tamper-safe rewrite of the repository's profile is the guard against a read or review run,
+    fed executor-written code, rewriting `sandbox.toml` for the next writer: the lane writes the
+    profile before the slot and again once it holds the slot (a run may wait up to
+    `CX_SLOT_WAIT_SECS` while such a run goes on), leaving only the moment before grok reads it at
+    startup. Nothing checks the rest of `~/.grok` (`config.toml`), and `~/.grok/sessions` holds
+    every grok session's transcript (prompt, files read, tool output, answer) for every
+    repository, readable and writable by every grok run: DESIGN §20 items 75 and 76 record both
+    as known limits.

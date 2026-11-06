@@ -1,0 +1,10 @@
+{
+ "permissions": {
+  "allow": [
+   "write_file(/root/.cx-wt/textutil-live-agy-1)",
+   "command(cx-route)",
+   "command(git status)",
+   "command(ls)"
+  ]
+ }
+}

@@ -14,8 +14,8 @@ the sandbox). Give the call a 10-minute timeout: the probes are bounded, but sev
 together can exceed the default 2 minutes.
 
 Every probe is free: `--version`, model listings, `claude auth status`, `gh auth status`,
-`gh pr edit --help`, and ghcp's invalid-model catalog probe (only on the pinned Copilot 1.0.105,
-from the empty directory `~/.conductor/probe`). No model is called and no credit or quota is
+`gh pr edit --help`, and ghcp's invalid-model catalog probe (through ghcp-models on any Copilot
+version; the raw form only on Copilot 1.0.105, from the empty directory `~/.conductor/probe`). No model is called and no credit or quota is
 spent. `agy -p /usage` runs only with `--pools --agy-usage`. From Git Bash (the Windows app)
 the doctor runs its Windows checks (W1–W7, W10, W11) and then forwards itself into WSL; `--windows`
 runs the Windows checks only, and `--login-help [cli]` prints the fresh-login commands
@@ -33,8 +33,11 @@ a few lines per section:
 - Each `✗`, then each `!`: what it means and its `fix:` command, copied verbatim (in a report
   forwarded from the Windows app, every fix outside the Windows section runs in a WSL terminal,
   never in Git Bash: say so). Typical
-  ones: a CLI off its version pin (Copilot 1.0.105 and grok 1.0.70 exactly; Claude Code
-  2.1.316 or newer; agy 1.1.12 or newer) and the auto-update exports in `~/.profile`; a CLI
+  ones: a CLI below its minimum (Claude Code 2.1.316, agy 1.1.12; nothing else is pinned, and
+  the versions last verified are info lines: each run checks the live `--help` for its flags);
+  missing bubblewrap for grok's sandbox, or grok unable to apply its sandbox at all, or its
+  sandbox log saying the profile was not enforced (D17 ✗: every grok run is refused; Landlock
+  needs Linux 5.13 or newer, `wsl --update` for WSL); a CLI
   not logged in (point to `cx-doctor --login-help <cli>`; logins are interactive, so the user
   runs them in a WSL terminal); the ghcp and antigravity policies and nudges still on next to
   the conductor's policy, and antigravity's `timeout` below 30m; the grok-build plugin's
