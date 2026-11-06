@@ -1,0 +1,16 @@
+{
+ "version": 1,
+ "id": "ca-agy-1",
+ "dir": "/home/user/.cx-wt/textutil-ca-agy-1",
+ "source": "/mnt/c/ai-scratch/cx-live/textutil/.cx/routes.json",
+ "created_at": "2026-11-06T15:24:14Z",
+ "routes": [
+  {
+   "name": "test",
+   "command": "python3 -m unittest discover -s tests"
+  }
+ ],
+ "also": [
+  "git status"
+ ]
+}

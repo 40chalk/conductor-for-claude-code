@@ -3,7 +3,8 @@
 ## 0.2.2 — 2026-11-06
 
 A security fix: no conductor grok run uses grok's built-in `read-only` sandbox any more. And on
-WSL grok can resolve host names again under conductor's strict-based profiles.
+WSL grok can resolve host names again under conductor's strict-based profiles, and on Git Bash
+`cx-doctor --windows` no longer reports every plugin file as CRLF-corrupted.
 
 - **Security: grok read, review and commit-message runs could plant code that runs unsandboxed
   later.** 0.2.1 ran every grok read and review (`--sandbox read-only --always-approve`) and the
@@ -142,9 +143,24 @@ WSL grok can resolve host names again under conductor's strict-based profiles.
 - **D24 and D25 no longer name a Claude Code version** in their notes ("the Task(...) rule
   syntax is unverified", "how Claude Code matches env -u prefixes and multi-line steps is
   unverified"); D13's measured-with note stays.
+- **Git Bash: W6 reported every shipped file as CRLF-corrupted** (a false positive, measured live
+  2026-11-06 with 0.2.1 on a Windows 11 machine whose Git Bash is bash 5.3.15
+  (x86_64-pc-cygwin) with grep 3.0). There an ANSI-C `$'\r'` written inside a command or process
+  substitution expanded to empty, so W6's `grep -l $'\r' FILES` inside `< <( )` matched every
+  file; and that grep sees a CR byte only with `-U`. W6, D3, `install-runtime.sh` (its CR strip
+  and refusal) and `cx-wsl bash -s` (its CRLF note) now use `grep -U -e "$CX_CR"`, with `CX_CR`
+  assigned in `common.sh`, outside any substitution, and no shipped shell file writes an ANSI-C
+  string inside `$( )`, `<( )`, `>( )` or backticks (DESIGN §3.1; only `$'\r'` was measured
+  broken, the rule covers them all). Git Bash's `sed` was not measured with CRs (the bootstrap's
+  strip is followed by `install-runtime.sh`'s own in WSL).
 - **Fixtures**: `tests/fixtures/real/grok/write-probe.sh` and its verbatim results
   `write-probe-read-only-1.0.70.txt` and `write-probe-strict-1.0.70.txt` (live, 2026-11-06,
-  $0.032164 and $0.021666).
+  $0.032164 and $0.021666). The live runs of 0.2.1 on that Windows 11 machine (Git Bash
+  forwarding to WSL Ubuntu, 2026-11-06), `tests/fixtures/real/*/sbx-*-ca-*`: copilot write 0
+  (15 s, 16.7113 AI credits), copilot read 0 (12 s, 3.9574 AI credits), agy write 0 (47 s), the
+  grok write that failed after 1657 s because grok resolved no host name, and the
+  grok write stopped at its 180 s timeout (12); 0.2.1's out-directory layout, the Linux user
+  name in their home paths replaced by `user`.
 - **Tests**: read and review argv name the repository's profile and never `read-only`; a read
   run writes the profile and runs under it after the per-run check; a `.grok/sandbox.toml` in a
   read's or review's checkout refuses (2, no prompt run), also through `cx-run --mode review`
@@ -171,7 +187,15 @@ WSL grok can resolve host names again under conductor's strict-based profiles.
   `~/.conductor` refusals, a dangling link) and its login retry; grok's connect, DNS and
   timeout reasons, and an earlier run's log line not counted. The grok stub takes
   `STUB_GROK_RUN=connect|dns|dnstimeout`, `STUB_GROK_MODELS_ONCE` and `STUB_GROK_EVENT_RO`, and its
-  sandbox-log lines list the profile's `read_only`.
+  sandbox-log lines list the profile's `read_only`. For the Git Bash CR checks: a static check
+  that no shipped shell file writes an ANSI-C string inside a substitution and that every grep
+  for a CR has `-U` (a lexical scanner with a self-test; a file it cannot follow fails the
+  check); the simulated Git Bash's grep (P42's mini bin) sees no CR without `-U`, as measured;
+  W6 lists exactly the CRLF files of a copy and is ok on the LF plugin, D3 lists exactly the one
+  CRLF file. The ChalkAgent runs through the parsers: copilot and agy 0 with their sessions,
+  usage and credits, grok 2 with the connection reason, a copy with the day's measured log text
+  (through `grok-netlog`) 2 with the DNS reason, grok 12; caller `gitbash` and host `wsl` in
+  each; every home path in them `/home/user`.
 
 ## 0.2.1 — 2026-11-06
 

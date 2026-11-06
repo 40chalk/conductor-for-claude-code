@@ -760,3 +760,21 @@ spec left open.
     Task(...) rule syntax is unverified", "how Claude Code matches env -u prefixes and multi-line
     steps is unverified" (the D13 "measured with claude plugin install --help on 2.1.316" note
     stays: it records a measurement).
+30. **CR checks on Git Bash** (DESIGN §3.1; measured with bash 5.3.15, x86_64-pc-cygwin, and grep
+    3.0, 2026-11-06): one constant, `common.sh`'s `CX_CR`, assigned outside any substitution, and
+    `grep -U -e "$CX_CR"` at every CR check (W6, D3, `install-runtime.sh`, `cx-wsl bash -s`), not
+    a per-site local: one comment says what was measured. The rule bans every ANSI-C string inside
+    a substitution, not only `$'\r'` (the one measured broken): the audit found no other ANSI-C
+    string inside a substitution in a shipped file, and the scanner need not tell escapes apart. It is enforced by a lexical scanner in the
+    suite, not by shellcheck (which has no such rule); the scanner reports a file it cannot follow
+    to its end instead of passing it. The simulated Git Bash's grep drops a CR pattern without
+    `-U` (no output, exit 1): the measured fact, modelled only for the forms the Git Bash code
+    uses (`-l`, `-q`); the bash half of the bug cannot be reproduced on Linux, so the static
+    check is its only guard. `sed` and the case-pattern and `${x%$'\r'}` forms outside
+    substitutions were not measured; they stay.
+31. **The ChalkAgent fixtures** (`tests/fixtures/real/*/sbx-*-ca-*`, 0.2.1 out directories):
+    kept as recorded but for the Linux user name in home paths (`user`), so tests pin their
+    session ids, usage, credits and timings; the served model is checked against the run's own
+    `model_requested` rather than written into the suite. The DNS case is a copy of the grok run
+    given the log text measured that day through `normalize.py grok-netlog` (0.2.1 kept no
+    `grok.netlog.txt`); the JSON shape of that log line stays unverified.

@@ -1,0 +1,64 @@
+{
+ "version": 1,
+ "ts": "2026-11-06T15:21:05Z",
+ "id": "ca-copilot-1",
+ "batch": null,
+ "lane": "copilot-opus",
+ "host": "wsl",
+ "caller": "gitbash",
+ "executor": "copilot",
+ "cli_version": "1.0.105",
+ "pool": "copilot-credits",
+ "mode": "write",
+ "model_requested": "claude-opus-5.5",
+ "model_served": "claude-opus-5.5",
+ "effort_requested": "high",
+ "effort_applied": "high",
+ "exit": 0,
+ "status": "ok",
+ "reason": null,
+ "finished_reason": null,
+ "session": "69feddcb-aa44-4f14-a657-1580aa69e862",
+ "usage": {
+  "input": 122620,
+  "output": 1047,
+  "cache_read": 97274,
+  "cache_write": 0,
+  "reasoning": 129
+ },
+ "cost": {
+  "ai_credits": 16.7113,
+  "usd_est": null,
+  "quota_delta": null,
+  "estimated": false
+ },
+ "denied": [],
+ "worktree": {
+  "path": "/home/user/.cx-wt/textutil-ca-copilot-1",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.cx-wt\\textutil-ca-copilot-1"
+ },
+ "branch": "cx/ca-copilot-1",
+ "base": "36712314523c3e4d0a39079e105d3d83bfe2870a",
+ "commit": null,
+ "diffstat": "+5 -1, 1 file",
+ "gate": null,
+ "digest": {
+  "path": "/home/user/.conductor/out/ca-copilot-1/answer.txt",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-copilot-1\\answer.txt"
+ },
+ "out": {
+  "path": "/home/user/.conductor/out/ca-copilot-1",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-copilot-1"
+ },
+ "duration_s": 15,
+ "models_seen": [
+  "claude-opus-5.5"
+ ],
+ "claude_session": null,
+ "claude_effort": null,
+ "raw": {
+  "stdout": "/home/user/.conductor/out/ca-copilot-1/copilot.out",
+  "stderr": "/home/user/.conductor/out/ca-copilot-1/copilot.err"
+ },
+ "notes": []
+}

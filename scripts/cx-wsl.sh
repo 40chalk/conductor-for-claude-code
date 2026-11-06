@@ -277,7 +277,7 @@ case "$TOOL" in
       # may write /tmp, and lines it appended to the step would run here, unsandboxed.
       STEP="$(cx_mktemp cx-wsl-step)" || cx_signal FAILED 2 "cannot create a temporary file in ${CX_HOME:-$HOME/.conductor}/tmp"
       cat > "$STEP" || { rm -f "$STEP"; cx_signal FAILED 2 "cannot read the step on stdin"; }
-      if grep -q $'\r$' "$STEP"; then
+      if grep -qU -e "$CX_CR\$" "$STEP"; then
         sed -i 's/\r$//' "$STEP"
         cx_note "the step on stdin had CRLF line endings; ran it with LF (write step files with LF)"
       fi

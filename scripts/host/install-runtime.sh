@@ -98,11 +98,11 @@ main() {
   done
   # Strip CR before LF; refuse whatever still holds a CR.
   local -a crs=()
-  mapfile -t crs < <(grep -rl $'\r' "$tmp" 2>/dev/null)
+  mapfile -t crs < <(grep -rlU -e "$CX_CR" "$tmp" 2>/dev/null)
   if [ "${#crs[@]}" -gt 0 ]; then
     sed -i 's/\r$//' "${crs[@]}"
     n_cr="${#crs[@]}"
-    mapfile -t crs < <(grep -rl $'\r' "$tmp" 2>/dev/null)
+    mapfile -t crs < <(grep -rlU -e "$CX_CR" "$tmp" 2>/dev/null)
     if [ "${#crs[@]}" -gt 0 ]; then
       local list=""
       for f in "${crs[@]}"; do list="$list ${f#"$tmp"/}"; done

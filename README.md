@@ -287,6 +287,12 @@ or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal (a plain termi
 plugin `bin/` on its PATH; the copy exists after the first forwarded call). The fixes of a
 forwarded report act on WSL: run them in a WSL terminal, never in Git Bash.
 
+Before 0.2.2, `cx-doctor --windows` could fail W6 with every plugin file listed as CRLF on a
+Git Bash whose bash expands an ANSI-C `$'\r'` inside a substitution to empty (measured with
+bash 5.3.15, x86_64-pc-cygwin, and grep 3.0): a false positive. 0.2.2 checks for CRs with
+`grep -U` and a CR held in a variable, so W6 lists only files that really hold a CR; if it
+still lists every file, check one by hand with `od -c FILE | grep -m1 '\\r'`.
+
 When Copilot's keyring login is unreachable through `wsl.exe`, the doctor's token-file fix
 (`~/.conductor/secrets/copilot-token`, mode 0600, a fine-grained PAT) makes `cx-run`'s Copilot
 lanes and `cx-wsl ghcp-*` export `COPILOT_GITHUB_TOKEN` for that run only; shell steps through

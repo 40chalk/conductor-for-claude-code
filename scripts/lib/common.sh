@@ -37,6 +37,16 @@ CX_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CX_LIB="$CX_ROOT/scripts/lib"
 CX_HOSTDIR="$CX_ROOT/scripts/host"
 
+# A CR for the CR checks (DESIGN section 3.1). Measured with Git Bash's bash 5.3.15
+# (x86_64-pc-cygwin) and grep 3.0 on Windows 11 (2026-11-06): an ANSI-C $'\r' written inside a
+# command or process substitution expanded to empty there, so grep -l $'\r' FILES inside
+# < <( ) listed every file (W6 reported each shipped file as CRLF-corrupted), and that grep sees
+# a CR byte only with -U. Only $'\r' was measured broken; no shipped shell file writes any ANSI-C
+# string inside $( ), <( ), >( ) or backticks (a static [X] check scans for one), and a grep
+# that looks for a CR is grep -U -e "$CX_CR" (the same check pins the -U). Assigned here, outside
+# any substitution, the variable expands to a CR inside one.
+CX_CR=$'\r'
+
 # Directories of the runtime copy (DESIGN sections 7.5 and 13.4); D4 accepts exactly these plus
 # RUNTIME_STAMP.
 CX_RUNTIME_DIRS=(.claude-plugin bin scripts hooks worker-shims templates)

@@ -468,7 +468,7 @@ w_checks() {  # W1-W7, W10, W11 into $CHECKS
   done
   crl=()
   if [ "${#files[@]}" -gt 0 ]; then
-    mapfile -t crl < <(grep -l $'\r' "${files[@]}" 2>/dev/null)
+    mapfile -t crl < <(grep -lU -e "$CX_CR" "${files[@]}" 2>/dev/null)
   fi
   if [ "${#crl[@]}" -eq 0 ]; then
     chk ok W6 "$W_SEC" "no CRLF line endings in the Windows-side plugin files"
@@ -1560,7 +1560,7 @@ else
   present=()
   for f in "${CX_SHIPPED_FILES[@]}"; do [ -f "$INSTALLED_ROOT/$f" ] && present+=("$INSTALLED_ROOT/$f"); done
   if [ "${#present[@]}" -gt 0 ]; then
-    mapfile -t crl < <(grep -l $'\r' "${present[@]}" 2>/dev/null)
+    mapfile -t crl < <(grep -lU -e "$CX_CR" "${present[@]}" 2>/dev/null)
   fi
   if [ "${#crl[@]}" -gt 0 ]; then
     fixes=("sed -i 's/\\r\$//' $(cx_shell_words "${crl[@]}")")

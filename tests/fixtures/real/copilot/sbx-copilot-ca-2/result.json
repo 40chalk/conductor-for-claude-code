@@ -1,0 +1,64 @@
+{
+ "version": 1,
+ "ts": "2026-11-06T16:31:15Z",
+ "id": "ca-copilot-read-1",
+ "batch": null,
+ "lane": "copilot-gpt",
+ "host": "wsl",
+ "caller": "gitbash",
+ "executor": "copilot",
+ "cli_version": "1.0.105",
+ "pool": "copilot-credits",
+ "mode": "read",
+ "model_requested": "gpt-6.1-sol",
+ "model_served": "gpt-6.1-sol",
+ "effort_requested": "high",
+ "effort_applied": "high",
+ "exit": 0,
+ "status": "ok",
+ "reason": null,
+ "finished_reason": null,
+ "session": "6366067f-0197-4a46-ba11-4727e76300dd",
+ "usage": {
+  "input": 41698,
+  "output": 171,
+  "cache_read": 27657,
+  "cache_write": 0,
+  "reasoning": 0
+ },
+ "cost": {
+  "ai_credits": 3.9574,
+  "usd_est": null,
+  "quota_delta": null,
+  "estimated": false
+ },
+ "denied": [],
+ "worktree": {
+  "path": "/home/user/.conductor/gate/ca-copilot-read-1.1",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\gate\\ca-copilot-read-1.1"
+ },
+ "branch": null,
+ "base": "36712314523c3e4d0a39079e105d3d83bfe2870a",
+ "commit": "36712314523c3e4d0a39079e105d3d83bfe2870a",
+ "diffstat": null,
+ "gate": null,
+ "digest": {
+  "path": "/home/user/.conductor/out/ca-copilot-read-1/answer.txt",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-copilot-read-1\\answer.txt"
+ },
+ "out": {
+  "path": "/home/user/.conductor/out/ca-copilot-read-1",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-copilot-read-1"
+ },
+ "duration_s": 12,
+ "models_seen": [
+  "gpt-6.1-sol"
+ ],
+ "claude_session": null,
+ "claude_effort": null,
+ "raw": {
+  "stdout": "/home/user/.conductor/out/ca-copilot-read-1/copilot.out",
+  "stderr": "/home/user/.conductor/out/ca-copilot-read-1/copilot.err"
+ },
+ "notes": []
+}

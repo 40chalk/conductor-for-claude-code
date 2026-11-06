@@ -1,0 +1,5 @@
+- **Changed:** `textutil.py:3-5` adds `import re` and a precompiled `_NON_SLUG_RUN = [^a-z0-9]+` pattern. `textutil.py:15` makes `slugify` lowercase the input, turn each run of other characters into a single `-`, and strip leading and trailing hyphens.
+- **Ran:** `cx-route test` passed all 3 tests (exit code 0). `git status` shows only `textutil.py` modified.
+- **Open issues:** Characters outside ASCII, such as "é", become hyphens because the spec only keeps lowercase ASCII letters and digits.
+
+DIGEST: Implemented `slugify` in `textutil.py` using a regex, and all 3 tests pass under `cx-route test`.

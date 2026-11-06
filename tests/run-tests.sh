@@ -511,6 +511,200 @@ print("; ".join(bad))
 PY
 )"
 check "[P40] no python3 -c, every python3 call is python3 -I, no jq/node calls, no set -e, bash shebang + header comment everywhere${CONV_BAD:+: $CONV_BAD}" test -z "$CONV_BAD"
+# No ANSI-C string inside a substitution in a shipped shell file (DESIGN section 3.1): measured
+# with Git Bash's bash 5.3.15 (x86_64-pc-cygwin), a $'\r' inside $( ) or <( ) expanded to empty,
+# so grep -l $'\r' FILES listed every file and W6 failed on a clean copy; and that Git Bash's
+# grep 3.0 sees a CR only with -U. The scanner follows bash's lexical nesting: single and double
+# quotes, backslashes, comments, ${ }, $(( )), here-strings, here-document bodies (skipped, so a
+# substitution written inside an unquoted here-document is not looked into), case patterns inside
+# a substitution (a ) while a case is open ends a pattern, not the substitution). It does not
+# read $[ ], a << shift inside (( )) (taken for a here-document), aliases, or the text of eval and
+# bash -c strings (single-quoted, so never looked into). A file it cannot follow to the end at
+# its top level is reported ("could not follow"), so a misread construct fails the check instead
+# of hiding a hit; its self-test cases below show it finds each form it claims to find. A grep
+# that looks for a CR (CX_CR or \r among its arguments, outside comments) must carry -U.
+mapfile -t ANSI_FILES < <(bash -c '. "$1/scripts/lib/common.sh"; printf "%s\n" "${CX_SHIPPED_FILES[@]}"' _ "$ROOT" | grep -E '^(bin/|worker-shims/)|\.sh$')
+ANSI_BAD="$("$REAL_PY" -I - "$ROOT" "${ANSI_FILES[@]}" <<'PY'
+import os, re, sys
+
+
+def scan(text):
+    """[(line, what)]: each $'...' bash reads as ANSI-C quoting while inside a command or
+    process substitution ($( ), <( ), >( ), backticks); "could not follow" when the text does
+    not end at its top level."""
+    hits = []
+    stack = [["top", 0, 0]]          # [kind, parenthesis depth, open case statements]
+    pending = []                     # here-documents whose bodies follow this line
+    i, n, line = 0, len(text), 1
+
+    def code():
+        return stack[-1][0] in ("top", "sub", "bq")
+
+    def word_start(j):
+        return j == 0 or text[j - 1] in " \t\n;&|(){}"
+
+    while i < n:
+        c = text[i]
+        kind = stack[-1][0]
+        if c == "\n":
+            line += 1
+            i += 1
+            if pending and code():
+                for delim, strip in pending:
+                    while i < n:
+                        e = text.find("\n", i)
+                        e = n if e < 0 else e
+                        body, i = text[i:e], e + 1
+                        line += 1
+                        if (body.lstrip("\t") if strip else body) == delim:
+                            break
+                pending = []
+            continue
+        if c == "\\":
+            line += text[i + 1:i + 2] == "\n"
+            i += 2
+            continue
+        if kind == "dq":
+            if c == '"':
+                stack.pop()
+            elif c == "`":
+                stack.append(["bq", 0, 0])
+            elif text.startswith("$((", i):
+                stack.append(["arith", 0, 0]); i += 2
+            elif text.startswith("$(", i) or text.startswith("${", i):
+                stack.append(["sub" if text[i + 1] == "(" else "brace", 0, 0]); i += 1
+            i += 1
+            continue
+        if c == "'":
+            e = text.find("'", i + 1)
+            e = n - 1 if e < 0 else e
+            line += text.count("\n", i, e)
+            i = e + 1
+            continue
+        if text.startswith("$'", i):
+            if any(f[0] in ("sub", "bq") for f in stack):
+                hits.append((line, "an ANSI-C string inside a substitution"))
+            j = i + 2
+            while j < n and text[j] != "'":
+                j += 2 if text[j] == "\\" else 1
+            line += text.count("\n", i, j)
+            i = j + 1
+            continue
+        if c == '"' or text.startswith('$"', i):
+            stack.append(["dq", 0, 0]); i += 2 if c == "$" else 1
+            continue
+        if c == "`":
+            if kind == "bq":
+                stack.pop()
+            else:
+                stack.append(["bq", 0, 0])
+            i += 1
+            continue
+        if text.startswith("$((", i):
+            stack.append(["arith", 0, 0]); i += 3
+            continue
+        if text.startswith("$(", i) or (kind != "arith" and text[i:i + 2] in ("<(", ">(")):
+            stack.append(["sub", 0, 0]); i += 2
+            continue
+        if text.startswith("${", i):
+            stack.append(["brace", 0, 0]); i += 2
+            continue
+        if c == "$":
+            i += 2 if text[i + 1:i + 2] in tuple("#$?!@*-0123456789") else 1
+            continue
+        if kind == "brace":
+            if c == "}":
+                stack.pop()
+            i += 1
+            continue
+        if kind == "arith":
+            if c == "(":
+                stack[-1][1] += 1
+            elif c == ")":
+                if stack[-1][1] == 0 and text.startswith("))", i):
+                    stack.pop(); i += 2
+                    continue
+                stack[-1][1] -= 1
+            i += 1
+            continue
+        if c == "#" and word_start(i):
+            e = text.find("\n", i)
+            i = n if e < 0 else e
+            continue
+        if text.startswith("<<<", i):
+            i += 3
+            continue
+        m = re.match(r"<<(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|\\?([^\s;&|<>()]+))", text[i:i + 300]) if text.startswith("<<", i) else None
+        if m:
+            d = next(g for g in (m.group(2), m.group(3), m.group(4)) if g is not None)
+            pending.append((d.replace("\\", ""), m.group(1) == "-"))
+            i += m.end()
+            continue
+        m = re.match(r"(case|esac)(?=[\s;&|)]|$)", text[i:i + 5]) if word_start(i) else None
+        if m:
+            stack[-1][2] += 1 if m.group(1) == "case" else -1
+            i += m.end()
+            continue
+        if kind == "sub" and c == "(":
+            stack[-1][1] += 1
+        elif kind == "sub" and c == ")":
+            if stack[-1][1] > 0:
+                stack[-1][1] -= 1
+            elif stack[-1][2] <= 0:
+                stack.pop()
+        i += 1
+    if len(stack) != 1 or stack[0][2] != 0 or pending:
+        hits.append((line, "could not follow (ended inside %s)" % "/".join(f[0] for f in stack)))
+    return hits
+
+
+GREP_CR = re.compile(r"(?:^|[\s;&|(!])grep(\s[^|;&)]*)")
+
+
+def grep_without_u(text):
+    """[(line, what)]: a grep looking for a CR (CX_CR or \\r in its arguments) without -U."""
+    out = []
+    for k, ln in enumerate(text.split("\n"), 1):
+        if ln.lstrip().startswith("#"):
+            continue
+        for m in GREP_CR.finditer(ln):
+            seg = m.group(1)
+            if ("CX_CR" in seg or "\\r" in seg) and not re.search(r"\s(?:-[A-Za-z]*U[A-Za-z]*|--binary)(?=\s|$)", seg):
+                out.append((k, "a grep for a CR without -U"))
+    return out
+
+
+bad = []
+# Self-test: each form the scanner claims to find, and the forms it must leave alone.
+for want, snippet in [
+        (1, "x=$(grep -l $'\\r' f)\n"),
+        (1, "mapfile -t a < <(grep -c $'\\t' f)\n"),
+        (1, "exec > >(tee $'\\x41')\n"),
+        (1, "y=\"$(printf '%s' \"${v%$'\\n'}\")\"\n"),
+        (1, "z=`echo $'\\r'`\n"),
+        (1, "w=$(case $a in b) echo $'\\r' ;; esac)\n"),
+        (1, "u=$(f \"$(g)\" ( h ) $'\\r')\n"),
+        (0, "IFS=$'\\t' read -r a b < <(cmd)\n"),
+        (0, "t=\"$(grep -v '^[[:space:]]*$' f)\" s=\"$(echo \"$'\\r'\")\"\n"),
+        (0, "# x=$(grep $'\\r' f)\nx=${y%$'\\r'}\nIFS=$'\\t' read -r a <<< \"$(cmd)\"\n"),
+        (0, "cat <<'EOF'\n$(echo $'\\r')\nEOF\ncat <<-X\n\t$(echo)\n\tX\nv=$(( 1 + (2) ))\n")]:
+    got = [h for h in scan(snippet) if not h[1].startswith("could not")]
+    if len(got) != want or len(scan(snippet)) != want:
+        bad.append("self-test: %r gave %r, want %d hit(s)" % (snippet, scan(snippet), want))
+if not scan("x=$(echo\n") or "could not follow" not in scan("x=$(echo\n")[-1][1]:
+    bad.append("self-test: an unclosed $( is not reported")
+for want, snippet in [(1, "x=$(grep -l -e \"$CX_CR\" f)\n"), (0, "grep -qU -e \"$CX_CR\\$\" f\n# grep $'\\r'\n")]:
+    if len(grep_without_u(snippet)) != want:
+        bad.append("self-test: %r, want %d grep(s) without -U" % (snippet, want))
+root = sys.argv[1]
+for rel in sys.argv[2:]:
+    text = open(os.path.join(root, rel), encoding="utf-8", errors="replace").read()
+    for k, what in scan(text) + grep_without_u(text):
+        bad.append("%s:%d: %s" % (rel, k, what))
+print("; ".join(bad))
+PY
+)"
+check "[X]   no shipped shell file (${#ANSI_FILES[@]}) writes an ANSI-C string (\$'...') inside \$( ), <( ), >( ) or backticks (Git Bash's bash 5.3.15 expanded \$'\\r' there to empty, measured), and every grep that looks for a CR has -U; the scanner's self-test finds each form it claims${ANSI_BAD:+: $ANSI_BAD}" test -z "$ANSI_BAD"
 hdr() { awk 'NR <= 2 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$1"; }
 HV_BAD=""
 for f in bin/cx-doctor bin/cx-init bin/cx-wsl scripts/cx-doctor.sh scripts/cx-init.sh scripts/cx-wsl.sh \
@@ -1624,6 +1818,12 @@ check "[P29] a forwarded doctor running from the runtime copy checks the install
   eval 'd_ok D3 "plugin files complete, executable and LF ($ROOT)" && d_ok D4 && ! d_fail D3'
 doc_use rt-none
 check "[X]   ... with no installed copy on this host: D3 info (checked on Windows by W6)" eval 'd_info D3 "plugin files are checked on Windows by W6" && ! d_fail D3'
+doc_use crlf-policy
+D3_EXACT=0
+grep -Fxq "  $FAILG CRLF line endings in: $TMP/crlf-policy/hooks/policy.sh [D3]" "$O" && D3_EXACT=1
+doc_use rt-installed
+check "[X]   D3 (grep -U for a CR): a copy with one CRLF file lists exactly that file; the LF installed copy is ok" \
+  eval '[ "$D3_EXACT" = 1 ] && d_ok D3 "plugin files complete, executable and LF ($ROOT)" && ! d_fail D3'
 doc_use pools
 check "[P31] --pools: agy Opus slugs from the fixture; Copilot claude-opus-5.5 enabled -> ok" \
   eval 'd_ok pools-agy "agy Opus lane claude-opus-5-5-high offered (Opus slugs: claude-opus-5-5-high, claude-opus-5-5-medium, claude-opus-5-5-low)" && d_ok pools-copilot "Copilot claude-opus-5.5 is enabled (D16 probe)"'
@@ -3336,6 +3536,63 @@ sys.exit(0 if ans.rstrip("\n") == json.dumps(json.load(open(sys.argv[2], encodin
 PY
   } || RR_BAD="$RR_BAD [sbx-grok-3 with output and a non-string text: $(cat "$RR/so2.pr"), answer $(head -c 80 "$RR/so2/answer.txt")]"
 check "[X]   the parsers on every real run directory (fixtures/real/*/sbx-*): agy 15 (the real stream-json: init, step_update, result with denied_actions; session, usage), copilot 0 (19.5569 credits), grok 15 (the edit denied headless; grok-4.7-build accepted as grok-4.7's alias, no longer 21), the copilot review 0; the review stopped on an empty diff has nothing to parse; 0.2.1 live: agy write 0 (claude-opus-5-5-high, its cx-route test step allowed, nothing denied), grok write 0 (grok-4.7-build as the alias, usage and cost), the grok read through cx-job 0 with the answer = grok.out's structuredOutput as valid JSON (grok's text joins the turns: [ ][...]); copies of it without structuredOutput (the answer stays text, with a note) and with output beside a non-string text (the answer is output)${RR_BAD:+:$RR_BAD}" test -z "$RR_BAD"
+# The ChalkAgent runs (tests/fixtures/real/*/sbx-*-ca-*: conductor 0.2.1 on a Windows 11 machine,
+# Git Bash forwarding to WSL Ubuntu, 2026-11-06; 0.2.1's out-directory layout, without 0.2.2's
+# grok.netlog.txt and grok.sandbox-check.* files): the loop above parsed each one again. The grok
+# write run that failed after 1657 s gets 0.2.2's connection reason from its stderr alone; a copy
+# with the log text measured that day (which 0.2.1 did not keep), run through grok-netlog, gets
+# the DNS reason; the run stopped at its 180 s timeout stays 12.
+# The served model is compared with the one the run requested (its meta.json), not written here.
+local CA_BAD="" ca
+for ca in sbx-copilot-ca-1 sbx-copilot-ca-2 sbx-agy-ca-1 sbx-grok-ca-1 sbx-grok-ca-2; do
+  RJ="$RR/$ca/result.json"
+  { rj_is caller gitbash && rj_is host wsl; } || CA_BAD="$CA_BAD [$ca: caller $(rj caller), host $(rj host)]"
+done
+ca_served() { local m; m="$("$REAL_PY" -I "$NORM" field "$RR/$1/$2.meta.json" model_requested)"; [ -n "$m" ] && rj_is model_served "$m"; }
+RJ="$RR/sbx-copilot-ca-1/result.json"
+{ [ "$(cat "$RR/sbx-copilot-ca-1.pr")" = "0 ok" ] && rj_is mode write && ca_served sbx-copilot-ca-1 copilot && rj_is cost.ai_credits 16.7113 \
+  && rj_is session 69feddcb-aa44-4f14-a657-1580aa69e862 && rj_is usage.input 122620 && rj_is usage.output 1047 && rj_is usage.cache_read 97274 && rj_is usage.reasoning 129 \
+  && rj_is diffstat "+5 -1, 1 file" && rj_is duration_s 15 && rj_is denied "[]" && ! grep -q "^CX_DENIED " "$RR/sbx-copilot-ca-1.emit"; } \
+  || CA_BAD="$CA_BAD [copilot-ca-1: $(cat "$RR/sbx-copilot-ca-1.pr")]"
+RJ="$RR/sbx-copilot-ca-2/result.json"
+{ [ "$(cat "$RR/sbx-copilot-ca-2.pr")" = "0 ok" ] && rj_is mode read && ca_served sbx-copilot-ca-2 copilot && rj_is cost.ai_credits 3.9574 \
+  && rj_is session 6366067f-0197-4a46-ba11-4727e76300dd && rj_is commit 36712314523c3e4d0a39079e105d3d83bfe2870a && rj_is duration_s 12 && rj_is denied "[]"; } \
+  || CA_BAD="$CA_BAD [copilot-ca-2: $(cat "$RR/sbx-copilot-ca-2.pr")]"
+RJ="$RR/sbx-agy-ca-1/result.json"
+{ [ "$(cat "$RR/sbx-agy-ca-1.pr")" = "0 ok" ] && ca_served sbx-agy-ca-1 agy && rj_is session 838c5ec0-6037-46b6-a115-e2acbdbdf1ce \
+  && rj_is usage.input 11665 && rj_is usage.output 2512 && rj_is usage.cache_read 82948 && rj_is diffstat "+10 -1, 1 file" && rj_is duration_s 47 && rj_is denied "[]" \
+  && ! grep -q "^CX_DENIED " "$RR/sbx-agy-ca-1.emit" && grep -Fq '"CommandLine":"cx-route test"' "$RR/sbx-agy-ca-1/agy.out"; } \
+  || CA_BAD="$CA_BAD [agy-ca-1: $(cat "$RR/sbx-agy-ca-1.pr"), denied $(rj denied)]"
+RJ="$RR/sbx-grok-ca-1/result.json"
+{ [ "$(cat "$RR/sbx-grok-ca-1.pr")" = "2 failed" ] && [ "$(rj reason)" = "grok could not reach its API (a connection or DNS failure; cx-doctor D17): error sending request for url (https://cli-chat-proxy.grok.com/v1/responses) (no model call)" ] \
+  && rj_is duration_s 1657 && rj_is model_served null && rj_is usage.input 0 && rj_is usage.output 0 && grep -Fq "grok's own retries can hold a run for about 28 minutes" "$RJ"; } \
+  || CA_BAD="$CA_BAD [grok-ca-1: $(cat "$RR/sbx-grok-ca-1.pr") $(rj reason)]"
+rm -rf -- "${RR:?}/ca-dns"; cp -a "$FIX/real/grok/sbx-grok-ca-1" "$RR/ca-dns"
+printf '%s\n' 'client error (Connect): dns error: failed to lookup address information: Try again' > "$RR/ca-dns.log"
+"$REAL_PY" -I "$NORM" grok-netlog --file "$RR/ca-dns.log" --from 0 --to "$(wc -c < "$RR/ca-dns.log")" --out "$RR/ca-dns/grok.netlog.txt"
+printf '%s\n' "$(env HOME="$AD/home" CX_HOME="$AD/home/.conductor" "$ADP/grok.sh" parse --out "$RR/ca-dns" 2>&1)" > "$RR/ca-dns.pr"
+RJ="$RR/ca-dns/result.json"
+{ [ "$(cat "$RR/ca-dns.pr")" = "2 failed" ] && [ "$(rj reason)" = "grok could not resolve its API's host name (DNS; cx-doctor D17): client error (Connect): dns error: failed to lookup address information: Try again (no model call)" ] \
+  && grep -Fq "grok said: error sending request for url (https://cli-chat-proxy.grok.com/v1/responses)" "$RJ"; } \
+  || CA_BAD="$CA_BAD [grok-ca-1 with the measured log text: $(cat "$RR/ca-dns.pr") $(rj reason)]"
+RJ="$RR/sbx-grok-ca-2/result.json"
+{ [ "$(cat "$RR/sbx-grok-ca-2.pr")" = "12 timeout" ] && rj_is reason "the grok run hit the wall clock" && rj_is duration_s 180 && rj_is usage.input 0 \
+  && [ "$("$REAL_PY" -I "$NORM" field "$RR/sbx-grok-ca-2/grok.meta.json" timeout_s)" = 180 ]; } \
+  || CA_BAD="$CA_BAD [grok-ca-2: $(cat "$RR/sbx-grok-ca-2.pr") $(rj reason)]"
+# Sanitized for a public repository: every home directory in them is /home/user.
+CA_HOMES="$("$REAL_PY" -I - "$FIX/real" <<'PY'
+import glob, os, re, sys
+homes = set()
+for d in glob.glob(os.path.join(sys.argv[1], "*", "sbx-*-ca-*")):
+    for f in os.listdir(d):
+        b = open(os.path.join(d, f), "rb").read()
+        homes.update(m.decode() for m in re.findall(rb"/home/[^/\"\s\x00|]+", b))
+        homes.update(m.decode().replace("\\\\", "\\") for m in re.findall(rb"\\\\home\\\\[^\\\"\s\x00|]+", b))
+print(" ".join(sorted(homes)))
+PY
+)"
+[ "$CA_HOMES" = '/home/user \home\user' ] || CA_BAD="$CA_BAD [home directories: $CA_HOMES]"
+check "[X]   the ChalkAgent runs (conductor 0.2.1, Windows 11, Git Bash forwarding to WSL; caller gitbash, host wsl): copilot write 0 (the requested model served, 16.7113 AI credits, 15 s), copilot read 0 (3.9574), agy write 0 (the requested model served, cx-route test allowed, nothing denied, 47 s); grok write after 1657 s -> 2 with the connection reason naming D17 (no model call), and with the day's measured log text through grok-netlog -> the DNS reason; grok write stopped at 180 s -> 12; every home directory in them is /home/user${CA_BAD:+:$CA_BAD}" test -z "$CA_BAD"
 # grok's real sandbox log (1.0.70): the write run's profile, the read run's strict probe and the
 # read run itself (read-only, in its gate checkout), one ProfileApplied line each.
 local SEVF="$FIX/real/grok/sandbox-events-1.0.70.jsonl" SEV1
@@ -4279,6 +4536,12 @@ for t in awk cat cp cut dirname env grep head iconv kill mkdir mktemp od rm sed 
   ln -s "$(PATH="$REAL_PATH" command -v "$t")" "$GB_MINI/$t"
 done
 ln -s "$STUBS/gitbash/git" "$GB_MINI/git"
+# grep as Git Bash's grep 3.0 behaved (measured 2026-11-06): without -U it never sees a CR byte,
+# so a pattern holding a CR matches nothing (no output, exit 1; only the -l and -q forms the Git
+# Bash code uses are modelled); with -U, and for every other pattern, it is the real grep.
+rm -f "$GB_MINI/grep"
+printf '#!/bin/bash\ncr=$(printf "\\r") u=0 c=0\nfor a in "$@"; do\n  case "$a" in --binary|-[!-]*U*) u=1 ;; esac\n  case "$a" in *"$cr"*) c=1 ;; esac\ndone\n[ "$u" = 0 ] && [ "$c" = 1 ] && exit 1\nexec %q "$@"\n' "$(PATH="$REAL_PATH" command -v grep)" > "$GB_MINI/grep"
+chmod 0755 "$GB_MINI/grep"
 PYTRAP="$TMP/pytrap.log"
 printf '#!/bin/bash\necho PYTHON_CALLED "$@" >> %q\nexit 9009\n' "$PYTRAP" > "$GB_MINI/python3"
 chmod 0755 "$GB_MINI/python3"
@@ -5165,6 +5428,11 @@ check "[P34] CR in bin/cx-wsl, scripts/cx-init.sh (no canary covers them), templ
 W6_SED="$(sed -n "s/^      fix: \(sed -i.*\)\$/\1/p" "$O" | head -n 1)"
 check "[P34] ... its sed fix quotes each path (the plugin root has spaces) and, run as printed, removes every CR" \
   eval '[ -n "$W6_SED" ] && bash -c "$W6_SED" && ! grep -lq $'"'"'\r'"'"' "$GBC/bin/cx-wsl" "$GBC/scripts/cx-init.sh" "$GBC/templates/repo-bundle/routes.json" "$GBC/skills/conductor/SKILL.md"'
+W6_EXACT=0
+grep -Fxq "  $FAILG CRLF line endings in: $GBC/bin/cx-wsl $GBC/scripts/cx-init.sh $GBC/templates/repo-bundle/routes.json $GBC/skills/conductor/SKILL.md [W6]" "$O" && W6_EXACT=1
+gb_use win-green
+check "[X]   W6 under the mini bin's grep (Git Bash's grep 3.0: a CR only with -U): the copy with four CRLF files lists exactly those four, the LF plugin is ok (no false positive)" \
+  eval '[ "$W6_EXACT" = 1 ] && d_ok W6 "no CRLF line endings in the Windows-side plugin files" && ! d_fail W6'
 P42_BAD=""
 for n in p17a p17b p17c argv argv-wsl envlist cwd-unc cwd-share share-wsl share-doctor short exit37 nodistro crash auto badistro stdin leak init5 gate3 nowsl mismatch launch record fallback moved gbdoc gbdoc4 win-green win-bad win-keyring win-timeout win-crlf gbdoc-fail gbdoc-fail-json gbdoc-json gbdoc-lite gb-install gb-bridge gb-bridge-exit gb-bridge-doc gb-w11m gb-cloud gb-cloud-doc gb-cloud-wsl; do
   grep -q 'command not found' "$WH/$n.err" && P42_BAD="$P42_BAD $n(command not found)"
