@@ -26,7 +26,10 @@
 #                  directories) and the directories that hold this host's resolver and TLS
 #                  files where those lie outside strict's read set (on WSL /mnt/wsl, for
 #                  /etc/resolv.conf -> /mnt/wsl/resolv.conf: without it grok resolves no host
-#                  name, measured; cxlib.py grok_resolver_plan, never /, a home or a checkout).
+#                  name, measured; cxlib.py grok_resolver_plan: system directories only, never
+#                  /, a home or anything inside one, a checkout, a Windows drive or a directory
+#                  reached through a link in /tmp, /var/tmp, a home or a checkout; never from
+#                  SSL_CERT_FILE / SSL_CERT_DIR, so every caller renders the same profile).
 #                  Outside a git checkout: conductor's cx-strict (strict plus those directories
 #                  only). Never the out directories, which hold other runs' tasks, diffs and
 #                  digests; grok's own
@@ -96,10 +99,12 @@
 #                  a note); any "permission required:" on stderr -> 15; a modelUsage key other
 #                  than the model or its -build alias -> 21; a stderr line saying the sandbox
 #                  was not applied -> 2 (and, when grok went on anyway, a reason saying it ran
-#                  unconfined); rc not 0 with no model call and "error sending request for url"
-#                  (or a connect or DNS failure) on stderr or in grok.netlog.txt -> 2 with a
-#                  reason naming it (DNS when grok's log says so) and cx-doctor D17 (12 when the
-#                  wall clock ended grok's retries first). Slot pool: grok (cap_grok).
+#                  unconfined); rc not 0 with no model call (grok usage's modelCalls 0) and
+#                  "error sending request for url" (or a connect or DNS failure) on stderr or in
+#                  the error object -> 2 with a reason naming it (DNS when that phrase or
+#                  grok.netlog.txt says so) and cx-doctor D17 (12 when the wall clock ended
+#                  grok's retries first); grok.netlog.txt alone (every grok process appends to
+#                  that log) gives a note, never a reason. Slot pool: grok (cap_grok).
 #
 # Exit codes: as scripts/lib/adapter.sh (0, 1, 2, 11, 13, 14, 26, 28, 130).
 

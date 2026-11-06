@@ -24,14 +24,18 @@
 #                  COPILOT_MODEL COPILOT_PROVIDER_BASE_URL and GH_TOKEN/GITHUB_TOKEN (except the
 #                  one the host record names as copilot_token_env), COPILOT_HOME as recorded;
 #                  GHCP_COPILOT_BIN=<the recorded copilot>, GHCP_USAGE_LOG=$CX_HOME/raw-usage.log;
-#                  COPILOT_GITHUB_TOKEN from $CX_HOME/secrets/copilot-token (0600) at run time.
+#                  COPILOT_GITHUB_TOKEN from $CX_HOME/secrets/copilot-token (0600) at run time;
+#                  --fusion runs only: CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off (ghcp then exits
+#                  14, free, on a Fusion refusal instead of re-running on plain auto, billed,
+#                  an answer conductor discards); COPILOT_CLI_ENABLED_FEATURE_FLAGS untouched.
 #   probe (free):  copilot --version (recorded only; last verified 1.0.105), ghcp-models --json
 #                  (ghcp's own free catalog probe: login and model), and the flag contract:
 #                  ghcp-delegate --help for the argv, copilot --help for the Copilot argv
 #                  ghcp-delegate --print-command builds from it (free), copilot help permissions
 #                  for the shell() and write() kinds: 26 when one is missing.
 #   parse:         answer = stdout; GHCP_SESSION / GHCP_USAGE / GHCP_DENIED / GHCP_FALLBACK;
-#                  served model = every models_used[].model (Fusion: any GHCP_FALLBACK -> 21);
+#                  served model = every models_used[].model (Fusion: any GHCP_FALLBACK that still
+#                  appears, from a ghcp that ignores the option -> 21; a refusal -> ghcp's 14);
 #                  copilot#5149 (xhigh, >= 30,000 output tokens, empty answer) -> 2; ghcp's
 #                  exits pass through. Slot pool: copilot (cap_copilot).
 #
@@ -81,6 +85,13 @@ lane_env() {
   if [ "${CXR_COPILOT_HOME_SET:-0}" = 1 ]; then cxa_set COPILOT_HOME "$CXR_COPILOT_HOME"; else cxa_unset COPILOT_HOME; fi
   cxa_set GHCP_COPILOT_BIN "$CXA_CLI"
   cxa_set GHCP_USAGE_LOG "$CXA_HOME/raw-usage.log"
+  # A Fusion run: ghcp's option fusion_fallback (default on) re-runs a refused Fusion task once
+  # on plain auto, which is billed, and conductor discards that answer (GHCP_FALLBACK on a Fusion
+  # lane is 21). Off for --fusion runs only (ghcp's options loader lets the environment win over
+  # settings.json): a refusal before any model call then ends as ghcp's free exit 14 and the next
+  # lane follows. Not a spend cap. COPILOT_CLI_ENABLED_FEATURE_FLAGS is left alone: ghcp merges
+  # the feature flags its headless Fusion needs itself.
+  [ -z "$A_FUSION" ] || cxa_set CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK off
   cxa_copilot_token
 }
 

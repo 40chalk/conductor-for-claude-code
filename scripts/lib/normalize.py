@@ -212,6 +212,29 @@ GROK_DNS_RE = re.compile(r"(?i)dns error|failed to lookup address information")
 GROK_NETLOG_MAX = 4 << 20
 
 
+def grok_usage_file(text):
+    """(usage, calls) from what grok usage <session> printed (grok.usage.txt): grok 1.0.70's JSON
+    (tests/fixtures/real/grok/sbx-grok-1, sbx-grok-ca-1), {"sessionId", "session": {inputTokens,
+    outputTokens, cachedReadTokens, cacheCreationTokens, reasoningTokens, totalTokens, modelCalls,
+    ...}, "turns": [...]}; usage all 0 and calls None for anything else ("Error: No usage recorded
+    for session ...", sbx-grok-ca-2)."""
+    u = empty_usage()
+    s = (text or "").strip()
+    try:
+        obj = json.loads(s, strict=False) if s.startswith("{") else None
+    except ValueError:
+        obj = None
+    ses = obj.get("session") if isinstance(obj, dict) else None
+    if not isinstance(ses, dict):
+        return u, None
+    u = usage_from(ses)
+    for key, name in (("cache_read", "cachedReadTokens"), ("cache_write", "cacheCreationTokens")):
+        if not u[key] and num(ses.get(name)) is not None:
+            u[key] = int(ses[name])
+    calls = ses.get("modelCalls")
+    return u, (int(calls) if num(calls) is not None else None)
+
+
 def grok_netlog(path, start, end):
     """The distinct GROK_CONNECT_RE phrases (at most 5, each sanitized) among the bytes grok
     appended to its log PATH between sizes START and END (at most the last 4 MiB of them)."""
@@ -514,13 +537,9 @@ def parse_grok(out_dir, meta, run, rc):
         for k, n in uu.items():
             agg[k] = agg.get(k, 0) + n
     f["usage"] = usage_from(obj.get("usage"), agg)
-    ut = read(os.path.join(out_dir, "grok.usage.txt"))
-    if ut and not any(f["usage"].values()):
-        for key, pat in (("input", r"input tokens:\s*(\d+)"), ("output", r"output tokens:\s*(\d+)"),
-                         ("cache_read", r"cache(?:d| read)[^:\n]*:\s*(\d+)"), ("reasoning", r"reasoning tokens:\s*(\d+)")):
-            m = re.search(pat, ut, re.I)
-            if m:
-                f["usage"][key] = int(m.group(1))
+    gu, calls = grok_usage_file(read(os.path.join(out_dir, "grok.usage.txt")))
+    if not any(f["usage"].values()):
+        f["usage"] = gu
     cost = first_num(obj, "total_cost_usd", "costUsd", "cost_usd")
     if cost is not None:
         f["cost"]["usd_est"] = cost
@@ -533,24 +552,33 @@ def parse_grok(out_dir, meta, run, rc):
     diag = err + "\n" + (json.dumps(error) if error is not None else "")
     failed = rc not in (0, None) or not nonblank(f["answer"])
     # grok could not reach its API: a connection or DNS failure, no model call (DESIGN section
-    # 15.2). Exit 2 FAILED (or 12 when the wall clock ended grok's retries first); the reason
-    # names it, and DNS when grok's own log (the lines this run appended, grok.netlog.txt) says so.
-    if rc not in (0, None, 130) and not run.get("cancelled") and not mu and not any(f["usage"].values()) and not grok_nosandbox(err):
-        said = GROK_CONNECT_RE.search(diag)
+    # 15.2). Exit 2 FAILED (or 12 when the wall clock ended grok's retries first). The reason needs
+    # the phrase on this run's own stderr or error object, and no model call: grok usage's
+    # session.modelCalls 0, or, when grok usage recorded nothing, no token at all. grok's log
+    # (grok.netlog.txt: the bytes appended to ~/.grok/logs/unified.jsonl during the run, which every
+    # grok process on this computer appends to) only turns that reason into the DNS one; alone, it
+    # gives a note, never a reason.
+    no_call = calls == 0 or (calls is None and not any(f["usage"].values()))
+    if rc not in (0, None, 130) and not run.get("cancelled") and not mu and no_call and not grok_nosandbox(err):
+        m = GROK_CONNECT_RE.search(diag)
+        said = CX.sanitize(m.group(0), 160) if m else None
         logged = [x for x in read(os.path.join(out_dir, "grok.netlog.txt")).split("\n") if x.strip()]
-        dns = next((x for x in logged if GROK_DNS_RE.search(x)), None)
-        if said or dns:
+        dns = said if said and GROK_DNS_RE.search(said) else next((x for x in logged if GROK_DNS_RE.search(x)), None)
+        if dns and not said:
+            f["notes"].append("grok's log (~/.grok/logs/unified.jsonl, which every grok process on this computer appends to, so "
+                              "the line may be another session's) logged during this run: %s (cx-doctor D17)" % CX.sanitize(dns, 200))
+        if said:
             # The reason keeps to result.json's 200 characters: what failed, D17, the evidence.
             sc = run.get("sandbox_check") if isinstance(run.get("sandbox_check"), dict) else {}
             unread = [t for t in (sc.get("resolver_unreadable") or []) if isinstance(t, dict)]
             what = ("grok could not resolve its API's host name (DNS; cx-doctor D17): %s" % dns if dns else
-                    "grok could not reach its API (a connection or DNS failure; cx-doctor D17): %s" % CX.sanitize(said.group(0), 160))
+                    "grok could not reach its API (a connection or DNS failure; cx-doctor D17): %s" % said)
             if rc in (124, 137):
                 flag(f, "timeout", "the grok run hit the wall clock: " + what)
             else:
                 flag(f, "failed", what + " (no model call)")
-            if dns and said:
-                f["notes"].append("grok said: %s" % CX.sanitize(said.group(0), 200))
+            if dns and dns != said:
+                f["notes"].append("grok said: %s" % CX.sanitize(m.group(0), 200))
             if unread:
                 f["notes"].append("the per-run check found that the run's sandbox profile cannot read %s (cx-doctor D17)" % ", ".join(
                     "%s -> %s" % (t.get("path"), t.get("real")) for t in unread[:3]))

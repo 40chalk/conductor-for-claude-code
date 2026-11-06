@@ -549,9 +549,14 @@ def grok_home_write(paths, grok_home):
 # /mnt/wsl/resolv.conf, which the list cannot read (EACCES), so getaddrinfo failed; with /mnt/wsl
 # added it resolved. A grok run under such a profile retried its API for 28 minutes, then failed.
 GROK_STRICT_READ = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/dev", "/proc", "/sys", "/tmp", "/run", "/var")
+# The system directories of strict's write set (the same events: the working directory,
+# ~/.grok/sessions, /tmp and /var/tmp): a link there is one a grok run could plant.
+GROK_STRICT_WRITE = ("/tmp", "/var/tmp")
 # The files grok's name lookups (glibc's resolver configuration) and TLS (the usual CA bundles)
-# read on Linux, each with what it is for: dns (no name resolves without it), lookup, tls.
-# SSL_CERT_FILE and each SSL_CERT_DIR entry (colon-separated) join them when set.
+# read on Linux, each with what it is for: dns (no name resolves without it), lookup, tls. Only
+# these fixed system paths are ever granted: every caller shares the profiles they go into, so
+# the grants depend on no caller's environment (SSL_CERT_FILE and SSL_CERT_DIR are reported by
+# D17 and the per-run check, never granted; DESIGN section 15.7).
 GROK_RESOLVER_FILES = (("/etc/resolv.conf", "dns"), ("/etc/hosts", "lookup"), ("/etc/nsswitch.conf", "lookup"),
                        ("/etc/host.conf", "lookup"), ("/etc/gai.conf", "lookup"),
                        ("/etc/ssl/certs/ca-certificates.crt", "tls"), ("/etc/ssl/cert.pem", "tls"),
@@ -564,17 +569,18 @@ GROK_RESOLVER_EFFECT = {"dns": "cannot resolve any host name", "lookup": "cannot
                         "tls": "may not verify TLS certificates"}
 
 
-def root_realpath(root, path, limit=40):
+def root_realpath(root, path, limit=40, links=None):
     """PATH (absolute, as this host names it) resolved as the kernel would with ROOT as / (ROOT ""
     is the real /; the suite's CX_DETECT_ROOT a test tree, which prefixes every file detect.sh
     reads): every symlink followed, an absolute target from ROOT again; a missing component and
     what follows are kept as given, as os.path.realpath does. Returns the resolved path as the
-    host names it (without ROOT), or None for a link loop."""
+    host names it (without ROOT), or None for a link loop. LINKS, a list, receives the path of
+    every symlink followed, as the host names it."""
     import stat
     root = (root or "").rstrip("/")
     todo = [p for p in path.split("/") if p not in ("", ".")]
     done = []
-    links = 0
+    hops = 0
     while todo:
         c = todo.pop(0)
         if c == "..":
@@ -589,9 +595,11 @@ def root_realpath(root, path, limit=40):
             done = cand
             continue
         if stat.S_ISLNK(st.st_mode):
-            links += 1
-            if links > limit:
+            hops += 1
+            if hops > limit:
                 return None
+            if links is not None:
+                links.append("/" + "/".join(cand))
             try:
                 t = os.readlink(full)
             except OSError:
@@ -604,29 +612,33 @@ def root_realpath(root, path, limit=40):
     return "/" + "/".join(done)
 
 
-def grok_resolver_targets(root, env):
+def grok_resolver_targets(root, env=None):
     """The resolver and TLS files of this host that exist (a dangling link counts, with exists
-    False): GROK_RESOLVER_FILES, then SSL_CERT_FILE and each SSL_CERT_DIR entry of ENV (absolute
-    ones only), each as {"path", "kind" (dns, lookup, tls), "real" (resolved under ROOT, as the
-    host names it; None for a link loop), "exists", "dir"}. Every file is read under ROOT
-    (CX_DETECT_ROOT, empty in production)."""
+    False): GROK_RESOLVER_FILES, then, only when ENV is given, SSL_CERT_FILE and each SSL_CERT_DIR
+    entry of ENV (absolute ones only), each as {"path", "kind" (dns, lookup, tls), "var" (the
+    variable that named it, else None), "real" (resolved under ROOT, as the host names it; None
+    for a link loop), "links" (every symlink followed), "exists", "dir"}. Every file is read under
+    ROOT (CX_DETECT_ROOT, empty in production)."""
     root = (root or "").rstrip("/")
-    items = list(GROK_RESOLVER_FILES)
-    v = env.get("SSL_CERT_FILE") or ""
-    if v.startswith("/"):
-        items.append((v, "tls"))
-    for d in (env.get("SSL_CERT_DIR") or "").split(":"):
-        if d.startswith("/"):
-            items.append((d, "tls"))
+    items = [(p, k, None) for p, k in GROK_RESOLVER_FILES]
+    if env is not None:
+        v = env.get("SSL_CERT_FILE") or ""
+        if v.startswith("/"):
+            items.append((v, "tls", "SSL_CERT_FILE"))
+        for d in (env.get("SSL_CERT_DIR") or "").split(":"):
+            if d.startswith("/"):
+                items.append((d, "tls", "SSL_CERT_DIR"))
     res, seen = [], set()
-    for path, kind in items:
+    for path, kind, var in items:
         p = "/" + os.path.normpath(path).lstrip("/")
         if p in seen or not os.path.lexists(root + p):
             continue
         seen.add(p)
-        real = root_realpath(root, p)
+        links = []
+        real = root_realpath(root, p, links=links)
         ok = real is not None and os.path.exists(root + real)
-        res.append({"path": p, "kind": kind, "real": real, "exists": ok, "dir": ok and os.path.isdir(root + real)})
+        res.append({"path": p, "kind": kind, "var": var, "real": real, "links": links, "exists": ok,
+                    "dir": ok and os.path.isdir(root + real)})
     return res
 
 
@@ -647,11 +659,48 @@ def grok_reads(root, path, bases):
     return any(_path_under(path, f) for b in bases for f in _path_forms(root, b))
 
 
-def _grant_refusal(root, d, guards, cx_home):
+def wsl_drive_roots(root):
+    """The directories whose one-letter children are Windows drives on WSL: /mnt/ and the
+    [automount] root of /etc/wsl.conf, read under ROOT as pathmap.sh reads it (never CX_MNT_ROOT
+    or another environment variable: the grants depend on no caller's environment)."""
+    roots = ["/mnt/"]
+    try:
+        with open((root or "").rstrip("/") + "/etc/wsl.conf", encoding="utf-8-sig", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    sect = ""
+    for line in text.split("\n"):
+        line = line.rstrip("\r").split("#", 1)[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            sect = re.sub(r"\s", "", line[1:-1]).lower()
+        elif "=" in line and sect == "automount":
+            k, v = line.split("=", 1)
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            if re.sub(r"\s", "", k).lower() == "root" and v.startswith("/"):
+                v = v if v.endswith("/") else v + "/"
+                if v not in roots:
+                    roots.append(v)
+    return roots
+
+
+def _on_drive(path, drive_roots):
+    """True when PATH is or lies in a drive directory <root><letter> of DRIVE_ROOTS."""
+    for r in drive_roots:
+        rest = path[len(r):] if path.startswith(r) else ""
+        if rest[:1].isascii() and rest[:1].isalpha() and rest[1:2] in ("", "/"):
+            return True
+    return False
+
+
+def _grant_refusal(root, d, guards, inside, drive_roots):
     """Why directory D may not become a read grant, else None: it is /, no directory, is or
     contains a GUARDS path ((label, path) pairs: the home directory, grok's home, the conductor's
-    home, a checkout), or lies inside the conductor's home (other runs' tasks and diffs, the
-    Copilot token file)."""
+    home, a checkout), lies inside an INSIDE path ((label, path, why) triples: the conductor's
+    home, a checkout, the home directory) or on a Windows drive (DRIVE_ROOTS): only system
+    directories outside the home directory qualify."""
     if d == "/":
         return "it is /"
     if not os.path.isdir((root or "").rstrip("/") + d):
@@ -660,33 +709,58 @@ def _grant_refusal(root, d, guards, cx_home):
         for f in _path_forms(root, p):
             if _path_under(f, d):
                 return "it %s %s %s" % ("is" if f == d else "contains", label, p)
-    for f in _path_forms(root, cx_home):
-        if _path_under(d, f):
-            return "it lies inside the conductor's home %s (other runs' tasks and diffs, the Copilot token file)" % cx_home
+    for label, p, why in inside:
+        for f in _path_forms(root, p):
+            if _path_under(d, f):
+                return "it lies inside %s %s%s" % (label, p, " (%s)" % why if why else "")
+    if _on_drive(d, drive_roots):
+        return "it lies on a Windows drive, not in a system directory"
     return None
 
 
-def grok_resolver_plan(root, env, home, grok_home, cx_home, protect=()):
+def _link_refusal(root, links, places):
+    """Why a target reached through LINKS (root_realpath's) may not steer a grant, else None: a
+    link inside one of PLACES ((text, path) pairs: /tmp and /var/tmp, which every strict-based
+    grok run may write, grok's home, the conductor's home, a checkout, the home directory) could be
+    replaced by a grok run or the user's own programs, and the next profile write would grant
+    whatever directory it then names."""
+    for ln in links:
+        for text, p in places:
+            for f in _path_forms(root, p):
+                if _path_under(ln, f):
+                    return "the file is reached through the link %s, inside %s" % (ln, text)
+    return None
+
+
+def grok_resolver_plan(root, home, grok_home, cx_home, protect=()):
     """What every conductor grok profile adds for grok's resolver and TLS files (DESIGN section
-    15.7): {"platform", "targets", "dirs", "skipped"}. A target whose resolved path lies outside
-    strict's read set (GROK_STRICT_READ and grok's home) gets the directory that holds it (the
-    directory itself for an SSL_CERT_DIR entry) into "dirs" (sorted, unique), unless that
-    directory is /, is or contains HOME, GROK_HOME, CX_HOME or a PROTECT path ((label, path)
-    pairs: the run's checkout, the repository and its git directory), or lies inside CX_HOME:
-    those go to "skipped", with the reason. Linux only (grok's Landlock sandbox, where that read
-    set was measured); elsewhere nothing is added."""
+    15.7): {"platform", "targets", "dirs", "skipped"}. The targets are GROK_RESOLVER_FILES only
+    (never SSL_CERT_FILE or SSL_CERT_DIR: every caller shares these profiles, so they depend on no
+    caller's environment). A target whose resolved path lies outside strict's read set
+    (GROK_STRICT_READ and grok's home) gets the directory that holds it into "dirs" (sorted,
+    unique), unless that directory is /, is or contains HOME, GROK_HOME, CX_HOME or a PROTECT path
+    ((label, path) pairs: the run's checkout, the repository and its git directory), lies inside
+    CX_HOME, a PROTECT path or HOME, or on a Windows drive (wsl_drive_roots), or the target is
+    reached through a link in /tmp, /var/tmp, one of those homes or a PROTECT path: those go to
+    "skipped", with the reason. Linux only (grok's Landlock sandbox, where that read set was
+    measured); elsewhere nothing is added."""
     plan = {"platform": sys.platform, "targets": [], "dirs": [], "skipped": []}
     if not sys.platform.startswith("linux"):
         return plan
     guards = [("your home directory", home), ("grok's home", grok_home), ("the conductor's home", cx_home)] + list(protect)
-    for t in grok_resolver_targets(root, env):
+    inside = ([("the conductor's home", cx_home, "other runs' tasks and diffs, the Copilot token file")]
+              + [(label, p, "") for label, p in protect] + [("your home directory", home, "")])
+    places = ([("%s, which grok runs write" % w, w) for w in GROK_STRICT_WRITE]
+              + [("%s %s" % (label, p), p) for label, p in guards])
+    drives = wsl_drive_roots(root)
+    for t in grok_resolver_targets(root):
         t["inside"] = bool(t["exists"] and grok_reads(root, t["real"], GROK_STRICT_READ + (grok_home,)))
         t["grant"] = t["skip"] = None
         plan["targets"].append(t)
         if not t["exists"] or t["inside"]:
             continue
         d = t["real"] if t["dir"] else os.path.dirname(t["real"])
-        why = _grant_refusal(root, d, guards, cx_home)
+        why = _grant_refusal(root, d, guards, inside, drives) or _link_refusal(root, t["links"], places)
         if why:
             t["skip"] = why
             plan["skipped"].append({"dir": d, "why": why, "path": t["path"], "real": t["real"], "kind": t["kind"]})
@@ -2711,11 +2785,17 @@ def grok_plan_notes(plan, act):
     return notes
 
 
+def plan_grok_home(a):
+    """grok's home from grok-profile's / grok-resolver's options (default $GROK_HOME, else ~/.grok)."""
+    home = a.home or os.environ.get("HOME", "")
+    return a.grok_home or os.environ.get("GROK_HOME") or os.path.join(home, ".grok")
+
+
 def grok_plan_for(a, gcd):
     """grok_resolver_plan from grok-profile's / user-grants' options (each defaults to the
-    environment: HOME, GROK_HOME, CX_HOME, CX_DETECT_ROOT, SSL_CERT_FILE, SSL_CERT_DIR)."""
+    environment: HOME, GROK_HOME, CX_HOME, CX_DETECT_ROOT)."""
     home = a.home or os.environ.get("HOME", "")
-    grok_home = a.grok_home or os.environ.get("GROK_HOME") or os.path.join(home, ".grok")
+    grok_home = plan_grok_home(a)
     cx_home = getattr(a, "cx_home", "") or os.environ.get("CX_HOME") or os.path.join(home, ".conductor")
     root = a.resolver_root if a.resolver_root is not None else os.environ.get("CX_DETECT_ROOT", "")
     protect = []
@@ -2723,7 +2803,7 @@ def grok_plan_for(a, gcd):
         protect.append(("the run's checkout", a.workspace))
     if gcd:
         protect += [("the repository", grok_repo_of(gcd)), ("the repository's git directory", gcd)]
-    return grok_resolver_plan(root, os.environ, home, grok_home, cx_home, protect)
+    return grok_resolver_plan(root, home, grok_home, cx_home, protect)
 
 
 def cmd_grok_profile(a):
@@ -2810,10 +2890,12 @@ def cmd_grok_resolver(a):
     """grok-resolver --section S [--home H] [--grok-home G] [--cx-home C] [--resolver-root R]
     [--sandbox F] [--profile P]: D17's resolver records (DESIGN section 8.3): the resolver and TLS
     targets, the directories conductor's grok profiles add for those outside strict's read set,
-    the ones it cannot grant (! grok cannot resolve names under any conductor profile), the
-    conductor profiles in F whose read paths lack one of those directories (! fixed by the
-    profile's next write), and option grok_sandbox_profile P naming strict or a profile of the
-    user's own that lacks one. Linux only (nothing elsewhere)."""
+    the ones it cannot grant (! grok cannot resolve names under any conductor profile; no
+    checkout is known here, so the checkout guard shows only in a lane's note), SSL_CERT_FILE /
+    SSL_CERT_DIR of this environment outside strict's read set (! never granted), the conductor
+    profiles in F whose read paths lack one of those directories (! fixed by the profile's next
+    write), and option grok_sandbox_profile P naming strict or a profile of the user's own that
+    lacks one. Linux only (nothing elsewhere)."""
     plan = grok_plan_for(a, None)
     if not plan["platform"].startswith("linux"):
         return 0
@@ -2835,12 +2917,14 @@ def cmd_grok_resolver(a):
         lines.append(rec_line("ok", "D17", sec, "grok's resolver and TLS files lie inside strict's read set: no profile needs more"))
     for s in plan["skipped"]:
         t = {"path": s["path"], "real": s["real"]}
+        where = ("a file in a system directory, outside your home directory, ~/.grok, ~/.conductor, your checkouts and the "
+                 "Windows drives, and not through a link in /tmp, /var/tmp or those")
         if s["kind"] == "dns":
             text = "grok cannot resolve any host name under any conductor profile: %s, outside strict's read set, and its directory %s cannot be granted (%s)"
-            fix = "make %s resolve to a file outside your home directory, ~/.grok, ~/.conductor and your checkouts (on WSL its default link to /mnt/wsl/resolv.conf works)" % s["path"]
+            fix = "make %s resolve to %s (on WSL its default link to /mnt/wsl/resolv.conf works)" % (s["path"], where)
         elif s["kind"] == "tls":
             text = "grok may not verify TLS certificates under any conductor profile: %s, outside strict's read set, and its directory %s cannot be granted (%s)"
-            fix = "keep the CA bundle (SSL_CERT_FILE, SSL_CERT_DIR) outside your home directory, ~/.grok, ~/.conductor and your checkouts"
+            fix = "make %s resolve to %s" % (s["path"], where)
         else:
             text = "grok cannot read %s under any conductor profile (outside strict's read set; its directory %s cannot be granted: %s), so its name lookups may differ from the host's"
             fix = ""
@@ -2849,6 +2933,20 @@ def cmd_grok_resolver(a):
         if not t["exists"]:
             lines.append(rec_line("warn" if t["kind"] == "dns" else "info", "D17", sec, "%s points at %s, which does not exist%s" % (
                 t["path"], t["real"] or "a link loop", ": no host name resolves here" if t["kind"] == "dns" else "")))
+    # SSL_CERT_FILE / SSL_CERT_DIR of the environment the doctor runs in: never granted (the
+    # profiles are shared by every caller, so they depend on no caller's environment).
+    fixed = set(t["path"] for t in tg)
+    for t in grok_resolver_targets(root, os.environ):
+        if t["var"] is None or t["path"] in fixed or not t["exists"]:
+            continue
+        if grok_reads(root, t["real"], GROK_STRICT_READ + (plan_grok_home(a),) + tuple(plan["dirs"])):
+            continue
+        lines.append(rec_line("warn", "D17", sec, "%s names %s, outside strict's read set: conductor's grok profiles never grant a "
+                              "directory for SSL_CERT_FILE or SSL_CERT_DIR (every caller shares them, so they depend on no "
+                              "caller's environment), so a grok run that reads it (unverified, DESIGN section 20 item 81) "
+                              "cannot read it there" % (t["var"], _target_text(t)),
+                              "keep the bundle in a directory strict reads (for example /usr/local/share/ca-certificates, then "
+                              "update-ca-certificates), or name a profile of your own in grok_sandbox_profile that grants it"))
     if a.sandbox and plan["dirs"] and os.path.exists(a.sandbox):
         for name, paths in sorted(_sandbox_profiles(a.sandbox).items()):
             lack = [d for d in plan["dirs"] if paths is None or not grok_reads(root, d, paths)]

@@ -247,7 +247,9 @@ An explicit lane whose pool stays full exits 28 (`NO_CAPACITY`) after 10 minutes
 with `--no-wait`: use the next pool in the order. `cx-job status <id>` says `queued` while a job
 waits for its slot; `cx-job kill <id>` cancels one; `cx-job list` shows them. agy runs in raw
 mode by default (option `agy_opus_mode`; `--agy-mode wrapper` uses `agy-delegate`, whose served
-model is recorded as unverified). A `GHCP_FALLBACK` on a Fusion lane is a model mismatch (21).
+model is recorded as unverified). A Fusion lane runs ghcp with `fusion_fallback` off: a Fusion
+refusal exits 14 (free; take the next lane), and a `GHCP_FALLBACK` that still appears is a model
+mismatch (21).
 
 The claude lane (your own subagent, Opus 5.5 at the task's effort): `cx-run` creates the
 worktree, runs `setup` and prints a dispatch JSON (`worktree`, `host_path`, `prompt`,
@@ -611,8 +613,10 @@ After every run, before you accept anything:
 - **CLI updates**: nothing is pinned. Before every run each lane checks that the live `--help`
   (and `copilot help permissions`) still lists every flag it is about to pass; a missing one
   stops the lane with exit 26 before it runs: use the next pool and tell the user.
-- **A Fusion refusal** re-runs on plain `auto` (billed) and prints `GHCP_FALLBACK`: a model
-  mismatch on a Fusion lane.
+- **A Fusion refusal** exits 14 on a Fusion lane: `cx-run` turns ghcp's `fusion_fallback` off
+  for `--fusion` runs, so ghcp never re-runs the task on plain `auto` (billed) for an answer that
+  would be discarded. Take the next lane. A `GHCP_FALLBACK` that still appears is a model
+  mismatch (21).
 - **Grok's `worker` subcommand** registers this machine as a remote worker for a third-party
   service: never run it (`cx-doctor` warns when one is running; leader-mode processes are
   normal).
@@ -739,15 +743,19 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
   worktree, then dispatch the task afresh under a new id.
 - **Exit 1 from `cx-wsl grok`**: a grok call without `--sandbox cx-strict` (every `--sandbox` it
   names; plain `strict` cannot read the resolver file on WSL) or without an absolute `--cwd`
-  directory. Use the commit-message lines of Step 2 verbatim. Exit 2 from it: `cx-strict` could
-  not be written into `~/.grok/sandbox.toml`, or its check refused it (the note says why, as
-  for the lane below).
+  directory. Use the commit-message lines of Step 2 verbatim. Exit 2 from it: the `--cwd`
+  directory holds a `.grok/sandbox.toml` (empty `$OUT/msg` first, as those lines do),
+  `cx-strict` could not be written into `~/.grok/sandbox.toml`, or its check refused it (the
+  note says why, as for the lane below).
 - **grok "could not reach its API" or "could not resolve its API's host name"** (exit 2, or 12
-  when the timeout ended it): grok made no model call (grok retries on its own for about 28
-  minutes first). Run `cx-doctor`: D17's resolver lines name the files grok must read under its
-  sandbox profile (on WSL `/etc/resolv.conf` links to `/mnt/wsl/resolv.conf`) and any it cannot;
-  a profile written before 0.2.2 gains the directory on the repository's next grok run. Until
-  D17 is clean, use another lane; a network outage looks the same.
+  when the timeout ended it): grok said so on stderr and made no model call (grok retries on
+  its own for about 28 minutes first). Run `cx-doctor`: D17's resolver lines name the files grok
+  must read under its sandbox profile (on WSL `/etc/resolv.conf` links to
+  `/mnt/wsl/resolv.conf`) and any it cannot (only system directories outside your home are
+  granted; `SSL_CERT_FILE` / `SSL_CERT_DIR` never are); a profile written before 0.2.2 gains the
+  directory on the repository's next grok run. Until D17 is clean, use another lane; a network
+  outage looks the same. A note "grok's log … logged during this run" alone is a hint, not a
+  diagnosis: every grok process on the computer writes that log.
 - **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
   checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing

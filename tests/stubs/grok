@@ -6,7 +6,8 @@
 # STUB_GROK_MODELS_ONCE=unauth|network with STUB_GROK_MODELS_ONCE_FILE: the first bare models
 # call (none exists yet: it creates that file) answers the unauthenticated text, rc 0, or the
 # network error, rc 1; later calls answer as above (D17's retry).
-# usage -> fixture; STUB_ENV_FILE receives its environment. A prompt run (--prompt-file or
+# usage -> fixtures/grok-usage.txt (no model call), with STUB_GROK_USAGE=calls the real
+# fixtures/real/grok/sbx-grok-1/grok.usage.txt (4 model calls); STUB_ENV_FILE receives its environment. A prompt run (--prompt-file or
 # -p/--single) needs STUB_GROK_RUN, else it is billable; its JSON is SYNTHETIC in the keys grok
 # 1.0.70 really prints (text, sessionId, modelUsage, usage, stopReason; with --json-schema also
 # structuredOutput, and a text that joins the turns: "[ ][...]"). Scenarios: ok (writes
@@ -136,7 +137,7 @@ case "${1-}" in
     if [ "${STUB_GROK_AUTH:-}" = 1 ]; then cat "$STUB_FIX/grok-models-auth.txt"; else cat "$STUB_FIX/grok-models-unauth.txt"; fi
     exit "${STUB_GROK_MODELS_RC:-0}" ;;
   usage)
-    cat "$STUB_FIX/grok-usage.txt"
+    if [ "${STUB_GROK_USAGE:-}" = calls ]; then cat "$STUB_FIX/real/grok/sbx-grok-1/grok.usage.txt"; else cat "$STUB_FIX/grok-usage.txt"; fi
     exit 0 ;;
 esac
 run="${STUB_GROK_RUN:-}" model="" cwd="$PWD" sid="" schema="" prompt=""

@@ -1273,14 +1273,15 @@ d15_d19() {
       prof="$(cx_opt grok_sandbox_profile)"
       case "$prof" in
         auto|cx-workspace)
-          [ -f "$sbx" ] && n_cx="$(grep -c '^# cx:begin cx-' "$sbx" 2>/dev/null)"
+          # Repository profiles only (cx-<repo>-<8 hex>), never conductor's cx-strict.
+          [ -f "$sbx" ] && n_cx="$(grep -cE '^# cx:begin cx-[a-z0-9-]*-[0-9a-f]{8}$' "$sbx" 2>/dev/null)"
           chk info D17 "$S_LOG" "grok runs (write, read and review) use their repository's own sandbox profile (cx-<repo>-<hash>, extends strict; ${n_cx:-0} in $sbx), written by a repository's first grok run or cx-init --user-grants" ;;
         # The built-ins that let grok write its home: normalize.py GROK_HOME_WRITERS (the suite
         # pins the two lists equal).
         off|devbox|workspace|read-only)
           chk fail D17 "$S_LOG" "option grok_sandbox_profile names grok's built-in $prof, which lets grok write its home ~/.grok (its own binary, ripgrep and plugins): every grok run is refused" "set grok_sandbox_profile back to auto" ;;
         strict)
-          chk warn D17 "$S_LOG" "option grok_sandbox_profile names grok's built-in strict: grok runs start, but strict cannot read a worktree's git directory or $CXH/routes, so git status and cx-route fail inside worktrees" "set grok_sandbox_profile back to auto (the repository's profile extends strict with exactly those two reads)" ;;
+          chk warn D17 "$S_LOG" "option grok_sandbox_profile names grok's built-in strict: grok runs start, but strict cannot read a worktree's git directory or $CXH/routes, so git status and cx-route fail inside worktrees" "set grok_sandbox_profile back to auto (the repository's profile extends strict with those two reads and the resolver directories D17 lists)" ;;
         *)
           if [ "$PY" = 1 ] && cx_py toml-table "$sbx" "$prof" 2>/dev/null; then
             chk ok D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is defined in $sbx"

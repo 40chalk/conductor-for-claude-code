@@ -2,9 +2,12 @@
 
 ## 0.2.2 — 2026-11-06
 
-A security fix: no conductor grok run uses grok's built-in `read-only` sandbox any more. And on
-WSL grok can resolve host names again under conductor's strict-based profiles, and on Git Bash
-`cx-doctor --windows` no longer reports every plugin file as CRLF-corrupted.
+A security fix: no conductor grok run uses grok's built-in `read-only` sandbox any more.
+conductor's strict-based grok profiles now add the system directories WSL's
+`/etc/resolv.conf` needs (grok end to end on WSL is not yet measured, DESIGN §20 item 81), and
+W6 and D3 look for CRs in a way that avoids the false positive measured on Git Bash (not yet
+re-measured there, §20 item 82). Copilot Fusion lanes no longer pay for a plain-`auto` re-run
+whose answer conductor discards.
 
 - **Security: grok read, review and commit-message runs could plant code that runs unsandboxed
   later.** 0.2.1 ran every grok read and review (`--sandbox read-only --always-approve`) and the
@@ -112,11 +115,19 @@ WSL grok can resolve host names again under conductor's strict-based profiles, a
   review and commit-message runs to strict-based profiles would have spread this to every grok
   call on WSL. Now every conductor profile (each repository's `cx-<repo>-<hash>`, written by the
   lane and `cx-init --user-grants`) adds, read-only, the directory that holds each resolver or
-  TLS file (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/host.conf`,
-  `/etc/gai.conf`, the usual CA bundles, `SSL_CERT_FILE`, `SSL_CERT_DIR`) whose resolved path
-  lies outside that read set: `/mnt/wsl` on WSL, nothing on most hosts (directories only;
-  never `/`, a directory that is or contains your home, `~/.grok`, `~/.conductor` or a checkout,
-  nor one inside `~/.conductor`: a note and D17 say so). The commit-message call and a grok
+  TLS file of a fixed list (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`,
+  `/etc/host.conf`, `/etc/gai.conf`, the usual CA bundles) whose resolved path lies outside that
+  read set: `/mnt/wsl` on WSL, nothing on most hosts. Directories only, and only system
+  directories: never `/`, a directory that is or contains your home, `~/.grok`, `~/.conductor`
+  or a checkout, one inside your home, `~/.conductor` or the run's checkout, one on a Windows
+  drive (`/mnt/<letter>` or the `[automount]` root of `/etc/wsl.conf`), nor one reached through
+  a link in `/tmp`, `/var/tmp`, a home or a checkout, where a grok run or your own programs could
+  replace the link (a note on every profile write says so, and D17 for everything but the
+  checkout, which it does not know). `SSL_CERT_FILE` and `SSL_CERT_DIR` are never granted: every
+  caller shares these profiles (a call forwarded from Git Bash starts without them, a WSL
+  session inherits yours), so they depend on no caller's environment; D17 warns when its own
+  environment names a bundle grok cannot read, and the per-run check notes one. The
+  commit-message call and a grok
   lane run outside a git checkout use conductor's new `cx-strict` (strict plus those
   directories only), which `cx-wsl` writes, under the same lock and rewrite rules, and checks
   (`grok --sandbox cx-strict models` and its sandbox-log line: the per-run check) before each
@@ -126,17 +137,42 @@ WSL grok can resolve host names again under conductor's strict-based profiles, a
   Not yet measured: that grok works end to end on WSL after the fix (DESIGN §20 item 81).
 - **D17 checks grok's resolver and TLS files**: it lists them, the directories conductor's
   profiles add and any that cannot be granted (! grok cannot resolve any host name under any
-  conductor profile, with the fix), a dangling `/etc/resolv.conf`, conductor profiles in
-  `~/.grok/sandbox.toml` that still lack a directory (written before this release: the
+  conductor profile, with the fix), a dangling `/etc/resolv.conf`, `SSL_CERT_FILE` /
+  `SSL_CERT_DIR` of its environment that grok cannot read (! never granted), conductor profiles
+  in `~/.grok/sandbox.toml` that still lack a directory (written before this release: the
   repository's next grok run, or the next `cx-wsl grok` call for `cx-strict`, rewrites them), and
-  `grok_sandbox_profile=strict` or a profile of yours that lacks one.
-- **A grok run that cannot reach its API says so**: rc not 0 with no model call and `error
-  sending request for url` (or another connect or DNS phrase) on stderr is 2 `FAILED` with the
-  reason "grok could not reach its API (a connection or DNS failure; cx-doctor D17): …", or
-  "could not resolve its API's host name (DNS; …)" when grok's own log, only the bytes the run
-  appended to `~/.grok/logs/unified.jsonl` (searched as text, kept in `grok.netlog.txt`), says
-  DNS; 12 when the timeout ended grok's retries first. A note says grok's own retries can hold
-  a run for about 28 minutes (the run's timeout bounds it).
+  `grok_sandbox_profile=strict` or a profile of yours that lacks one. Its info line counts the
+  repositories' profiles only (`cx-strict` is not one), and its fix text for `strict` names the
+  resolver directories too.
+- **A grok run that cannot reach its API says so**: rc not 0, no model call (grok usage's
+  `modelCalls` 0, or, when grok usage recorded nothing, no token at all) and `error sending
+  request for url` (or another connect or DNS phrase) on the run's own stderr or error object is
+  2 `FAILED` with the reason "grok could not reach its API (a connection or DNS failure;
+  cx-doctor D17): …", or "could not resolve its API's host name (DNS; …)" when stderr or grok's
+  own log, only the bytes appended to `~/.grok/logs/unified.jsonl` during the run (searched as
+  text, kept in `grok.netlog.txt`), says DNS; 12 when the timeout ended grok's retries first. A
+  note says grok's own retries can hold a run for about 28 minutes (the run's timeout bounds
+  it). Every grok process on the computer appends to that log, so a DNS line there alone is a
+  note, never the reason. grok usage's JSON (`session.inputTokens`, `cachedReadTokens`,
+  `modelCalls`, …) now fills a failed run's usage; the old text patterns never matched it.
+- **Fusion lanes never pay for a discarded fallback.** ghcp's option `fusion_fallback` (default
+  on) re-runs a task once on plain `auto`, billed, when Copilot refuses Fusion before any model
+  call, and conductor discarded that answer: `GHCP_FALLBACK` on a Fusion lane is 21. The copilot
+  adapter now sets `CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off` for `--fusion` runs only (ghcp's
+  options loader lets the environment win over `settings.json`; verified with ghcp 0.1.2 over
+  its own test stub), so a refusal ends as ghcp's free exit 14 (`MODEL_UNAVAILABLE`) and the next
+  lane follows. Not a spend cap: nothing else changes, your other ghcp calls keep your setting,
+  and `COPILOT_CLI_ENABLED_FEATURE_FLAGS` is untouched (ghcp merges the feature flags its
+  headless Fusion needs). A `GHCP_FALLBACK` that still appears stays 21.
+- **DESIGN §1.2 no longer infers anything from a binary string search**: the 1.0.106-1
+  prerelease's missing Fusion feature-flag strings proved nothing, since the 1.0.105 binary, on
+  which those flags work, has none either (its app code is compressed). No check searches a
+  binary for strings.
+- **Docs**: §7.7 and the skill name `cx-wsl`'s refusal of a `.grok/sandbox.toml` in `--cwd`
+  (exit 2); SPEC-NOTES 26 says the per-run check refuses only when grok says the profile was not
+  applied (an unenforced or home-writing event too), any other start-up error being the call's
+  own failure; README no longer says plain `strict` failed or that every doctor check passed on
+  that machine (W6 had failed there; every D17 check passed).
 - **D17 retries the grok login probe once**, 2 s after a `grok models` that listed no models or
   said "You are not authenticated" (a one-off "not logged in" was seen once and did not recur),
   never after a hang; the line says when it retried.
@@ -160,7 +196,11 @@ WSL grok can resolve host names again under conductor's strict-based profiles, a
   (15 s, 16.7113 AI credits), copilot read 0 (12 s, 3.9574 AI credits), agy write 0 (47 s), the
   grok write that failed after 1657 s because grok resolved no host name, and the
   grok write stopped at its 180 s timeout (12); 0.2.1's out-directory layout, the Linux user
-  name in their home paths replaced by `user`.
+  name in their home paths replaced by `user`. The older real runs (`sbx-agy-1`,
+  `sbx-copilot-1`, `sbx-grok-1`, `sbx-review-1`, `sbx-review-2`) still held that name in their
+  home paths: now `/home/user` too (nothing else changed; no e-mail address, Windows user name
+  or token was in any fixture). The stub's `grok usage` answer now has the JSON keys grok
+  1.0.70 prints (synthetic values, no model call).
 - **Tests**: read and review argv name the repository's profile and never `read-only`; a read
   run writes the profile and runs under it after the per-run check; a `.grok/sandbox.toml` in a
   read's or review's checkout refuses (2, no prompt run), also through `cx-run --mode review`
@@ -195,7 +235,26 @@ WSL grok can resolve host names again under conductor's strict-based profiles, a
   CRLF file. The ChalkAgent runs through the parsers: copilot and agy 0 with their sessions,
   usage and credits, grok 2 with the connection reason, a copy with the day's measured log text
   (through `grok-netlog`) 2 with the DNS reason, grok 12; caller `gitbash` and host `wsl` in
-  each; every home path in them `/home/user`.
+  each; every home path in them `/home/user`. From the follow-up review: the resolver plan on a
+  tree whose fixed files link into the home, inside it, onto a Windows drive, through a link in
+  `/tmp` and in the home, and inside the conductor's home (D17 and the profile notes name each
+  refusal; the one system directory is granted), the same `cx-strict` rendered with and without
+  `SSL_CERT_*` in the writer's environment, a directory inside the run's checkout refused, and
+  `cx-wsl grok` keeping `cx-strict` unchanged under a caller's `SSL_CERT_*` (the per-run check
+  notes them); grok usage's real JSON through the stub (`STUB_GROK_USAGE=calls`) and on copies
+  of the live fixtures: a connect or DNS failure after model calls keeps "grok exited 1", and a
+  DNS line in grok's log alone is a note; D17's count of repository profiles and its `strict`
+  fix text; a Fusion refusal through the adapter is ghcp's 14 with
+  `CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off` (over the caller's `on`) and the caller's
+  `COPILOT_CLI_ENABLED_FEATURE_FLAGS` unchanged, while a non-Fusion run gets no option variable
+  (the ghcp stub follows the option as ghcp does, with ghcp 0.1.2's real exit-14 output as a
+  new fixture); the home-path check covers every real fixture. Mutation-checked on a scratch
+  copy (each mutation below fails at least one check): the resolver directories dropped from
+  the repository's profile or from `cx-strict`, a directory inside the home granted, the link
+  or drive refusal dropped, the plan reading `SSL_CERT_*` again, the DNS reason broken or firing
+  after model calls, D17's login retry removed or its count including `cx-strict`, `$'\r'` back
+  inside a substitution, `-U` dropped at each of the four CR checks, one fixture path
+  un-sanitized, and the Fusion option left on.
 
 ## 0.2.1 — 2026-11-06
 

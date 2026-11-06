@@ -377,12 +377,17 @@ spec left open.
     fields only, and only when the executor failed or left no answer (ghcp's rule).
 86. **Served-model rules as built.** Copilot: every `models_used[].model` equals the request
     (an empty list is a note, not a mismatch); Fusion: `GHCP_FALLBACK` is 21 and the served
-    model is `fusion.final_model`. grok: the `modelUsage` keys must be exactly the model. claude
+    model is `fusion.final_model` (since 0.2.2 the adapter turns ghcp's `fusion_fallback` off for
+    `--fusion` runs, so a refusal is ghcp's free 14 and a `GHCP_FALLBACK` appears only from a
+    ghcp that ignores the option). grok: the `modelUsage` keys must be exactly the model. claude
     (assumption): the requested model must be among the `modelUsage` keys, and any other key that
     is not a Haiku helper is a mismatch.
 87. **Worker environment additions.** Every `CLAUDE_PLUGIN_OPTION_*` is unset for the child
     (both siblings read option variables of their own, and a job runner may carry the
-    conductor's); Copilot's `COPILOT_HOME` is set to the recorded value rather than only unset;
+    conductor's), then the copilot lane sets ghcp's `CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off` for
+    `--fusion` runs only (0.2.2: a Fusion refusal is ghcp's free 14, not a billed plain-`auto`
+    re-run whose answer the lane discards; an option the user saved stays in force everywhere
+    else); Copilot's `COPILOT_HOME` is set to the recorded value rather than only unset;
     the Copilot token is read at run time and never written into `copilot.env`. The claude
     worker's unset list is one array (`CLAUDE_WORKER_SCRUB`) plus every `CLAUDE_CODE_REMOTE*` and
     `CLAUDE_CODE_SESSION_*` present; P62 allow-lists that array line (it unsets, never reads).
@@ -718,42 +723,61 @@ spec left open.
     which now says "not one of grok's built-ins and not defined".
 25. **grok's resolver and TLS reads** (DESIGN §1.3, §15.7, §20 item 81; measured on WSL): every
     profile conductor writes adds, read-only, the directory that holds each resolver or TLS file
-    whose resolved path lies outside `strict`'s logged read set, rather than a fixed `/mnt/wsl`:
-    the same rule covers WSL, systemd-resolved setups that point elsewhere, NixOS store paths and
-    `SSL_CERT_FILE` / `SSL_CERT_DIR`, and adds nothing where nothing is needed. Directories only
-    (grok refuses a file in `read_only`), so the grant is the file's whole directory (on WSL
-    `/mnt/wsl`, which WSL shares between distributions); never `/`, a directory that is or
-    contains the home directory, `~/.grok`, `$CX_HOME`, the run's checkout, the repository or its
-    git directory, nor one inside `$CX_HOME` (stricter than "is or contains" there: it holds
-    other runs' tasks and the Copilot token file). A directory inside the home (`~/certs`) is
-    granted: it is the user's own `SSL_CERT_FILE`. Linux only: the read set was measured under
-    Landlock; macOS (`/etc` → `/private/etc`) gets nothing. The read set is `cxlib`'s constant
-    (as grok 1.0.70 logs it), not the live event: the profile is written before any probe of
-    it; the per-run check then compares the targets with the event's own read paths.
+    of a fixed list whose resolved path lies outside `strict`'s logged read set, rather than a
+    fixed `/mnt/wsl`: the same rule covers WSL, systemd-resolved setups that point elsewhere and
+    NixOS store paths, and adds nothing where nothing is needed. Directories only (grok refuses a
+    file in `read_only`), so the grant is the file's whole directory (on WSL `/mnt/wsl`, which
+    WSL shares between distributions). Only system directories qualify: never `/`, a directory
+    that is or contains the home directory, `~/.grok`, `$CX_HOME`, the run's checkout, the
+    repository or its git directory, nor one inside `$CX_HOME`, those checkouts or the home
+    directory (`~/.config` holds tokens), nor one on a Windows drive (`/mnt/<letter>`, the
+    `[automount]` root of `/etc/wsl.conf`), nor one the resolution reaches through a link in
+    `/tmp`, `/var/tmp` (strict's write set: a grok run could replace the link and steer the next
+    profile write), a home or a checkout. `SSL_CERT_FILE` and `SSL_CERT_DIR` are not targets (the
+    follow-up review): the profiles are shared by every caller, and calls forwarded from Git Bash
+    start without them while a WSL session inherits the user's shell, so each kind of caller
+    rewrote the shared profile its own way. The deterministic rule (the fixed list, read under
+    `CX_DETECT_ROOT`; no variable but the homes) was chosen over recording the variables in the
+    host record (stale, and still one caller's view) or keeping the union of past grants (history
+    decides, and a grant could never be withdrawn); D17 warns about its own environment's
+    `SSL_CERT_*` that grok cannot read, the per-run check notes the run's. Linux only: the read
+    set was measured under Landlock; macOS (`/etc` → `/private/etc`) gets nothing. The read set
+    is `cxlib`'s constant (as grok 1.0.70 logs it), not the live event: the profile is written
+    before any probe of it; the per-run check then compares the targets with the event's own
+    read paths.
 26. **`cx-strict`, not plain `strict`**, for the commit-message call and the lane outside a git
     checkout: a fixed name conductor owns (written and checked by `cx-wsl` before each call,
     under the repository profiles' lock and rules), so the argv says exactly which profile runs
     (`--sandbox cx-strict`) and nothing is substituted behind it; `cx-wsl` refuses plain
     `strict` (exit 1) instead of mapping it, which would hide what runs. Its text lives in
     `cxlib.GROK_STRICT_TEXT` (it names no repository; no new shipped template). With no
-    directory to add its `read_only` is `[]` (whether grok accepts an empty list is unverified;
-    the per-run check would refuse a profile grok cannot apply).
+    directory to add its `read_only` is `[]` (whether grok accepts an empty list is unverified).
+    The per-run check refuses only when grok's probe output says the profile could not be
+    applied (`GROK_NOSANDBOX_RE`), the logged event is unenforced or grants write to grok's home;
+    any other start-up error of the probe (its rc alone) refuses nothing, and the call then fails
+    on its own, so a grok that rejected `read_only = []` with other wording would surface as the
+    call's own failure.
 27. **The per-run check notes, never refuses, a resolver target the logged profile cannot read**:
     the check compares the targets with the `ProfileApplied` event's `read_only_paths` and
     `read_write_paths` only when the event lists `read_only_paths` (the shape strict-based starts
     log on 1.0.70); another log shape, a grok whose list omits the base directories, or a
     non-essential file (`/etc/gai.conf`) must not block a run. The run's failure reason then
     names a DNS failure (item 28).
-28. **grok's connection failure reason** (DESIGN §15.2 grok): rc not 0, no model call, and one of
-    the measured phrases (`error sending request for url`, `client error (Connect)`, `dns
-    error`, `failed to lookup address information`) on stderr, in the error object or among the
-    bytes the run appended to `~/.grok/logs/unified.jsonl` (read like the sandbox log: only the
-    appended range, at most the last 4 MiB, never through a symlink; matched as text, the JSON
-    shape is unverified). Still 2 `FAILED` (12 on the wall clock): no new exit class for an
-    unverified cause. The reason keeps to `result.json`'s 200 characters (what, D17, the phrase);
-    grok's own words, the per-run check's unreadable targets and the 28-minute retry note go
-    into the notes. Concurrent grok runs append to the same log, so a phrase another run added
-    meanwhile can be counted; it still describes this host.
+28. **grok's connection failure reason** (DESIGN §15.2 grok): rc not 0, no model call (grok
+    usage's `session.modelCalls` 0; when grok usage recorded nothing, no `modelUsage` and no
+    token), and one of the measured phrases (`error sending request for url`, `client error
+    (Connect)`, `dns error`, `failed to lookup address information`) on the run's own stderr or
+    in its error object. The DNS variant also takes the bytes appended to
+    `~/.grok/logs/unified.jsonl` during the run (read like the sandbox log: only the appended
+    range, at most the last 4 MiB, never through a symlink; matched as text, the JSON shape is
+    unverified), but only to name DNS in a reason stderr already earned: every grok process on
+    the computer (other lanes, `cx-wsl` calls, the user's sessions) appends to that log, and its
+    lines carry no session id conductor could match (the shape was not captured), so a DNS line
+    there with nothing on stderr is a note, never a reason. Still 2 `FAILED` (12 on the wall
+    clock): no new exit class for an unverified cause. The reason keeps to `result.json`'s 200
+    characters (what, D17, the phrase); grok's own words, the per-run check's unreadable targets
+    and the 28-minute retry note go into the notes. grok usage is parsed as the JSON 1.0.70
+    prints (the earlier text patterns never matched it).
 29. **D17's login retry**: one, 2 s after a `grok models` that listed no models or said `You are
     not authenticated` (a one-off seen once), never after a hang (its 30 s already ran out); the
     record says so either way. D24's and D25's notes no longer name a Claude Code version: "the

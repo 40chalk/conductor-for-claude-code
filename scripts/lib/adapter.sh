@@ -43,7 +43,9 @@
 # GROK_DISABLE_AUTOUPDATER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 (no __pycache__ in the
 # worktree when the checks run Python); ANTHROPIC_API_KEY XAI_API_KEY GEMINI_API_KEY
 # GOOGLE_API_KEY and every CLAUDE_PLUGIN_OPTION_* unset (the siblings read option variables of
-# their own); executors by absolute path from the host record; cwd the worktree or gate checkout.
+# their own; the copilot lane then sets ghcp's CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off for
+# --fusion runs only); executors by absolute path from the host record; cwd the worktree or
+# gate checkout.
 # A lane whose wrapper finds its executor by name (agy-delegate: command -v agy) gets the shim
 # set without that name, $CX_HOME/shimsets/<names>/ (built once, atomically). The Copilot token
 # reaches the executor through the environment only, never on a command line. Only the adapter

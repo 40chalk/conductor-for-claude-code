@@ -251,8 +251,11 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   directory; the skill's one `cx-wsl grok` line is pinned by a static check (`$OUT/msg` emptied
   first, cx-strict only, no `--cwd "$TOP"`).
 - Every grok profile conductor writes (each repository's `cx-<repo>-<hash>`, `cx-strict`) adds
-  the resolver and TLS directories of `cxlib.grok_resolver_plan` (never `/`, a home, `$CX_HOME`
-  or a checkout); tests make those files under `CX_DETECT_ROOT`, never the host's.
+  the resolver and TLS directories of `cxlib.grok_resolver_plan`: system directories only (never
+  `/`, a home or anything inside one, `$CX_HOME`, a checkout, a Windows drive, nor through a link
+  in `/tmp`, `/var/tmp`, a home or a checkout), from the fixed `GROK_RESOLVER_FILES` alone, never
+  a caller's `SSL_CERT_*` (every caller shares the profiles); tests make those files under
+  `CX_DETECT_ROOT`, never the host's.
 
 ## Changes that touch many files
 
@@ -292,9 +295,9 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   `GROK_HOME_WRITERS` in `normalize.py` and D17's case arm in `cx-doctor.sh` (a static `[X]`
   check pins them equal), the names `cxlib.py` `cmd_grok_resolver` skips, DESIGN §1.3, §8.3
   D17, §15.2 and §15.7, README, SKILL troubleshooting.
-- **grok's strict read set or resolver files**: `GROK_STRICT_READ` and `GROK_RESOLVER_FILES` in
-  `cxlib.py`, the base `read_only_paths` of the grok stub's sandbox-log line, DESIGN §1.3, §8.3
-  D17 and §15.7, README.
+- **grok's strict read set, write set or resolver files**: `GROK_STRICT_READ`,
+  `GROK_STRICT_WRITE` and `GROK_RESOLVER_FILES` in `cxlib.py`, the base `read_only_paths` of the
+  grok stub's sandbox-log line, DESIGN §1.3, §8.3 D17 and §15.7, README.
 - **Pin bump**: `CX_PIN_*` in `common.sh`, DESIGN §1 and §5.4, README.
 - **New shipped file**: DESIGN §13.4, `CX_SHIPPED_FILES`/`CX_SHIPPED_EXEC`,
   `install-runtime.sh` dirs and D4's subset (`[P41]`).

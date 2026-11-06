@@ -1703,25 +1703,45 @@ check "[X]   ... the first grok models fails with a network error and lists noth
 check "[X]   ... still unauthenticated or failing on the retry: cross / ! D17 say so (twice, 2 s apart); a green login probes once" \
   eval 'doc_use grok-unauth && d_fail D17 "grok is not logged in (grok models said so twice, 2 s apart)" && [ "$(grep -c "^grok	.*argv: models$" "$DLOG")" = 2 ] && doc_use grok-net && d_warn D17 "network is unreachable; after one retry 2 s later: the first grok models (rc 1) listed no models: Error: failed to fetch models: error sending request: network is unreachable" && doc_use green && [ "$(grep -c "^grok	.*argv: models$" "$DLOG")" = 1 ]'
 doc_use res-wsl
-check "[X]   D17 resolver records on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf): info listing the targets (1 outside strict's read set), ok naming read_only /mnt/wsl in conductor's profiles; ! for the conductor profile in sandbox.toml that lacks it (fixed by that repository's next grok run), none for cx-strict or a profile of the user's" \
-  eval 'd_info D17 "grok'"'"'s resolver and TLS files: /etc/resolv.conf -> /mnt/wsl/resolv.conf, /etc/hosts (1 outside strict'"'"'s read set" && d_ok D17 "conductor'"'"'s grok profiles (each repository'"'"'s cx-<repo>-<hash> and cx-strict) add read_only /mnt/wsl for /etc/resolv.conf -> /mnt/wsl/resolv.conf" && d_warn D17 "$DOCS/res-wsl/grok/sandbox.toml: conductor'"'"'s profile cx-old-0123abcd lacks read_only /mnt/wsl (grok'"'"'s resolver and TLS files there): grok runs under it cannot read them until that repository'"'"'s next grok run rewrites it" && ! d_warn D17 "profile cx-strict lacks" && ! d_warn D17 "profile mine" && ! d_warn D17 "cannot be granted"'
+check "[X]   D17 resolver records on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf): info listing the targets (1 outside strict's read set), ok naming read_only /mnt/wsl in conductor's profiles; ! for the conductor profile in sandbox.toml that lacks it (fixed by that repository's next grok run), none for cx-strict or a profile of the user's; the info line counts the one repository profile, not cx-strict" \
+  eval 'd_info D17 "grok'"'"'s resolver and TLS files: /etc/resolv.conf -> /mnt/wsl/resolv.conf, /etc/hosts (1 outside strict'"'"'s read set" && d_info D17 "(cx-<repo>-<hash>, extends strict; 1 in $DOCS/res-wsl/grok/sandbox.toml)" && d_ok D17 "conductor'"'"'s grok profiles (each repository'"'"'s cx-<repo>-<hash> and cx-strict) add read_only /mnt/wsl for /etc/resolv.conf -> /mnt/wsl/resolv.conf" && d_warn D17 "$DOCS/res-wsl/grok/sandbox.toml: conductor'"'"'s profile cx-old-0123abcd lacks read_only /mnt/wsl (grok'"'"'s resolver and TLS files there): grok runs under it cannot read them until that repository'"'"'s next grok run rewrites it" && ! d_warn D17 "profile cx-strict lacks" && ! d_warn D17 "profile mine" && ! d_warn D17 "cannot be granted"'
 doc_use res-wsl-strict
-check "[X]   ... option grok_sandbox_profile=strict there: ! D17, the built-in strict cannot read /mnt/wsl (set it back to auto)" \
-  eval 'd_warn D17 "option grok_sandbox_profile names grok'"'"'s built-in strict, which cannot read /mnt/wsl (grok'"'"'s resolver and TLS files there)" && out_has "set grok_sandbox_profile back to auto (conductor'"'"'s profiles add them)"'
+check "[X]   ... option grok_sandbox_profile=strict there: ! D17, the built-in strict cannot read /mnt/wsl (set it back to auto); the strict fix text names the resolver directories too" \
+  eval 'd_warn D17 "option grok_sandbox_profile names grok'"'"'s built-in strict, which cannot read /mnt/wsl (grok'"'"'s resolver and TLS files there)" && out_has "set grok_sandbox_profile back to auto (conductor'"'"'s profiles add them)" && out_has "set grok_sandbox_profile back to auto (the repository'"'"'s profile extends strict with those two reads and the resolver directories D17 lists)"'
 doc_use res-wsl-mine
 check "[X]   ... option grok_sandbox_profile naming a profile of the user's whose read_only lacks /mnt/wsl: ! D17 naming the directory to add" \
   eval 'd_warn D17 "option grok_sandbox_profile names your own profile mine, to which conductor adds nothing: its read_only lacks /mnt/wsl" && out_has "add /mnt/wsl to its read_only, or set grok_sandbox_profile back to auto"'
-# The grants a home-like path never gets (the suite's own homes lie under /tmp, inside strict's
-# read set, so these run cxlib.py grok-resolver directly on host paths under /srv).
+# The grants a home-like or user-controlled path never gets (the suite's own homes lie under /tmp,
+# inside strict's read set, so these run cxlib.py grok-resolver directly on host paths under
+# /srv): only a system directory outside the home qualifies. Each fixed resolver or TLS file
+# links somewhere else; SSL_CERT_FILE / SSL_CERT_DIR of the environment are never granted.
 RH="$DOCS/res-home/root"
-mkdir -p "$RH/etc" "$RH/srv/me/.conductor/certs" "$RH/srv/x"
+mkdir -p "$RH/etc/ssl/certs" "$RH/etc/pki/tls/certs" "$RH/srv/me/.conductor/certs" "$RH/srv/me/.config" "$RH/srv/x" "$RH/srv/sec" \
+  "$RH/opt/gai" "$RH/opt/corp" "$RH/mnt/c/Users/me" "$RH/tmp"
 printf 'nameserver 10.0.0.1\n' > "$RH/srv/me/resolv.conf"; ln -s /srv/me/resolv.conf "$RH/etc/resolv.conf"
-printf 'pem\n' > "$RH/srv/ca.pem"; printf 'pem\n' > "$RH/srv/x/ca.pem"
-env SSL_CERT_FILE=/srv/ca.pem SSL_CERT_DIR="/srv/me/.conductor/certs:/:/srv/x" "$REAL_PY" -I "$CXLIB" grok-resolver --section Logins \
-  --home /srv/me --grok-home /srv/me/.grok --cx-home /srv/me/.conductor --resolver-root "$RH" > "$DOCS/res-home.tsv" 2>&1
+printf 'pem\n' > "$RH/srv/ca.pem"; ln -s /srv/ca.pem "$RH/etc/ssl/cert.pem"
+printf 'pem\n' > "$RH/srv/me/.config/ca.pem"; ln -s /srv/me/.config/ca.pem "$RH/etc/ssl/certs/ca-certificates.crt"
+printf 'pem\n' > "$RH/srv/x/ca.pem"; ln -s /srv/x/ca.pem "$RH/etc/pki/tls/certs/ca-bundle.crt"
+printf '127.0.0.1 localhost\n' > "$RH/mnt/c/Users/me/hosts"; ln -s /mnt/c/Users/me/hosts "$RH/etc/hosts"
+printf 'hosts: files dns\n' > "$RH/srv/sec/nsswitch.conf"; ln -s /srv/sec/nsswitch.conf "$RH/tmp/ns"; ln -s /tmp/ns "$RH/etc/nsswitch.conf"
+printf 'multi on\n' > "$RH/srv/me/.conductor/certs/host.conf"; ln -s /srv/me/.conductor/certs/host.conf "$RH/etc/host.conf"
+printf 'precedence ::ffff:0:0/96 100\n' > "$RH/opt/gai/gai.conf"; ln -s /opt/gai/gai.conf "$RH/srv/me/gai-link"; ln -s /srv/me/gai-link "$RH/etc/gai.conf"
+printf 'pem\n' > "$RH/opt/corp/ca.pem"
+RH_ARGS=(--home /srv/me --grok-home /srv/me/.grok --cx-home /srv/me/.conductor --resolver-root "$RH")
+env SSL_CERT_FILE=/opt/corp/ca.pem SSL_CERT_DIR="/srv/x:/" "$REAL_PY" -I "$CXLIB" grok-resolver --section Logins "${RH_ARGS[@]}" > "$DOCS/res-home.tsv" 2>&1
 O="$DOCS/res-home.tsv"
-check "[X]   ... grants never given (cxlib.py grok-resolver on /srv paths): /etc/resolv.conf -> /srv/me/resolv.conf in the home directory /srv/me ! 'grok cannot resolve any host name under any conductor profile' with the fix; SSL_CERT_FILE=/srv/ca.pem (/srv contains the home) and SSL_CERT_DIR entries inside the conductor's home or / ! 'may not verify TLS'; /srv/x is the one grant" \
-  eval 'grep -Fqx "warn	D17	Logins	grok cannot resolve any host name under any conductor profile: /etc/resolv.conf -> /srv/me/resolv.conf, outside strict'"'"'s read set, and its directory /srv/me cannot be granted (it is your home directory /srv/me)	make /etc/resolv.conf resolve to a file outside your home directory, ~/.grok, ~/.conductor and your checkouts (on WSL its default link to /mnt/wsl/resolv.conf works)" "$O" && out_has "its directory /srv cannot be granted (it contains your home directory /srv/me)" && out_has "/srv/me/.conductor/certs, outside strict'"'"'s read set, and its directory /srv/me/.conductor/certs cannot be granted (it lies inside the conductor'"'"'s home /srv/me/.conductor" && out_has "its directory / cannot be granted (it is /)" && grep -q "^ok	D17	Logins	conductor'"'"'s grok profiles (each repository'"'"'s cx-<repo>-<hash> and cx-strict) add read_only /srv/x for /srv/x: grok can read them there$" "$O" && [ "$(grep -c "^warn	" "$O")" = 4 ]'
+RH_FIX="a file in a system directory, outside your home directory, ~/.grok, ~/.conductor, your checkouts and the Windows drives, and not through a link in /tmp, /var/tmp or those"
+check "[X]   ... grants never given (cxlib.py grok-resolver on /srv paths): /etc/resolv.conf -> /srv/me/resolv.conf (the home directory /srv/me) ! 'grok cannot resolve any host name under any conductor profile' with the fix; CA bundles in /srv (it contains the home) and inside the home (/srv/me/.config) ! 'may not verify TLS'; /etc/hosts on a Windows drive (/mnt/c/Users/me), /etc/nsswitch.conf through a link in /tmp, /etc/host.conf inside the conductor's home and /etc/gai.conf through a link in the home ! each; SSL_CERT_FILE=/opt/corp/ca.pem and SSL_CERT_DIR=/ ! never granted (SSL_CERT_DIR=/srv/x is readable through the grant); /srv/x is the one grant" \
+  eval 'grep -Fqx "warn	D17	Logins	grok cannot resolve any host name under any conductor profile: /etc/resolv.conf -> /srv/me/resolv.conf, outside strict'"'"'s read set, and its directory /srv/me cannot be granted (it is your home directory /srv/me)	make /etc/resolv.conf resolve to $RH_FIX (on WSL its default link to /mnt/wsl/resolv.conf works)" "$O" && out_has "/etc/ssl/cert.pem -> /srv/ca.pem, outside strict'"'"'s read set, and its directory /srv cannot be granted (it contains your home directory /srv/me)" && out_has "grok may not verify TLS certificates under any conductor profile: /etc/ssl/certs/ca-certificates.crt -> /srv/me/.config/ca.pem, outside strict'"'"'s read set, and its directory /srv/me/.config cannot be granted (it lies inside your home directory /srv/me)	make /etc/ssl/certs/ca-certificates.crt resolve to $RH_FIX" && out_has "grok cannot read /etc/hosts -> /mnt/c/Users/me/hosts under any conductor profile (outside strict'"'"'s read set; its directory /mnt/c/Users/me cannot be granted: it lies on a Windows drive, not in a system directory)" && out_has "its directory /srv/sec cannot be granted: the file is reached through the link /tmp/ns, inside /tmp, which grok runs write)" && out_has "its directory /srv/me/.conductor/certs cannot be granted: it lies inside the conductor'"'"'s home /srv/me/.conductor (other runs'"'"' tasks and diffs, the Copilot token file))" && out_has "its directory /opt/gai cannot be granted: the file is reached through the link /srv/me/gai-link, inside your home directory /srv/me)" && out_has "SSL_CERT_FILE names /opt/corp/ca.pem, outside strict'"'"'s read set: conductor'"'"'s grok profiles never grant a directory for SSL_CERT_FILE or SSL_CERT_DIR" && out_has "SSL_CERT_DIR names /, outside" && ! out_has "SSL_CERT_DIR names /srv/x" && grep -q "^ok	D17	Logins	conductor'"'"'s grok profiles (each repository'"'"'s cx-<repo>-<hash> and cx-strict) add read_only /srv/x for /etc/pki/tls/certs/ca-bundle.crt -> /srv/x/ca.pem: grok can read them there$" "$O" && [ "$(grep -c "^warn	" "$O")" = 9 ]'
+# The profile a lane writes there: the same /srv/x grant whatever SSL_CERT_FILE / SSL_CERT_DIR the
+# writer's environment holds (every caller shares the profile), and never a directory inside the
+# run's checkout.
+RH_SB="$DOCS/res-home/sandbox.toml"
+env SSL_CERT_FILE=/opt/corp/ca.pem SSL_CERT_DIR=/opt/corp "$REAL_PY" -I "$CXLIB" grok-profile --strict --dry-run --sandbox "$RH_SB" "${RH_ARGS[@]}" > "$DOCS/res-home.p1" 2>&1
+env -u SSL_CERT_FILE -u SSL_CERT_DIR "$REAL_PY" -I "$CXLIB" grok-profile --strict --dry-run --sandbox "$RH_SB" "${RH_ARGS[@]}" > "$DOCS/res-home.p2" 2>&1
+env -u SSL_CERT_FILE -u SSL_CERT_DIR "$REAL_PY" -I "$CXLIB" grok-profile --strict --dry-run --sandbox "$RH_SB" --workspace /srv "${RH_ARGS[@]}" > "$DOCS/res-home.p3" 2>&1
+check "[X]   ... the cx-strict a writer renders there: read_only adds /srv/x only, the same with and without SSL_CERT_FILE / SSL_CERT_DIR in its environment (never granted), each refusal noted; with the run's checkout /srv, /srv/x lies inside it and is not granted either" \
+  eval 'cmp -s "$DOCS/res-home.p1" "$DOCS/res-home.p2" && grep -Fq "create cx-strict; read_only adds /srv/x: grok'"'"'s resolver and TLS files there lie outside strict'"'"'s read set (cx-doctor D17)" "$DOCS/res-home.p1" && grep -Fq "not granted: /srv/me/.config (it lies inside your home directory /srv/me)" "$DOCS/res-home.p1" && ! grep -q "opt/corp" "$DOCS/res-home.p1" && grep -Fq "not granted: /srv/x (it lies inside the run'"'"'s checkout /srv)" "$DOCS/res-home.p3" && ! grep -q "read_only adds" "$DOCS/res-home.p3"'
 doc_use res-gone
 check "[X]   ... a dangling /etc/resolv.conf: ! D17 naming its missing target; the green doctor (no resolver file under its empty root): no resolver line at all" \
   eval 'd_warn D17 "/etc/resolv.conf points at /mnt/wsl/resolv.conf, which does not exist: no host name resolves here" && doc_use green && ! out_has "resolver and TLS files" && ! out_has "resolv.conf"'
@@ -3139,8 +3159,8 @@ check "[X]   ... grok's home on whole path components, as given and resolved: re
 adr copilot "$O1" STUB_GHCP_RUN=ok "${SCRUB_PROBE[@]}" COPILOT_MODEL=gpt-x COPILOT_ALLOW_ALL=1 GH_TOKEN=t STUB_ENV_FILE="$AD/env.cop" -- --wt "$AD/wt-t1" --allow 'npm test'
 check "[A2]  copilot success through ghcp-delegate (never raw copilot): ok, lane copilot-opus, served claude-opus-5.5, ai_credits 1.5; ghcp-delegate got --write --allow-shell cx-route and git status only (never git diff, log or show: their --output=<path> writes any file), never the routes command itself" \
   eval '[ "$PR" = "0 ok" ] && rj_is lane copilot-opus && rj_is model_served claude-opus-5.5 && rj_is cost.ai_credits 1.5 && grep -q "^ghcp-delegate	.*run=ok.*--write --allow-shell cx-route --allow-shell git\\\\ status --timeout 1800s --digest" "$ADL" && ! grep "^ghcp-delegate	.*run=ok" "$ADL" | grep -Eq "npm\\\\ test|git\\\\ (diff|log|show)"'
-check "[A14] worker environment (copilot): COPILOT_MODEL, COPILOT_ALLOW_ALL, GH_TOKEN unset; GHCP_COPILOT_BIN = the recorded copilot; GHCP_USAGE_LOG under \$CX_HOME" \
-  eval 'sed -n "/^== ghcp-delegate$/,/^== /p" "$AD/env.cop" > "$AD/env.cop.1"; ! grep -Eq "^(COPILOT_MODEL|COPILOT_ALLOW_ALL|GH_TOKEN)=" "$AD/env.cop.1" && grep -qx "GHCP_COPILOT_BIN=$STUBS/copilot" "$AD/env.cop.1" && grep -qx "GHCP_USAGE_LOG=$AD/home/.conductor/raw-usage.log" "$AD/env.cop.1" && grep -qx CX_WORKER=1 "$AD/env.cop.1"'
+check "[A14] worker environment (copilot): COPILOT_MODEL, COPILOT_ALLOW_ALL, GH_TOKEN unset; GHCP_COPILOT_BIN = the recorded copilot; GHCP_USAGE_LOG under \$CX_HOME; no CLAUDE_PLUGIN_OPTION_* at all (fusion_fallback is set for --fusion runs only)" \
+  eval 'sed -n "/^== ghcp-delegate$/,/^== /p" "$AD/env.cop" > "$AD/env.cop.1"; ! grep -Eq "^(COPILOT_MODEL|COPILOT_ALLOW_ALL|GH_TOKEN|CLAUDE_PLUGIN_OPTION_[A-Z_]*)=" "$AD/env.cop.1" && grep -qx "GHCP_COPILOT_BIN=$STUBS/copilot" "$AD/env.cop.1" && grep -qx "GHCP_USAGE_LOG=$AD/home/.conductor/raw-usage.log" "$AD/env.cop.1" && grep -qx CX_WORKER=1 "$AD/env.cop.1"'
 adr claude "$O1" -- --wt "$AD/wt-t1" --effort max --id t1
 check "[A27] claude lane (default): no process; run prints the dispatch JSON; parse gives status dispatched, exit 0, with dispatch {worktree, host_path, prompt, effort max, task_file}; the running mark stays for cx-run --finish" \
   eval '[ "$ADR_RC" = 0 ] && [ "$PR" = "0 dispatched" ] && [ "$(out_json dispatch)" = claude-subagent ] && outj_is effort max && rj_is dispatch.worktree "$AD/wt-t1" && rj_is status dispatched && [ -s "$O1/running" ] && ! grep -q "^claude	.*-p" "$ADL"'
@@ -3185,13 +3205,33 @@ adr copilot "$O1" STUB_GHCP_RUN=quota -- --wt "$AD/wt-t1"; [ "$PR" = "10 quota" 
 adr grok "$O1" STUB_GROK_RUN=quota -- --wt "$AD/wt-t1"; [ "$PR" = "10 quota" ] || A7_BAD="$A7_BAD [grok $PR]"
 check "[A7]  quota / rate-limit text -> 10: ghcp's exit (real capture over ghcp's synthetic quota text), grok's 429${A7_BAD:+:$A7_BAD}" test -z "$A7_BAD"
 local A8_BAD=""
-adr copilot "$O1" STUB_GHCP_RUN=fusion-fallback -- --wt "$AD/wt-t1" --fusion max
+adr copilot "$O1" STUB_GHCP_RUN=fusion-fallback STUB_GHCP_FALLBACK=always -- --wt "$AD/wt-t1" --fusion max
 { [ "$PR" = "21 model_mismatch" ] && rj reason | grep -q GHCP_FALLBACK; } || A8_BAD="$A8_BAD [copilot GHCP_FALLBACK: $PR]"
 adr grok "$O1" STUB_GROK_RUN=mismatch -- --wt "$AD/wt-t1"
 [ "$PR" = "21 model_mismatch" ] || A8_BAD="$A8_BAD [grok modelUsage: $PR]"
 adr copilot "$O1" STUB_GHCP_RUN=mismatch -- --wt "$AD/wt-t1"
 [ "$PR" = "21 model_mismatch" ] || A8_BAD="$A8_BAD [copilot models_used: $PR]"
-check "[A8]  served model checks -> 21: GHCP_FALLBACK on a Fusion lane (real capture), grok modelUsage naming another model, Copilot models_used${A8_BAD:+:$A8_BAD}" test -z "$A8_BAD"
+check "[A8]  served model checks -> 21: a GHCP_FALLBACK that still appears on a Fusion lane (real capture, from a ghcp that ignores option fusion_fallback), grok modelUsage naming another model, Copilot models_used${A8_BAD:+:$A8_BAD}" test -z "$A8_BAD"
+# A Fusion refusal (Copilot refuses Fusion before any model call): the adapter turns ghcp's
+# fusion_fallback off for --fusion runs, so ghcp exits 14 (free) instead of re-running the task on
+# plain auto (billed), an answer conductor would discard as 21. The environment wins over the
+# caller's option; COPILOT_CLI_ENABLED_FEATURE_FLAGS is never touched; other runs get no option.
+local FF_BAD=""
+: > "$AD/env.fus"
+adr copilot "$O1" STUB_GHCP_RUN=fusion-fallback STUB_ENV_FILE="$AD/env.fus" CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=on \
+  COPILOT_CLI_ENABLED_FEATURE_FLAGS=DYNAMIC_AUTO_TIERS,X_TEST_FLAG -- --wt "$AD/wt-t1" --fusion standard
+{ [ "$PR" = "14 model_unavailable" ] && rj_is lane copilot-fusion && ! grep -q GHCP_FALLBACK "$RJ" && grep -Fq "FUSION_UNAVAILABLE" "$O1/copilot.err"; } \
+  || FF_BAD="$FF_BAD [refusal: $PR $(rj reason)]"
+# Every ghcp-delegate call of that run (the probe's --help and --print-command, the run) saw the
+# option off and nothing else of the conductor's or the caller's options.
+{ [ "$(grep "^CLAUDE_PLUGIN_OPTION_" "$AD/env.fus" | sort -u)" = "CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off" ] \
+    && [ "$(grep "^COPILOT_CLI_ENABLED_FEATURE_FLAGS=" "$AD/env.fus" | sort -u)" = "COPILOT_CLI_ENABLED_FEATURE_FLAGS=DYNAMIC_AUTO_TIERS,X_TEST_FLAG" ] \
+    && tr '\0' '\n' < "$O1/copilot.env" | grep -qx "CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off"; } || FF_BAD="$FF_BAD [environment: $(grep -E "^(CLAUDE_PLUGIN_OPTION_|COPILOT_CLI_)" "$AD/env.fus" | sort -u | tr '\n' ' ')]"
+adr copilot "$O1" STUB_GHCP_RUN=fusion-unavailable -- --wt "$AD/wt-t1" --fusion max
+{ [ "$PR" = "14 model_unavailable" ] && ! grep -q GHCP_FALLBACK "$RJ"; } || FF_BAD="$FF_BAD [ghcp's exit-14 replay: $PR]"
+adr copilot "$O1" STUB_GHCP_RUN=fusion-max-pong -- --wt "$AD/wt-t1" --fusion max
+[ "$PR" = "0 ok" ] || FF_BAD="$FF_BAD [Fusion served: $PR]"
+check "[X]   a Fusion refusal on a copilot-fusion lane -> ghcp's free 14 (MODEL_UNAVAILABLE, no GHCP_FALLBACK re-run): the adapter sets CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off for --fusion runs only (over the caller's on; the only option variable ghcp gets), leaves COPILOT_CLI_ENABLED_FEATURE_FLAGS as the caller set it, and records it in copilot.env; ghcp 0.1.2's own exit-14 output replayed directly -> 14; a served Fusion run stays 0${FF_BAD:+:$FF_BAD}" test -z "$FF_BAD"
 local A10_BAD=""
 adr grok "$O1" STUB_GROK_RUN=error -- --wt "$AD/wt-t1"; { [ "$PR" = "2 failed" ] && rj reason | grep -q "no sessionId"; } || A10_BAD="$A10_BAD [error object: $PR]"
 adr grok "$O1" STUB_GROK_RUN=auth -- --wt "$AD/wt-t1"; [ "$PR" = "11 auth" ] || A10_BAD="$A10_BAD [auth: $PR]"
@@ -3208,10 +3248,14 @@ adr grok "$O1" STUB_GROK_RUN=dns -- --wt "$AD/wt-t1"
 adr grok "$O1" STUB_GROK_RUN=connect -- --wt "$AD/wt-t1"
 { [ "$PR" = "2 failed" ] && rj reason | grep -q "^grok could not reach its API" && grep -q "dns error" "$UL"; } || NET_BAD="$NET_BAD [an earlier run's log line counted: $PR]"
 adr grok "$O1" STUB_GROK_RUN=dnstimeout -- --wt "$AD/wt-t1"
-{ [ "$PR" = "12 timeout" ] && [ "$(rj reason)" = "the grok run hit the wall clock: grok could not resolve its API's host name (DNS; cx-doctor D17): client error (Connect): dns error: failed to lookup address information: Try again" ]; } || NET_BAD="$NET_BAD [timeout: $PR $(rj reason)]"
+{ [ "$PR" = "12 timeout" ] && rj_is reason "the grok run hit the wall clock" \
+    && grep -Fq "logged during this run: client error (Connect): dns error: failed to lookup address information: Try again (cx-doctor D17)" "$RJ"; } || NET_BAD="$NET_BAD [timeout: $PR $(rj reason)]"
+adr grok "$O1" STUB_GROK_RUN=dns STUB_GROK_USAGE=calls -- --wt "$AD/wt-t1"
+{ [ "$PR" = "2 failed" ] && rj_is reason "grok exited 1" && rj_is usage.input 75486 && ! grep -q "no model call\|could not reach\|could not resolve\|logged during this run" "$RJ"; } \
+  || NET_BAD="$NET_BAD [model calls: $PR $(rj reason)]"
 adr grok "$O1" STUB_GROK_RUN=ok -- --wt "$AD/wt-t1"
 { [ "$PR" = "0 ok" ] && [ ! -e "$O1/grok.netlog.txt" ]; } || NET_BAD="$NET_BAD [ok run: $PR]"
-check "[X]   grok could not reach its API, no model call: 'error sending request for url' -> 2 FAILED with a reason naming a connection or DNS failure and cx-doctor D17 (and a note: grok's retries can hold a run for about 28 minutes); a 'dns error' grok appended to its own log during the run -> the reason names DNS and the logged phrase (text only); a line an earlier run left there does not count; rc 124 -> 12 TIMEOUT with the DNS reason; an ok run keeps no netlog${NET_BAD:+:$NET_BAD}" test -z "$NET_BAD"
+check "[X]   grok could not reach its API, no model call (grok usage: modelCalls 0): 'error sending request for url' -> 2 FAILED with a reason naming a connection or DNS failure and cx-doctor D17 (and a note: grok's retries can hold a run for about 28 minutes); a 'dns error' grok appended to its own log during the run -> the reason names DNS and the logged phrase (text only); a line an earlier run left there does not count; rc 124 with the log line alone (nothing on stderr) -> 12 TIMEOUT, the log line only a note (that log is shared by every grok process); the same failure after model calls (grok usage: modelCalls 4) -> 'grok exited 1', no connection reason; an ok run keeps no netlog${NET_BAD:+:$NET_BAD}" test -z "$NET_BAD"
 local AX_BAD=""
 adr claude "$O1" STUB_CLAUDE_RUN=mismatch -- --wt "$AD/wt-t1" --headless; [ "$PR" = "21 model_mismatch" ] || AX_BAD="$AX_BAD [claude: $PR]"
 check "[X]   claude --headless: modelUsage naming another model -> 21${AX_BAD:+:$AX_BAD}" test -z "$AX_BAD"
@@ -3302,7 +3346,7 @@ check "[A11] ... and each of the real Copilot recordings (got ${A11_PROV%% *}: o
 local A11_USE=""
 for f in "$FIX"/real/ghcp/*.out; do f="${f##*/}"; grep -q "STUB_GHCP_RUN=${f%.out} " "$HERE/run-tests.sh" || A11_USE="$A11_USE [real/ghcp/${f%.out} never replayed]"; done
 for f in "$FIX"/real/*/*help*.txt; do f="${f#"$FIX/"}"; grep -qF "\$FIX/$f\"" "$HERE/run-tests.sh" || A11_USE="$A11_USE [$f is no A1 reference]"; done
-check "[A11] ... every Phase 0 capture is used: each real/ghcp replay (ok-pong, denied-write, autodenied-shell, fusion-max-pong, fusion-fallback, auth, quota) runs in a check and each captured --help (copilot, grok, claude, agy-delegate, ghcp-delegate, ghcp-cloud) is an A1 reference${A11_USE:+:$A11_USE}" test -z "$A11_USE"
+check "[A11] ... every Phase 0 capture is used: each real/ghcp replay (ok-pong, denied-write, autodenied-shell, fusion-max-pong, fusion-fallback, fusion-unavailable, auth, quota) runs in a check and each captured --help (copilot, grok, claude, agy-delegate, ghcp-delegate, ghcp-cloud) is an A1 reference${A11_USE:+:$A11_USE}" test -z "$A11_USE"
 
 # --- A30 (part): the Copilot cloud agent lane
 printf '%s\n' '<!-- cx-task {"id": "t1", "base": "abc", "lane": "copilot-cloud", "effort": "high", "allowed_paths": ["src/**"], "lockfiles": false, "commands": ["npm test"]} -->' \
@@ -3575,24 +3619,40 @@ RJ="$RR/ca-dns/result.json"
 { [ "$(cat "$RR/ca-dns.pr")" = "2 failed" ] && [ "$(rj reason)" = "grok could not resolve its API's host name (DNS; cx-doctor D17): client error (Connect): dns error: failed to lookup address information: Try again (no model call)" ] \
   && grep -Fq "grok said: error sending request for url (https://cli-chat-proxy.grok.com/v1/responses)" "$RJ"; } \
   || CA_BAD="$CA_BAD [grok-ca-1 with the measured log text: $(cat "$RR/ca-dns.pr") $(rj reason)]"
+# The same failures after model calls (grok usage: sbx-grok-1's real JSON, modelCalls 4, its
+# cachedReadTokens set to 0): never the connection or DNS reason, whatever grok's shared log holds.
+for ca in sbx-grok-ca-1 sbx-grok-ca-2; do
+  rm -rf -- "${RR:?}/calls-$ca"; cp -a "$FIX/real/grok/$ca" "$RR/calls-$ca"
+  sed 's/"cachedReadTokens": 65280,/"cachedReadTokens": 0,/' "$FIX/real/grok/sbx-grok-1/grok.usage.txt" > "$RR/calls-$ca/grok.usage.txt"
+  cp "$RR/ca-dns/grok.netlog.txt" "$RR/calls-$ca/grok.netlog.txt"
+  printf '%s\n' "$(env HOME="$AD/home" CX_HOME="$AD/home/.conductor" "$ADP/grok.sh" parse --out "$RR/calls-$ca" 2>&1)" > "$RR/calls-$ca.pr"
+done
+RJ="$RR/calls-sbx-grok-ca-1/result.json"
+{ [ "$(cat "$RR/calls-sbx-grok-ca-1.pr")" = "2 failed" ] && rj_is reason "grok exited 1" && rj_is usage.input 75486 && rj_is usage.cache_read 0 \
+  && ! grep -q "could not reach\|could not resolve\|no model call" "$RJ"; } || CA_BAD="$CA_BAD [grok-ca-1 after model calls: $(cat "$RR/calls-sbx-grok-ca-1.pr") $(rj reason)]"
+RJ="$RR/calls-sbx-grok-ca-2/result.json"
+{ [ "$(cat "$RR/calls-sbx-grok-ca-2.pr")" = "12 timeout" ] && rj_is reason "the grok run hit the wall clock" && rj_is usage.input 75486 \
+  && ! grep -q "could not reach\|could not resolve\|no model call\|logged during this run" "$RJ"; } || CA_BAD="$CA_BAD [grok-ca-2 after model calls: $(cat "$RR/calls-sbx-grok-ca-2.pr") $(rj reason)]"
 RJ="$RR/sbx-grok-ca-2/result.json"
 { [ "$(cat "$RR/sbx-grok-ca-2.pr")" = "12 timeout" ] && rj_is reason "the grok run hit the wall clock" && rj_is duration_s 180 && rj_is usage.input 0 \
   && [ "$("$REAL_PY" -I "$NORM" field "$RR/sbx-grok-ca-2/grok.meta.json" timeout_s)" = 180 ]; } \
   || CA_BAD="$CA_BAD [grok-ca-2: $(cat "$RR/sbx-grok-ca-2.pr") $(rj reason)]"
-# Sanitized for a public repository: every home directory in them is /home/user.
+# Sanitized for a public repository: every home directory in every real capture (all of
+# fixtures/real, the older runs too) is /home/user, and no Windows user directory appears.
 CA_HOMES="$("$REAL_PY" -I - "$FIX/real" <<'PY'
-import glob, os, re, sys
+import os, re, sys
 homes = set()
-for d in glob.glob(os.path.join(sys.argv[1], "*", "sbx-*-ca-*")):
-    for f in os.listdir(d):
-        b = open(os.path.join(d, f), "rb").read()
+for dp, dn, fn in os.walk(sys.argv[1]):
+    for f in fn:
+        b = open(os.path.join(dp, f), "rb").read()
         homes.update(m.decode() for m in re.findall(rb"/home/[^/\"\s\x00|]+", b))
         homes.update(m.decode().replace("\\\\", "\\") for m in re.findall(rb"\\\\home\\\\[^\\\"\s\x00|]+", b))
+        homes.update(m.decode("utf-8", "replace") for m in re.findall(rb"(?i)users[\\/]+[^\\/\"\s\x00]+", b))
 print(" ".join(sorted(homes)))
 PY
 )"
 [ "$CA_HOMES" = '/home/user \home\user' ] || CA_BAD="$CA_BAD [home directories: $CA_HOMES]"
-check "[X]   the ChalkAgent runs (conductor 0.2.1, Windows 11, Git Bash forwarding to WSL; caller gitbash, host wsl): copilot write 0 (the requested model served, 16.7113 AI credits, 15 s), copilot read 0 (3.9574), agy write 0 (the requested model served, cx-route test allowed, nothing denied, 47 s); grok write after 1657 s -> 2 with the connection reason naming D17 (no model call), and with the day's measured log text through grok-netlog -> the DNS reason; grok write stopped at 180 s -> 12; every home directory in them is /home/user${CA_BAD:+:$CA_BAD}" test -z "$CA_BAD"
+check "[X]   the ChalkAgent runs (conductor 0.2.1, Windows 11, Git Bash forwarding to WSL; caller gitbash, host wsl): copilot write 0 (the requested model served, 16.7113 AI credits, 15 s), copilot read 0 (3.9574), agy write 0 (the requested model served, cx-route test allowed, nothing denied, 47 s); grok write after 1657 s -> 2 with the connection reason naming D17 (no model call), and with the day's measured log text through grok-netlog -> the DNS reason; grok write stopped at 180 s -> 12; both given grok usage with model calls (and the log text) -> no connection or DNS reason; every home directory in every real capture (fixtures/real, the older runs too) is /home/user and none names a Windows user directory${CA_BAD:+:$CA_BAD}" test -z "$CA_BAD"
 # grok's real sandbox log (1.0.70): the write run's profile, the read run's strict probe and the
 # read run itself (read-only, in its gate checkout), one ProfileApplied line each.
 local SEVF="$FIX/real/grok/sandbox-events-1.0.70.jsonl" SEV1
@@ -5621,9 +5681,11 @@ check "[X]   ... the first call wrote conductor's cx-strict into ~/.grok/sandbox
 # WSL's resolver: /etc/resolv.conf links to /mnt/wsl/resolv.conf, outside strict's read set
 # (measured on WSL: under strict grok resolved no host name). CX_DETECT_ROOT holds that tree.
 CWR="$TMP/cw-root"
-mkdir -p "$CWR/etc/ssl/certs" "$CWR/mnt/wsl" "$CWR/opt/corp"
+# /etc/ssl/cert.pem links to /opt/corp/ca.pem, a second directory to grant.
+mkdir -p "$CWR/etc/ssl/certs" "$CWR/mnt/wsl" "$CWR/opt/corp" "$CWR/srv/corp2"
 printf 'nameserver 10.255.255.254\n' > "$CWR/mnt/wsl/resolv.conf"; ln -s /mnt/wsl/resolv.conf "$CWR/etc/resolv.conf"
 printf '127.0.0.1 localhost\n' > "$CWR/etc/hosts"; printf 'pem\n' > "$CWR/etc/ssl/certs/ca-certificates.crt"; printf 'pem\n' > "$CWR/opt/corp/ca.pem"
+ln -s /opt/corp/ca.pem "$CWR/etc/ssl/cert.pem"; printf 'pem\n' > "$CWR/srv/corp2/ca.pem"
 CWGH="$CW_HOME/.grok"
 cwr() {  # VAR=VALUE...: cx-wsl grok --cwd $OUT/msg --sandbox cx-strict on the WSL resolver tree, an enforced sandbox log
   : > "$TMP/cw-grok.log"
@@ -5631,10 +5693,10 @@ cwr() {  # VAR=VALUE...: cx-wsl grok --cwd $OUT/msg --sandbox cx-strict on the W
     STUB_GROK_EVENT_RW="WS $CWGH/sessions /var/tmp" "$@" "$CXWSL" grok "${CWOK[@]}"
 }
 read -r -a CWOK <<< "$CWP --cwd $TMP/cw-msg --sandbox cx-strict"
-cwr SSL_CERT_FILE=/opt/corp/ca.pem
-check "[X]   ... on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf; SSL_CERT_FILE=/opt/corp/ca.pem): cx-strict gains read_only [/mnt/wsl, /opt/corp] (sorted; /etc/hosts and the CA bundle in /etc need nothing) with a note, the sandbox log's event reads them (no unreadable note), grok runs (exit 0)" \
+cwr
+check "[X]   ... on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf; /etc/ssl/cert.pem -> /opt/corp/ca.pem): cx-strict gains read_only [/mnt/wsl, /opt/corp] (sorted; /etc/hosts and the CA bundle in /etc need nothing) with a note, the sandbox log's event reads them (no unreadable note), grok runs (exit 0)" \
   eval 'rc_is 0 && grep -Fqx "read_only = [\"/mnt/wsl\", \"/opt/corp\"]" "$CWGH/sandbox.toml" && err_has "read_only adds /mnt/wsl, /opt/corp: grok'"'"'s resolver and TLS files there lie outside strict'"'"'s read set (cx-doctor D17)" && ! err_has "cannot read" && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"'
-cwr SSL_CERT_FILE=/opt/corp/ca.pem
+cwr
 check "[X]   ... the same call again: the profile is the same (no note), grok runs" eval 'rc_is 0 && err_empty && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"'
 cwr STUB_GROK_EVENT_RO=strict
 check "[X]   ... a sandbox log whose event for \$OUT/msg lists strict's own read paths only (the profile's read_only missing): one note per resolver target it cannot read (/etc/resolv.conf -> /mnt/wsl/resolv.conf: no host name resolves), never a refusal; grok runs" \
@@ -5660,9 +5722,9 @@ check "[X]   ... the per-run check says the sandbox was not applied (grok --sand
 cwr STUB_GROK_EVENT_RW="WS $CWGH /var/tmp"
 check "[X]   ... the check's event grants write to grok's home: exit 2 FAILED naming the path, grok never ran the prompt" \
   eval 'rc_is 2 && one_signal FAILED && err_has "grok'"'"'s sandbox profile cx-strict grants write to grok'"'"'s home $CWGH" && ! grep -q -- "--prompt-file" "$TMP/cw-grok.log"'
-cwr SSL_CERT_DIR="/:/opt/corp"
-check "[X]   ... SSL_CERT_DIR naming / and /opt/corp: /opt/corp is granted, / never (a note names it and why), grok runs" \
-  eval 'rc_is 0 && grep -Fqx "read_only = [\"/mnt/wsl\", \"/opt/corp\"]" "$CWGH/sandbox.toml" && err_has "not granted: / (it is /), for /, outside strict'"'"'s read set: grok may not verify TLS certificates under this profile (cx-doctor D17)"'
+cwr SSL_CERT_FILE=/srv/corp2/ca.pem SSL_CERT_DIR="/:/srv/corp2"
+check "[X]   ... SSL_CERT_FILE=/srv/corp2/ca.pem and SSL_CERT_DIR naming / and /srv/corp2 in the caller's environment: cx-strict stays [/mnt/wsl, /opt/corp] (never granted from a caller's environment: the profile is shared), the per-run check notes /srv/corp2/ca.pem as unreadable, grok runs" \
+  eval 'rc_is 0 && grep -Fqx "read_only = [\"/mnt/wsl\", \"/opt/corp\"]" "$CWGH/sandbox.toml" && ! err_has "read_only adds" && ! err_has "not granted" && err_has "grok'"'"'s sandbox log shows profile cx-strict cannot read /srv/corp2/ca.pem (grok'"'"'s TLS file) in $TMP/cw-msg: grok may not verify TLS certificates under it (cx-doctor D17)" && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"'
 cp "$TMP/cw-sbx.orig" "$CWGH/sandbox.toml"
 run env -u CLAUDE_CONFIG_DIR -u CX_HOME HOME="$TMP/cxwsl-norecord" WSL_DISTRO_NAME=Ubuntu PATH="$WSL_PATH0" "$CXWSL" grok --version
 check "[P45] no host record -> 13 CLI_MISSING with one CX_SIGNAL (retry: cx-doctor)" \

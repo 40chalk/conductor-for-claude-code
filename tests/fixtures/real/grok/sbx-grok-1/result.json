@@ -35,11 +35,11 @@
  "denied": [
   {
    "kind": "write",
-   "detail": "Edit `/home/cstelum/.cx-wt/cx-sandbox-sbx-grok-1/src/calc.py` was not run, as a headless run cannot ask for approval"
+   "detail": "Edit `/home/user/.cx-wt/cx-sandbox-sbx-grok-1/src/calc.py` was not run, as a headless run cannot ask for approval"
   }
  ],
  "worktree": {
-  "path": "/home/cstelum/.cx-wt/cx-sandbox-sbx-grok-1",
+  "path": "/home/user/.cx-wt/cx-sandbox-sbx-grok-1",
   "host_path": null
  },
  "branch": "cx/sbx-grok-1",
@@ -48,11 +48,11 @@
  "diffstat": "",
  "gate": null,
  "digest": {
-  "path": "/home/cstelum/.conductor/out/sbx-grok-1/answer.txt",
+  "path": "/home/user/.conductor/out/sbx-grok-1/answer.txt",
   "host_path": null
  },
  "out": {
-  "path": "/home/cstelum/.conductor/out/sbx-grok-1",
+  "path": "/home/user/.conductor/out/sbx-grok-1",
   "host_path": null
  },
  "duration_s": 11,
@@ -62,8 +62,8 @@
  "claude_session": "bdd96cfc-81e3-4e4f-9f61-1e3bbcfe71ab",
  "claude_effort": "medium",
  "raw": {
-  "stdout": "/home/cstelum/.conductor/out/sbx-grok-1/grok.out",
-  "stderr": "/home/cstelum/.conductor/out/sbx-grok-1/grok.err"
+  "stdout": "/home/user/.conductor/out/sbx-grok-1/grok.out",
+  "stderr": "/home/user/.conductor/out/sbx-grok-1/grok.err"
  },
  "notes": []
 }
