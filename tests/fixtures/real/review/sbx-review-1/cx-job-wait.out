@@ -1,0 +1,5 @@
+cx-job: full log: /home/cstelum/.conductor/jobs/20261102-004140-a510/err
+CX_SIGNAL {"status": "EMPTY_OUTPUT", "exit": 3, "reason": "nothing to review (empty diff)", "retry": null, "cmd": "cx-run"}
+EXIT=3
+
+[exited with code 0]
