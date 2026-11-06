@@ -530,9 +530,11 @@ spec left open.
 2. **The grok profile grants `$CX_HOME/routes` read-only** besides the git common directory: a
    per-repository profile cannot name a per-run directory, so each run's `cx-route` lives in its
    own `$CX_HOME/routes/<id>/` (only the script: the checks' commands and paths), never in the
-   out directory. Other runs' digests, task files and diffs, `$CX_HOME/secrets` and the ledger
-   stay unreadable to grok writers (until the 2026-11-06 review the profile granted all of
-   `$CX_HOME/out`). `$OUT/routes.json` stays in the out directory: only the conductor reads it.
+   out directory. Other runs' digests, task files and diffs in `$CX_HOME/out`, `$CX_HOME/secrets`
+   and the ledger stay unreadable to grok writers (until the 2026-11-06 review the profile
+   granted all of `$CX_HOME/out`). grok's own session store is not: every grok run reads and
+   writes `~/.grok/sessions`, which holds other grok runs' transcripts (item 15).
+   `$OUT/routes.json` stays in the out directory: only the conductor reads it.
 3. **`$CX_HOME/routes/<id>` comes right after the worker shims on PATH**, so the shims still win
    over any CLI name and nothing on the record path can shadow `cx-route`.
 4. **The flag contract is cached with the probe** (10 minutes) and keyed by the argv's flags
@@ -580,16 +582,21 @@ spec left open.
 
 12. **grok's sandbox log is read, but can only add a refusal.** grok 1.0.70 appends one JSON
     line per sandboxed start to `${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl`
-    (`event_type` `ProfileApplied`, `profile`, `workspace`, `platform`, `enforced`,
-    `restrict_network`, `read_write_paths`, `read_only_paths`; the real lines are
+    (`timestamp`, `event_type` `ProfileApplied`, `profile`, `workspace`, `platform`, `enforced`,
+    `restrict_network`, `read_write_paths`, plus `read_only_paths` for `strict` and the profiles
+    extending it; the built-in `read-only` logs none; the real lines are
     `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`): the preflight and D17 take the
     file's size before and after their `grok --sandbox strict models` and read only those bytes
-    (at most 1 MiB, split on `"\n"`, never through a symlink or from a FIFO), matching the
-    workspace against the probe's cwd (as given or resolved). `enforced` false refuses like a
-    line saying the sandbox was not applied (2 `FAILED`, the same reason text with the event
-    first); `enforced` true records the platform; no log, no event, or a non-boolean
-    `enforced` changes nothing. A sandboxed writer can write `~/.grok/sessions`, so the log is
-    not trusted to lift a refusal: a forged `enforced` true changes nothing, a forged false only
+    (at most 1 MiB, split on `"\n"`, never when the log file itself is a symlink and never from
+    a FIFO; a symlinked `~/.grok` or `~/.grok/sessions` above it is followed), matching the
+    workspace against the probe's cwd (as given or resolved); an event with `enforced` false
+    wins over an enforced one for the same workspace. The sizes come from GNU `stat -c %s`, and
+    D17 reads the log only when python3 runs: on a host without them (macOS, untested) the log
+    is not read and nothing changes. `enforced` false refuses like a line saying the sandbox was
+    not applied (2 `FAILED`, the same reason text with the event first); `enforced` true records
+    the platform; no log, no event, or a non-boolean `enforced` changes nothing. Every grok run
+    can write `~/.grok/sessions` (a read or review run all of `~/.grok`), so the log is not
+    trusted to lift a refusal: a forged `enforced` true changes nothing, a forged false only
     refuses. The run itself is not checked against the log (only the probe), and the shape of an
     unenforced event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is
     synthetic, DESIGN §20 item 72).
@@ -597,9 +604,27 @@ spec left open.
     ASCII-escaped), even when `text` is a string: `text` joins every turn's message with no
     separator. Without `--json-schema`, `text` stays the digest as it is (turn boundaries
     cannot be recovered from it); `output` and `data` are still read only when there is no
-    `text`. Nothing downstream parses a read or review answer: it goes to `answer.txt` and
-    cx-run's stdout.
+    `text`. When grok gives no `structuredOutput` under `--json-schema` (unseen), `text` stays
+    the answer and a note says it is not the structured one (it may not be valid JSON): the run
+    is not failed for it. Nothing downstream parses a read or
+    review answer: it goes to `answer.txt` and cx-run's stdout.
 14. **`cx-job` explains a task id but never resolves it**: `wait`, `result`, `status` and `kill`
-    given a task id (`--id`) of exactly one job still exit 1, with a note naming its JOB_ID, so
-    a typo can never wait on, or kill, another job. A task id that came from a task file or was
-    generated is not in the job's stored arguments, so it gets the plain "no job" note.
+    given a task id (`--id`) of exactly one job still exit 1, with a note naming its JOB_ID. A
+    prefix of one JOB_ID that is also the task id of another job (cx-run accepts ids of digits
+    alone, such as `20261106`) is refused as ambiguous (exit 1), so a task id never makes cx-job
+    wait on, or kill, a job; only a full JOB_ID always names its own job. A task id that came
+    from a task file or was generated is not in the job's stored arguments, so it gets the plain
+    "no job" note and never counts against a prefix.
+15. **What a grok run can write in `~/.grok`** (measured with the sandbox log, 2026-11-06):
+    `strict` and the profiles extending it (conductor's grok writers) write the workspace,
+    `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` itself read-only, although grok's
+    README says strict writes `~/.grok`; the built-in `read-only` (read and review runs, the
+    skill's Step 3 commit-message call) writes all of `~/.grok`, `/tmp` and `/var/tmp`. So the
+    tamper-safe rewrite of the repository's profile is the guard against a read or review run,
+    fed executor-written code, rewriting `sandbox.toml` for the next writer: the lane writes the
+    profile before the slot and again once it holds the slot (a run may wait up to
+    `CX_SLOT_WAIT_SECS` while such a run goes on), leaving only the moment before grok reads it at
+    startup. Nothing checks the rest of `~/.grok` (`config.toml`), and `~/.grok/sessions` holds
+    every grok session's transcript (prompt, files read, tool output, answer) for every
+    repository, readable and writable by every grok run: DESIGN §20 items 75 and 76 record both
+    as known limits.

@@ -415,12 +415,14 @@ GROK_EVENTS_MAX = 1 << 20
 
 def grok_sandbox_event(path, start, end, workspace):
     """grok's sandbox log (1.0.70, measured 2026-11-06: ~/.grok/sessions/sandbox-events.jsonl
-    gets one JSON line per sandboxed start, {"event_type": "ProfileApplied", "profile",
-    "workspace", "platform", "enforced", "restrict_network", "read_write_paths",
-    "read_only_paths"}; tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl). Reads only bytes
+    gets one JSON line per sandboxed start, {"timestamp", "event_type": "ProfileApplied",
+    "profile", "workspace", "platform", "enforced", "restrict_network", "read_write_paths"},
+    plus "read_only_paths" for strict and the profiles extending it (the built-in read-only
+    logs none); tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl). Reads only bytes
     [START, END) of PATH, what grok appended while one probe ran ([0, END) when the file shrank
-    meanwhile; at most 1 MiB), never through a symlink and never blocking on a FIFO; lines are
-    split on "\n" only. Returns {"profile", "platform", "enforced"} of the ProfileApplied event
+    meanwhile; at most 1 MiB), never when PATH itself is a symlink (O_NOFOLLOW: its last path
+    component only; a symlinked directory above it is followed) and never blocking on a FIFO;
+    lines are split on "\n" only. Returns {"profile", "platform", "enforced"} of the ProfileApplied event
     whose workspace is WORKSPACE (an event with enforced false wins), else None: the event can
     only add a refusal, never lift one (an absent log or event changes nothing)."""
     import stat
@@ -2355,10 +2357,11 @@ def grok_profile_plan(path, template, name, gcd, routes_root):
     """(action, new_text, notes) for the repository's profile in sandbox.toml PATH: create,
     update, same or conflict (the result would not parse, or would not hold exactly the
     rendered profile). The name cx-<repo>-<hash> is conductor's own: no person writes it, and a
-    grok writer might rewrite sandbox.toml (grok's README says strict writes ~/.grok; grok 1.0.70
-    applied it with ~/.grok read-only, only ~/.grok/sessions writable: defence in depth), so every
-    definition of NAME is replaced by the rendered block, between the cx:begin/cx:end lines or
-    not (markers a writer stripped never make a widened profile "the user's")."""
+    grok run may rewrite sandbox.toml (grok 1.0.70's built-in read-only profile, used by read and
+    review runs, writes all of ~/.grok; strict and the profiles extending it keep ~/.grok
+    read-only but ~/.grok/sessions, measured, although grok's README says strict writes ~/.grok),
+    so every definition of NAME is replaced by the rendered block, between the cx:begin/cx:end
+    lines or not (markers a run stripped never make a widened profile "the user's")."""
     notes = []
     tgt = _ug_target(path)
     old = read_text(tgt) if os.path.exists(tgt) else ""

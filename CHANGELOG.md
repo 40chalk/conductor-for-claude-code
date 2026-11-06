@@ -2,9 +2,9 @@
 
 ## 0.2.1 — 2026-11-06
 
-Fixes from the first real runs (one small `cx-run` per lane on the user's machine, 2026-11-02)
-and from live probes of agy 1.5.1, grok 1.0.70 and Copilot CLI 1.0.105 (2026-11-06). No CLI
-version is pinned any more.
+Fixes from the first real runs (one small `cx-run` per lane on the user's machine, 2026-11-02),
+from live probes of agy 1.5.1, grok 1.0.70 and Copilot CLI 1.0.105 and from live agy and grok
+runs in the build container (2026-11-06). No CLI version is pinned any more.
 
 - **No version pins.** `CX_PIN_*` are gone (`CX_VERIFIED_*`: the versions the lanes were last
   verified against, shown by `cx-doctor` as info lines, never a failure). Instead every adapter
@@ -58,10 +58,11 @@ version is pinned any more.
     `--reuse-worktree` refuses it; an embedded repository without a commit no longer hides the
     rest of the change (`git add --ignore-errors`, a note).
   - grok's profile `cx-<repo>-<hash>` is conductor's own: a `[profiles.<name>]` outside the
-    cx:begin/cx:end lines (grok's README says strict writes `~/.grok`; the live runs below
-    found `~/.grok` read-only under it, so this is defence in depth) is replaced instead of
-    being left as "the user's", and a file that still defines it another way, or a
-    `.grok/sandbox.toml` in the worktree, refuses the run.
+    cx:begin/cx:end lines (a grok run may rewrite `~/.grok/sandbox.toml`: the live runs below
+    found that grok's built-in `read-only` profile, used by read and review runs, writes all of
+    `~/.grok`, while `strict` keeps it read-only although grok's README says strict writes it)
+    is replaced instead of being left as "the user's", and a file that still defines it another
+    way, or a `.grok/sandbox.toml` in the worktree, refuses the run.
   - `git diff`, `git log` and `git show` left every grant (agy's `--settings`, Copilot's
     `--allow-shell`, the Claude worker's settings) and the contract: their `--output=<path>`
     writes any file and `diff --no-index` reads any file, which no prefix rule can forbid.
@@ -84,9 +85,9 @@ version is pinned any more.
   repository, the agy snapshot over both, a stripped or dotted grok profile, a worktree
   `.grok/sandbox.toml`, `cx-route` under `BASH_ENV` and an exported function, grok's sandbox
   refusal in the probe, the run and D17, and its fail-open warning).
-- **Verified live** (the build container, 2026-11-06, this build; a scratch repository whose
-  `slugify` raised `NotImplementedError`, three failing tests, `commands.test` in
-  `.cx/routes.json`): `cx-doctor` ran for real (25 ok; D17: grok applies its sandbox, Landlock
+- **Verified live** (the build container, 2026-11-06, 0.2.1 before these fixes, b19aacb; a
+  scratch repository whose `slugify` raised `NotImplementedError`, three failing tests,
+  `commands.test` in `.cx/routes.json`): `cx-doctor` ran for real (25 ok; D17: grok applies its sandbox, Landlock
   ABI 7, bubblewrap present; the host record written). An agy write run (agy 1.5.1, served
   `claude-opus-5-5-high`) ran `ls -R`, `cx-route test` and `git status` under its per-run
   `--settings`, nothing denied, exit 0 in 29 s; a grok write run (`--sandbox
@@ -99,17 +100,26 @@ version is pinned any more.
   - grok with `--json-schema`: the answer is `structuredOutput` (as JSON). grok's `text` joins
     every turn's message with no separator, so the read run's answer was `[ ][{...}]`, not
     valid JSON. A plain digest keeps `text` as it is (documented: turn boundaries cannot be
-    recovered from it).
+    recovered from it); a schema run without `structuredOutput` keeps `text` too, with a note.
   - grok's sandbox log: the preflight and `cx-doctor` D17 read the `ProfileApplied` line their
     `grok --sandbox strict models` appends to `~/.grok/sessions/sandbox-events.jsonl` (only
     the bytes added during the probe, for its cwd); `enforced` false refuses the lane (2) and
-    fails D17, `enforced` true adds a D17 line with the platform, no log changes nothing.
+    fails D17, `enforced` true adds a D17 line with the platform, no log changes nothing (nor
+    a host without GNU `stat`, such as macOS).
   - The docs now say what was measured: strict (and the profiles extending it) writes only the
     worktree, `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` read-only (grok's
-    README claim is kept, attributed); the profile comment changed, so each repository's
-    profile is rewritten once on its next grok run.
+    README claim is kept, attributed), while the built-in `read-only` of read and review runs
+    writes all of `~/.grok`; the profile comment changed, so each repository's profile is
+    rewritten once on its next grok run. Known limits (DESIGN §20 items 75, 76): every grok run
+    can read and write `~/.grok/sessions`, which holds every grok session's transcript, and
+    nothing checks the rest of `~/.grok`.
+  - A grok write run writes its repository's profile again once it holds its pool slot, so a
+    read or review run that changed `sandbox.toml` while the writer waited is undone first.
   - `cx-job wait|result|status|kill <task id>` (the `--id`, not the JOB_ID) still exits 1, now
-    with a note naming the JOB_ID of the one job that has that task id.
+    with a note naming the JOB_ID of the one job that has that task id; a prefix of one JOB_ID
+    that is also another job's task id is ambiguous (exit 1) instead of naming the first job.
+  - The CX_DENIED hint for a denied grok write names the whole write set (the worktree, `/tmp`,
+    `/var/tmp` and `~/.grok/sessions`).
 
 ## 0.2.0 — 2026-11-01
 

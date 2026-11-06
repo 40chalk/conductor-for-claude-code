@@ -7,7 +7,8 @@
 # ~/.grok/sessions, /tmp and /var/tmp, with ~/.grok itself read-only, as grok 1.0.70 applies
 # it; no child network) with read-only access to the repository's git directory (git status
 # in a worktree) and to the conductor's routes directory (each run's cx-route; never the out
-# directories, which hold other runs' tasks, diffs and digests).
+# directories, which hold other runs' tasks, diffs and digests). grok's own ~/.grok/sessions,
+# which every grok run can read and write, still holds every grok session's transcript.
 [profiles.{{name}}]
 extends = "strict"
 read_only = {{read_only}}

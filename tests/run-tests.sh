@@ -1144,6 +1144,14 @@ doc_bg grok-nosb STUB_GROK_SANDBOX=refuse -- --no-record
 doc_bg grok-sbev-on STUB_GROK_SANDBOX_EVENT=enforced GROK_HOME="$DOCS/grok-sbev-on/grok" -- --no-record
 doc_bg grok-sbev-off STUB_GROK_SANDBOX_EVENT=unenforced GROK_HOME="$DOCS/grok-sbev-off/grok" -- --no-record
 doc_bg grok-sbev-other STUB_GROK_SANDBOX_EVENT=other GROK_HOME="$DOCS/grok-sbev-other/grok" -- --no-record
+# An old unenforced line for the doctor's own probe directory (a log keeps every earlier probe's
+# line) and a sandbox log that is a symlink: D17 reads only what its own probe appended.
+mkdir -p "$DOCS/grok-sbev-old/grok/sessions" "$DOCS/grok-sbev-link/grok/sessions"
+printf '{"timestamp":"2026-11-01T00:00:00Z","event_type":"ProfileApplied","profile":"strict","workspace":"%s","platform":"linux/unsupported","enforced":false,"restrict_network":true,"read_write_paths":["/tmp"],"read_only_paths":["/usr"]}\n' \
+  "$DOCS/grok-sbev-old/cxhome/probe" > "$DOCS/grok-sbev-old/grok/sessions/sandbox-events.jsonl"
+: > "$DOCS/grok-sbev-link/sev.real"; ln -s "$DOCS/grok-sbev-link/sev.real" "$DOCS/grok-sbev-link/grok/sessions/sandbox-events.jsonl"
+doc_bg grok-sbev-old STUB_GROK_SANDBOX_EVENT=enforced GROK_HOME="$DOCS/grok-sbev-old/grok" -- --no-record
+doc_bg grok-sbev-link STUB_GROK_SANDBOX_EVENT=unenforced GROK_HOME="$DOCS/grok-sbev-link/grok" -- --no-record
 doc_bg ghcp-auth STUB_GHCP_MODELS=auth -- --no-record
 doc_bg ghcp-sandbox STUB_GHCP_MODELS=sandbox -- --no-record
 doc_bg ghcp-timeout STUB_GHCP_MODELS=timeout -- --no-record
@@ -1451,6 +1459,12 @@ check "[X]   ... ProfileApplied with enforced false: cross D17 naming the event 
 doc_use grok-sbev-other
 check "[X]   ... an event for another workspace only (or no event, the green doctor): no new D17 line, the probe's ok as before" \
   eval 'd_ok D17 "grok applies its sandbox here" && ! out_has "sandbox log" && ! d_fail D17 && doc_use green && d_ok D17 "grok applies its sandbox here" && ! out_has "sandbox log"'
+doc_use grok-sbev-old
+check "[X]   ... the log already holds an unenforced line for the doctor's own probe directory from an earlier probe: only the bytes this probe appended count (its enforced line): the ok lines, no D17 failure" \
+  eval 'd_ok D17 "grok'"'"'s sandbox log reports --sandbox strict enforced here (platform linux/landlock; $DOCS/grok-sbev-old/grok/sessions/sandbox-events.jsonl)" && d_ok D17 "grok applies its sandbox here" && ! d_fail D17 && [ "$(grep -c "\"enforced\":false" "$DOCS/grok-sbev-old/grok/sessions/sandbox-events.jsonl")" = 1 ]'
+doc_use grok-sbev-link
+check "[X]   ... a sandbox log that is a symlink is never read by D17 (the probe appended its unenforced line through the link): no sandbox-log line, the probe's ok as before" \
+  eval 'd_ok D17 "grok applies its sandbox here" && ! out_has "sandbox log" && ! d_fail D17 && grep -q "\"enforced\":false" "$DOCS/grok-sbev-link/sev.real"'
 doc_use ghcp-auth
 check "[P26] ghcp-models rc 11: cross D16 with the copilot login fix" eval 'rc_is 4 && d_fail D16 "copilot is not logged in" && out_has "fix: copilot login"'
 doc_use ghcp-sandbox
@@ -2631,9 +2645,9 @@ check "[A2]  emit: one CX_RESULT line (single-line json.dumps, ASCII) with path 
 "$REAL_PY" -I "$NORM" report --out "$O1" > "$AD/report.out"
 check "[A2]  report: the digest, then a VERIFY THIS line naming the commands" \
   eval 'grep -q "^DIGEST: created cx-grok.txt.$" "$AD/report.out" && grep -q "^VERIFY THIS: .*npm test" "$AD/report.out"'
-# A grok writer might rewrite ~/.grok/sandbox.toml (grok's README says strict writes ~/.grok;
-# 1.0.70 kept it read-only, measured: defence in depth): stripping the cx:begin/cx:end lines
-# never turns a widened profile of conductor's name into "the user's".
+# A grok run may rewrite ~/.grok/sandbox.toml (measured on 1.0.70: the built-in read-only profile
+# of read and review runs writes all of ~/.grok; strict-based writers cannot): stripping the
+# cx:begin/cx:end lines never turns a widened profile of conductor's name into "the user's".
 "$REAL_PY" -I - "$AD/home/.grok/sandbox.toml" "$GP_NAME" <<'PY'
 import re, sys
 p, n = sys.argv[1], sys.argv[2]
@@ -2933,6 +2947,30 @@ dpid="$(cat "$AD/dm.pid" 2>/dev/null)"; spid2="$(cat "$AD/dm.pid.setsid" 2>/dev/
 check "[X]   leftovers never hold the pool slot: an executor's same-session child is killed with the run; its setsid child holds no slot or lock descriptor, and grok.1 is free right after the run (cap_grok=1)" \
   eval '[ "$PR" = "0 ok" ] && [ -n "$dpid" ] && ! alive "$dpid" && [ -n "$spid2" ] && ! ls -l "/proc/$spid2/fd" 2>/dev/null | grep -q "/locks/" && flock -n "$AD/home/.conductor/locks/grok.1" true'
 [ -z "$spid2" ] || kill -KILL "$spid2" 2>/dev/null
+# A grok write run writes its repository's profile again once it holds the slot: a read or review
+# run (grok's built-in read-only profile writes all of ~/.grok) may rewrite sandbox.toml while the
+# writer waits. Here sandbox.toml is widened, its cx:begin/cx:end lines stripped, during that wait.
+local GP3 gh3 rp_bad=""
+GP3="$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "$REPO/.git" && pwd -P)")"
+rm -rf "$AD/rp" "$AD/job3"; mkdir -p "$AD/rp" "$AD/job3"
+gh3="$(hold "$AD/home/.conductor/locks/grok.1" -x "$AD/gh3.held")"; wait_file "$AD/gh3.held"
+ad_bg rp STUB_GROK_RUN=ok CLAUDE_PLUGIN_OPTION_CAP_GROK=1 CX_SLOT_WAIT_SECS=120 CX_JOB_DIR="$AD/job3" -- grok run --out "$AD/rp" --wt "$AD/wt-t1"
+sp=$BG_P
+for ((i = 0; i < 600; i++)); do [ -e "$AD/job3/queued" ] || ! kill -0 "$sp" 2>/dev/null && break; sleep 0.1; done
+[ -e "$AD/job3/queued" ] || rp_bad="$rp_bad [the run never queued for grok.1]"
+grep -qx "# cx:begin $GP3" "$AD/home/.grok/sandbox.toml" || rp_bad="$rp_bad [no profile $GP3 before the wait]"
+"$REAL_PY" -I - "$AD/home/.grok/sandbox.toml" "$GP3" <<'PY'
+import re, sys
+p, n = sys.argv[1], sys.argv[2]
+t = open(p, encoding="utf-8").read()
+t = re.sub(r"(?ms)^# cx:begin %s\n.*?^# cx:end %s\n" % (re.escape(n), re.escape(n)), '[profiles.%s]\nextends = "workspace"\nread_write = ["/"]\n' % n, t)
+open(p, "w", encoding="utf-8").write(t)
+PY
+cp "$AD/home/.grok/sandbox.toml" "$AD/sbx.rp"
+kill "$gh3" 2>/dev/null; wait "$gh3" 2>/dev/null
+wait "$sp" 2>/dev/null
+check "[X]   a grok write run that waited for its slot (cap_grok=1, grok.1 held) while sandbox.toml was widened and stripped of its cx:begin/cx:end lines writes conductor's profile again once it holds the slot, before grok starts, with a note; the run is ok${rp_bad:+:$rp_bad}" \
+  eval '[ -z "$rp_bad" ] && [ "$(cat "$AD/rp.rc")" = 0 ] && grep -q "^\[profiles.$GP3\]" "$AD/sbx.rp" && grep -q "extends = \"workspace\"" "$AD/sbx.rp" && grep -qx "# cx:begin $GP3" "$AD/home/.grok/sandbox.toml" && ! grep -q "extends = \"workspace\"" "$AD/home/.grok/sandbox.toml" && ! grep -Fq "read_write" "$AD/home/.grok/sandbox.toml" && grep -q "while this run waited for its slot: " "$AD/rp.err" && [ -s "$AD/rp/grok.out" ]'
 # The Copilot token reaches ghcp-delegate through its environment, never a command line.
 mkdir -p "$AD/home/.conductor/secrets"; (umask 077; printf 'github_pat_SECRETVALUE123\n' > "$AD/home/.conductor/secrets/copilot-token")
 rm -rf "$AD/tok"; : > "$AD/env.tok"
@@ -3029,16 +3067,59 @@ except ValueError:
 sys.exit(0 if json.loads(ans) == raw["structuredOutput"] and raw["text"].startswith("[ ][") else 1)
 PY
   } || RR_BAD="$RR_BAD [sbx-grok-3: $(cat "$RR/sbx-grok-3.pr"), answer $(head -c 80 "$RR/sbx-grok-3/answer.txt")]"
-check "[X]   the parsers on every real run directory (fixtures/real/*/sbx-*): agy 15 (the real stream-json: init, step_update, result with denied_actions; session, usage), copilot 0 (19.5569 credits), grok 15 (the edit denied headless; grok-4.7-build accepted as grok-4.7's alias, no longer 21), the copilot review 0; the review stopped on an empty diff has nothing to parse; 0.2.1 live: agy write 0 (claude-opus-5-5-high, its cx-route test step allowed, nothing denied), grok write 0 (grok-4.7-build as the alias, usage and cost), the grok read through cx-job 0 with the answer = grok.out's structuredOutput as valid JSON (grok's text joins the turns: [ ][...])${RR_BAD:+:$RR_BAD}" test -z "$RR_BAD"
-# grok's real sandbox log (1.0.70): the write run's profile and the strict probe, one ProfileApplied line each.
+# The schema run's fallbacks, on copies of sbx-grok-3: without structuredOutput the answer stays
+# grok's text, with a note; with a text that is no string, output (or data) is the answer.
+rm -rf -- "${RR:?}/so1" "${RR:?}/so2"; cp -a "$FIX/real/grok/sbx-grok-3" "$RR/so1"; cp -a "$FIX/real/grok/sbx-grok-3" "$RR/so2"
+"$REAL_PY" -I - "$RR/so1/grok.out" "$RR/so2/grok.out" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1], encoding="utf-8"))
+del o["structuredOutput"]
+open(sys.argv[1], "w", encoding="utf-8").write(json.dumps(o) + "\n")
+o = json.load(open(sys.argv[2], encoding="utf-8"))
+o["output"] = o.pop("structuredOutput")
+o["text"] = {"not": "a string"}
+open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(o) + "\n")
+PY
+for rr in so1 so2; do
+  printf '%s\n' "$(env HOME="$AD/home" CX_HOME="$AD/home/.conductor" "$ADP/grok.sh" parse --out "$RR/$rr" 2>&1)" > "$RR/$rr.pr"
+done
+{ [ "$(cat "$RR/so1.pr")" = "0 ok" ] && grep -q "grok gave no structuredOutput for --json-schema: the answer is its text" "$RR/so1/result.json" \
+  && "$REAL_PY" -I - "$RR/so1/answer.txt" "$RR/so1/grok.out" <<'PY'
+import json, sys
+ans = open(sys.argv[1], encoding="utf-8").read()
+sys.exit(0 if ans.rstrip("\n") == json.load(open(sys.argv[2], encoding="utf-8"))["text"].rstrip("\n") else 1)
+PY
+  } || RR_BAD="$RR_BAD [sbx-grok-3 without structuredOutput: $(cat "$RR/so1.pr"), answer $(head -c 80 "$RR/so1/answer.txt")]"
+{ [ "$(cat "$RR/so2.pr")" = "0 ok" ] && ! grep -q "gave no structuredOutput" "$RR/so2/result.json" \
+  && "$REAL_PY" -I - "$RR/so2/answer.txt" "$RR/so2/grok.out" <<'PY'
+import json, sys
+ans = open(sys.argv[1], encoding="utf-8").read()
+sys.exit(0 if ans.rstrip("\n") == json.dumps(json.load(open(sys.argv[2], encoding="utf-8"))["output"], ensure_ascii=False) else 1)
+PY
+  } || RR_BAD="$RR_BAD [sbx-grok-3 with output and a non-string text: $(cat "$RR/so2.pr"), answer $(head -c 80 "$RR/so2/answer.txt")]"
+check "[X]   the parsers on every real run directory (fixtures/real/*/sbx-*): agy 15 (the real stream-json: init, step_update, result with denied_actions; session, usage), copilot 0 (19.5569 credits), grok 15 (the edit denied headless; grok-4.7-build accepted as grok-4.7's alias, no longer 21), the copilot review 0; the review stopped on an empty diff has nothing to parse; 0.2.1 live: agy write 0 (claude-opus-5-5-high, its cx-route test step allowed, nothing denied), grok write 0 (grok-4.7-build as the alias, usage and cost), the grok read through cx-job 0 with the answer = grok.out's structuredOutput as valid JSON (grok's text joins the turns: [ ][...]); copies of it without structuredOutput (the answer stays text, with a note) and with output beside a non-string text (the answer is output)${RR_BAD:+:$RR_BAD}" test -z "$RR_BAD"
+# grok's real sandbox log (1.0.70): the write run's profile, the read run's strict probe and the
+# read run itself (read-only, in its gate checkout), one ProfileApplied line each.
 local SEVF="$FIX/real/grok/sandbox-events-1.0.70.jsonl" SEV1
 SEV1="$(head -n 1 "$SEVF" | wc -c)"
-check "[X]   cxlib grok-sandbox-event on grok's real sandbox log: the strict probe's line (workspace /root/.conductor/probe) and the write run's profile are enforced on linux/landlock; reading only the bytes after the first line finds nothing for the write run's workspace" \
-  eval '[ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/probe)" = "enforced	linux/landlock	strict" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "enforced	linux/landlock	cx-textutil-78d1f9c2" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from "$SEV1" --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "none	-	-" ]'
+check "[X]   cxlib grok-sandbox-event on grok's real sandbox log: the strict probe's line (workspace /root/.conductor/probe), the write run's profile and the read run's read-only start are enforced on linux/landlock; reading only the bytes after the first line finds nothing for the write run's workspace; the read-only line writes ~/.grok and names no read_only_paths, the strict-based ones keep ~/.grok read-only" \
+  eval '[ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/probe)" = "enforced	linux/landlock	strict" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "enforced	linux/landlock	cx-textutil-78d1f9c2" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from "$SEV1" --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "none	-	-" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/gate/live-grok-read-1.1)" = "enforced	linux/landlock	read-only" ] && [ "$(grep -c "\"read_only_paths\":\[[^]]*\"/root/.grok\"" "$SEVF")" = 2 ] && grep "\"profile\":\"read-only\"" "$SEVF" | grep -Fq "\"read_write_paths\":[\"/root/.grok\",\"/tmp\",\"/var/tmp\"]}" && ! grep "\"profile\":\"read-only\"" "$SEVF" | grep -q read_only_paths'
+# grok-sandbox-event's own guards, called directly (the adapter's size check alone would hide
+# them): a log file that is a symlink (to an unenforced line) and a FIFO are never read, the
+# FIFO without blocking; an enforced and an unenforced line for one workspace: enforced false wins.
+local GSE="$AD/gse"
+rm -rf -- "${GSE:?}"; mkdir -p "$GSE"
+printf '%s\n' '{"event_type":"ProfileApplied","profile":"strict","workspace":"/w","platform":"linux/none","enforced":false}' > "$GSE/real.jsonl"
+ln -s "$GSE/real.jsonl" "$GSE/link.jsonl"
+mkfifo "$GSE/fifo.jsonl"
+printf '%s\n' '{"event_type":"ProfileApplied","profile":"strict","workspace":"/w","platform":"linux/landlock","enforced":true}' \
+  '{"event_type":"ProfileApplied","profile":"strict","workspace":"/w","platform":"linux/none","enforced":false}' > "$GSE/two.jsonl"
+check "[X]   cxlib grok-sandbox-event: the unenforced line read directly; the same line through a symlinked log file and a FIFO -> none (the FIFO within 10 s, never blocking); an enforced then an unenforced line for one workspace in the window -> unenforced" \
+  eval '[ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$GSE/real.jsonl" --from 0 --to "$(wc -c < "$GSE/real.jsonl")" --workspace /w)" = "unenforced	linux/none	strict" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$GSE/link.jsonl" --from 0 --to "$(wc -c < "$GSE/real.jsonl")" --workspace /w)" = "none	-	-" ] && [ "$(timeout 10 "$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$GSE/fifo.jsonl" --from 0 --to 100 --workspace /w)" = "none	-	-" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$GSE/two.jsonl" --from 0 --to "$(wc -c < "$GSE/two.jsonl")" --workspace /w)" = "unenforced	linux/none	strict" ]'
 check "[X]   ... the real agy denial names the command it stopped (step_update tool_info.parameters.CommandLine) in CX_DENIED.commands, with an agy hint (cx-route, git status and ls; never a skip-permissions flag or a routes --allow fix)" \
   eval '[ "$(tj line "$RR/sbx-agy-1.emit" CX_DENIED count)" = 1 ] && tj line "$RR/sbx-agy-1.emit" CX_DENIED commands | grep -Fq "git status --short; find . -path ./.git -prune" && tj line "$RR/sbx-agy-1.emit" CX_DENIED hint | grep -q "agy may run only cx-route <name>, git status and ls" && ! grep -Eq "dangerously|always-approve|--allow\\)" "$RR/sbx-agy-1.emit"'
 check "[X]   ... the real grok denial's hint names grok's sandbox profile (never --always-approve on a writer or a routes edit)" \
-  eval 'tj line "$RR/sbx-grok-1.emit" CX_DENIED hint | grep -q "grok may write only inside the task" && ! grep -q "cx-init --user-grants" "$RR/sbx-grok-1.emit"'
+  eval 'tj line "$RR/sbx-grok-1.emit" CX_DENIED hint | grep -Fq "grok may write only inside the task'"'"'s worktree (plus /tmp, /var/tmp and ~/.grok/sessions: its sandbox profile)" && ! grep -q "cx-init --user-grants" "$RR/sbx-grok-1.emit"'
 # the grok alias table is explicit: only <requested>-build; another served model stays 21.
 local GA_BAD="" ga
 for ga in "grok-4.7-build-fast" "grok-4.6-build" "grok-4.6"; do
@@ -3612,7 +3693,10 @@ check "[A12] cx-job wait <unique prefix>: exit 0 when the job ends; stdout the d
 cr STUB_GROK_RUN=sleep STUB_GROK_SLEEP=60 -- "$CXJOB" start --exec grok --id j2 'x'
 J2="$(sed -n 's/^JOB_ID //p' "$O")"
 JD="$AD/home/.conductor/jobs/$J2"
-for ((i = 0; i < 300; i++)); do [ -s "$JD/sids" ] && break; sleep 0.1; done   # the executor runs (preflight done; a loaded machine)
+# The executor runs once the keeper wrote its session id (the preflight done); a loaded machine
+# may take long, and a kill that lands in the preflight truthfully reports no executor (below).
+local J2_RAN=""
+for ((i = 0; i < 600; i++)); do [ -s "$JD/sids" ] && { J2_RAN=1; break; }; sleep 0.1; done
 cr -- "$CXJOB" result "$J2"
 check "[A12] result while the job runs -> 75 RUNNING (one CX_SIGNAL)" eval 'rc_is 75 && one_signal RUNNING'
 cr -- "$CXJOB" wait "$J2" --timeout 1s
@@ -3637,8 +3721,13 @@ check "[A12] kill: rc 130 written first, TERM to the runner and every recorded s
 check "[A12] ... rc 130 was on disk before the first TERM landed: a recorded session that reads rc on TERM saw 130 (got $(cat "$JD/rc-at-term" 2>/dev/null)), and it is gone" \
   eval '[ "$(cat "$JD/rc-at-term" 2>/dev/null)" = 130 ] && ! kill -0 "$rpid" 2>/dev/null'
 cr -- "$CXJOB" result "$J2"
-check "[A12] ... result of the killed job -> 130 with one CX_SIGNAL CANCELLED, last, and the run's own result says cancelled (never an executor that did not start)" \
-  eval 'rc_is 130 && one_signal CANCELLED && line_is CX_RESULT status cancelled && ! err_has "stopped before its executor ran"'
+if [ -n "$J2_RAN" ]; then
+  check "[A12] ... result of the killed job -> 130 with one CX_SIGNAL CANCELLED, last, and the run's own result says cancelled (never an executor that did not start)" \
+    eval 'rc_is 130 && one_signal CANCELLED && line_is CX_RESULT status cancelled && ! err_has "stopped before its executor ran"'
+else
+  check "[A12] ... result of the killed job -> 130 with one CX_SIGNAL CANCELLED, last" eval 'rc_is 130 && one_signal CANCELLED'
+  skip "[A12] ... the run's own result says cancelled (never an executor that did not start)" "the job's executor had not started within 60 s (a loaded machine), so the kill landed in its preflight"
+fi
 # pid-reuse protection: a registry entry whose pid now belongs to an unrelated process
 sleep 60 & qp=$!
 mkdir -p "$AD/home/.conductor/jobs/20990101-000000-dead"; printf 'x\0' > "$AD/home/.conductor/jobs/20990101-000000-dead/argv"
@@ -3674,18 +3763,35 @@ for c in status result wait kill; do
     || T5_BAD="$T5_BAD [$c: rc $RC $(head -c 200 "$E")]"
 done
 [ "$(cd "$REPO" && env HOME="$AD/home" CX_HOME="$AD/home/.conductor" "$CXJOB" status "$J")" = "done rc=0" ] || T5_BAD="$T5_BAD [job $J changed]"
-mkdir -p "$JX/20990103-000000-0001" "$JX/20990103-000000-0002" "$JX/20990103-000000-0003"
+mkdir -p "$JX/20990103-000000-0001" "$JX/20990103-000000-0002" "$JX/20990103-000000-0003" "$JX/20990103-000000-0004"
 printf '%s\0' --exec grok --id=t.5 -- x > "$JX/20990103-000000-0001/argv"
 printf '%s\0' --model --id --id dup -- x > "$JX/20990103-000000-0002/argv"
 printf '%s\0' --id dup -- --id > "$JX/20990103-000000-0003/argv"
+printf '%s\0' --exec grok -- --id x > "$JX/20990103-000000-0004/argv"
 cr -- "$CXJOB" kill t.5
 { rc_is 1 && err_has "t.5 is the task id of job 20990103-000000-0001;" && [ ! -e "$JX/20990103-000000-0001/rc" ]; } || T5_BAD="$T5_BAD [t.5 (--id=, not a job-id shape): rc $RC $(head -c 200 "$E")]"
 cr -- "$CXJOB" wait dup
 { rc_is 1 && err_has "no job dup in $JX" && ! err_has "task id of"; } || T5_BAD="$T5_BAD [dup (two jobs): rc $RC $(head -c 200 "$E")]"
 cr -- "$CXJOB" status x
-{ rc_is 1 && ! err_has "task id of"; } || T5_BAD="$T5_BAD [x (the task text and a model value are no task id): $(head -c 200 "$E")]"
-rm -rf "$JX"/20990103-000000-000[123]
-check "[X]   cx-job status, result, wait and kill given a task id (--id j1) instead of the JOB_ID: exit 1, no output, a note naming the JOB_ID of the one job with that task id, and that job untouched; also for --id=t.5 (not a JOB_ID shape); a task id of two jobs (one after a --model whose value is --id) or the task text gives the plain note${T5_BAD:+:$T5_BAD}" test -z "$T5_BAD"
+{ rc_is 1 && err_has "no job x in $JX" && ! err_has "task id of"; } || T5_BAD="$T5_BAD [x (--id x in the task text, after --, is no task id): $(head -c 200 "$E")]"
+rm -rf "$JX"/20990103-000000-000[1234]
+# A JOB_ID prefix that is also another job's task id (cx-run takes ids of digits alone) is
+# ambiguous: neither job is acted on. One that is the matched job's own task id still names it.
+mkdir -p "$JX/20990105-000000-0001" "$JX/20990106-000000-0002" "$JX/20990107-000000-0003"
+printf '%s\0' --exec grok --id y -- taskA > "$JX/20990105-000000-0001/argv"
+printf '%s\0' --exec grok --id 20990105 -- taskB > "$JX/20990106-000000-0002/argv"
+printf '%s\0' --exec grok --id 20990107 -- taskC > "$JX/20990107-000000-0003/argv"
+for c in status kill; do
+  cr -- "$CXJOB" "$c" 20990105
+  { rc_is 1 && no_signal && [ ! -s "$O" ] && err_has "job id 20990105 is ambiguous: it starts the JOB_ID 20990105-000000-0001 and is the task id of job 20990106-000000-0002; give the full JOB_ID" \
+      && [ ! -e "$JX/20990105-000000-0001/rc" ] && [ ! -e "$JX/20990106-000000-0002/rc" ]; } || T5_BAD="$T5_BAD [$c 20990105 (a prefix and a task id): rc $RC $(head -c 200 "$E")]"
+done
+cr -- "$CXJOB" status 20990105-000000-0001
+{ rc_is 0 && ! err_has "ambiguous"; } || T5_BAD="$T5_BAD [the full JOB_ID 20990105-000000-0001: rc $RC $(head -c 200 "$E")]"
+cr -- "$CXJOB" status 20990107
+{ rc_is 0 && ! err_has "ambiguous"; } || T5_BAD="$T5_BAD [20990107 (the prefix is its own job's task id): rc $RC $(head -c 200 "$E")]"
+rm -rf "$JX"/20990105-000000-0001 "$JX"/20990106-000000-0002 "$JX"/20990107-000000-0003
+check "[X]   cx-job status, result, wait and kill given a task id (--id j1) instead of the JOB_ID: exit 1, no output, a note naming the JOB_ID of the one job with that task id, and that job untouched; also for --id=t.5 (not a JOB_ID shape); a task id of two jobs (one after a --model whose value is --id) or --id x in the task text gives the plain note; a JOB_ID prefix that is another job's task id is ambiguous for status and kill (exit 1, nothing acted on), while the full JOB_ID, or a prefix that is its own job's task id, still names the job${T5_BAD:+:$T5_BAD}" test -z "$T5_BAD"
 cr -- "$CXJOB" list --all
 check "[X]   cx-job list --all names every job with its status" eval 'rc_is 0 && out_has "$J  done rc=0" && out_has "$J2  cancelled"'
 

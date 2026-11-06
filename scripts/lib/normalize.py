@@ -441,8 +441,9 @@ def parse_grok(out_dir, meta, run, rc):
     reasoning_tokens, total_tokens}, num_turns, total_cost_usd(_ticks), modelUsage {<served>:
     {...}} and, with --json-schema, structuredOutput. text joins every turn's assistant message
     with no separator (turn boundaries cannot be recovered from it), so with --json-schema the
-    structured answer wins. "permission required:" on stderr for a denied tool (rc 0); an error
-    object without sessionId on rc 1 [docs-only]."""
+    structured answer wins; without one, text stays the answer, with a note saying it is not the
+    structured one. "permission required:" on stderr for a denied tool (rc 0); an error object
+    without sessionId on rc 1 [docs-only]."""
     f = facts_base()
     raw = read(os.path.join(out_dir, "grok.out"))
     err = read(os.path.join(out_dir, "grok.err"))
@@ -452,7 +453,7 @@ def parse_grok(out_dir, meta, run, rc):
         f["answer"] = text
     elif raw.strip() and not obj:
         f["answer"] = raw  # plain text (no JSON at all)
-    if meta.get("json_schema") and obj:
+    if meta.get("json_schema"):
         # With --json-schema, 1.0.70 puts the validated answer in structuredOutput, while text
         # joins every turn's message with no separator (sbx-grok-3: "[ ]" from the first turn,
         # then the array), so text alone is not valid JSON. The structured answer wins.
@@ -460,6 +461,10 @@ def parse_grok(out_dir, meta, run, rc):
             if obj.get(k) is not None:
                 f["answer"] = json.dumps(obj[k], ensure_ascii=False)
                 break
+        else:
+            if nonblank(f["answer"]):
+                f["notes"].append("grok gave no structuredOutput for --json-schema: the answer is its text, which joins "
+                                  "every turn's message with no separator (it may not be valid JSON)")
     f["session"] = obj.get("sessionId") or obj.get("session_id") or None
     mu = obj.get("modelUsage") if isinstance(obj.get("modelUsage"), dict) else None
     f["models"] = sorted(mu) if mu else []
@@ -963,7 +968,8 @@ def deny_hint(executor, kinds):
         if executor == "agy":
             hints.append("agy may write only inside the task's worktree (write_file per run): narrow the task")
         elif executor == "grok":
-            hints.append("grok may write only inside the task's worktree and /tmp (its sandbox profile): narrow the task")
+            hints.append("grok may write only inside the task's worktree (plus /tmp, /var/tmp and ~/.grok/sessions: "
+                         "its sandbox profile): narrow the task")
         else:
             hints.append("writes outside the task's worktree are refused: narrow the task")
     return "; ".join(hints) or "the denied actions were not performed"

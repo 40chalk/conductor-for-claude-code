@@ -19,8 +19,10 @@
 #        cx-job unpause agy                   resumes agy dispatch after a wrong_tree pause
 #        cx-job -h|--help | --version
 #
-# <id> is YYYYmmdd-HHMMSS-<4 hex>, or any unique prefix of it (a task id, cx-run's --id, is
-# refused with exit 1 and a note naming the JOB_ID of the one job that has it). The registry is
+# <id> is YYYYmmdd-HHMMSS-<4 hex>, or any unique prefix of it. A task id (cx-run's --id) is
+# never taken for a job: one that names no job exits 1 with a note naming the JOB_ID of the one
+# job that has it, and a prefix of one JOB_ID that is also another job's task id is ambiguous
+# (exit 1); only a full JOB_ID is always its own job. The registry is
 # $CX_HOME/jobs/<id>/ (argv, meta, pid, pid_start, sids, queued, out, err, rc). start checks the
 # arguments with cx-run --dry-run first (exit 1 or 42: refused, nothing started; a taken id, a
 # running task and an unmappable path are refused here, not later in the job) and reads a task
@@ -91,17 +93,24 @@ task_id_of() {
   return 1
 }
 
-# no_job ID: the note for an ID that names no job. When ID is the task id of exactly one job,
-# it says which JOB_ID that is; the caller still exits 1 (nothing acts on the resolved job).
-no_job() {
-  local id="$1" d t=()
-  [ -n "$id" ] || return 1
+# task_jobs ID: the JOB_IDs of the jobs whose task id is ID, one per line.
+task_jobs() {
+  local d
+  [ -n "${1-}" ] || return 0
   shopt -s nullglob
   for d in "$JOBS"/*/; do
     d="${d%/}"
-    [ "$(task_id_of "$d" 2>/dev/null)" = "$id" ] && t+=("${d##*/}")
+    [ "$(task_id_of "$d" 2>/dev/null)" = "$1" ] && printf '%s\n' "${d##*/}"
   done
   shopt -u nullglob
+}
+
+# no_job ID: the note for an ID that names no job. When ID is the task id of exactly one job,
+# it says which JOB_ID that is; the caller still exits 1 (nothing acts on the resolved job).
+no_job() {
+  local id="$1" t=()
+  [ -n "$id" ] || return 1
+  mapfile -t t < <(task_jobs "$id")
   if [ "${#t[@]}" = 1 ]; then
     cx_note "no job $id in $JOBS: $id is the task id of job ${t[0]}; cx-job takes the JOB_ID that cx-run --background printed"
     return 0
@@ -109,16 +118,27 @@ no_job() {
   return 1
 }
 
-# jobdir ID: the job directory of ID or of the unique job whose id starts with it.
+# jobdir ID: the job directory of ID or of the unique job whose id starts with it. A prefix
+# that is also the task id of another job (cx-run takes ids of digits alone, such as 20261106)
+# is ambiguous: neither job is acted on.
 jobdir() {
-  local id="${1-}" d m=() n
+  local id="${1-}" d m=() n t=() o=()
   [[ $id =~ ^[0-9A-Za-z][0-9A-Za-z-]*$ ]] || { no_job "$id" || cx_note "invalid job id '$id'"; return 1; }
   if [ -d "$JOBS/$id" ]; then printf '%s\n' "$JOBS/$id"; return 0; fi
   shopt -s nullglob
   for d in "$JOBS/$id"*; do [ -d "$d" ] && m+=("$d"); done
   shopt -u nullglob
   n="${#m[@]}"
-  if [ "$n" = 1 ]; then printf '%s\n' "${m[0]}"; return 0; fi
+  if [ "$n" = 1 ]; then
+    mapfile -t t < <(task_jobs "$id")
+    for d in "${t[@]+"${t[@]}"}"; do [ "$d" = "${m[0]##*/}" ] || o+=("$d"); done
+    if [ "${#o[@]}" -gt 0 ]; then
+      n="job ${o[0]}"; [ "${#o[@]}" = 1 ] || n="jobs ${o[*]}"
+      cx_note "job id $id is ambiguous: it starts the JOB_ID ${m[0]##*/} and is the task id of $n; give the full JOB_ID that cx-run --background printed"
+      return 1
+    fi
+    printf '%s\n' "${m[0]}"; return 0
+  fi
   if [ "$n" = 0 ]; then no_job "$id" || cx_note "no job $id in $JOBS"; else cx_note "job id $id is ambiguous (${n} jobs start with it)"; fi
   return 1
 }
