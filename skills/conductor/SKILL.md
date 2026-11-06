@@ -33,12 +33,12 @@ in the same commit.
 | Lane id | Executor and model | Pool | Writes | Command |
 |---|---|---|---|---|
 | `claude` | Claude Code, `claude-opus-5-5`, effort up to `max` | Claude plan (the pool to conserve) | yes | Your own Task/Agent subagents: `cx-run --exec claude`, then `--finish` (Step 2) |
-| `agy-opus` | agy, `claude-opus-5-5-{medium,high}` | Ultra Claude/GPT bucket | yes (static grant) | `cx-run --exec agy` (Step 2) |
+| `agy-opus` | agy, `claude-opus-5-5-{medium,high}` | Ultra Claude/GPT bucket | yes (per-run `--settings` grants) | `cx-run --exec agy` (Step 2) |
 | `copilot-opus` | ghcp, `claude-opus-5.5` at effort high | Copilot credits | yes | `cx-run --exec copilot` (Step 2) |
 | `copilot-fusion` | ghcp Fusion Standard / Max | Copilot credits | yes | `cx-run --exec copilot --fusion standard\|max` (mechanical fallback; both Opus pools drained) |
 | `copilot-gpt` | ghcp, `gpt-6.1-sol` (`gpt-6-astra` critique, `gpt-6-luna` text) | Copilot credits | no | `cx-run --mode read --exec copilot`, `--mode review --family gpt` (Steps 2, 4) |
 | `copilot-github` | Copilot code review, `ghcp-ci-debug`, the Copilot cloud agent (`cx-run --exec copilot-cloud`, through ghcp's `ghcp-cloud`); ghcp's GitHub mode (`--github`) only for a task meant to act on GitHub | Copilot credits (the cloud agent also Actions minutes) | via PR; `--github` writes on GitHub as you | Step 5 |
-| `grok` | Grok Build 1.0.70, `-m grok-4.7` | xAI weekly first-party pool | yes (acceptEdits + allow-list) | `cx-run --exec grok` (Step 2) |
+| `grok` | Grok Build (last verified 1.0.70), `-m grok-4.7` | xAI weekly first-party pool | yes (its repository's strict sandbox profile, always-approve inside it) | `cx-run --exec grok` (Step 2) |
 | `agy-gemini` | `agy-delegate`, `Gemini 4 Argon (High)` / `gemini-3.8-flash-high` | Ultra Gemini quota (not the Claude/GPT bucket) | no | `cx-run --mode read --exec agy`, `--mode review --family gemini` (Steps 2, 4) |
 | `agy-media` | `agy-media`, `/antigravity:research` | Ultra Gemini quota | machine-wide: both always pass `--yolo` | none: not used outside Docker (v1.1 lane) |
 
@@ -161,12 +161,17 @@ with the repo's `setup` and `commands` from `.cx/routes.json` (written by `cx-in
   API account instead of the subscription, and the `COPILOT_*` variables can change Copilot's
   model, permissions or endpoint.
 
-**Once per machine** (and again after adding routes commands), from inside the repo:
-`cx-init --user-grants` merges `write_file(<worktree_root>)` and one `command(<cmd>)` per routes
-command into `~/.gemini/antigravity-cli/settings.json` (agy's write grant), adds the
-`cx-workspace` sandbox profile to `~/.grok/sandbox.toml` and `[cli] auto_update = false` to
-`~/.grok/config.toml`, keeping a `.cx-bak` copy of every file it changes (`--dry-run` shows
-what it would do). Never use the yolo / skip-permissions flags (`--yolo`,
+**Checks run only through `cx-route`.** At dispatch `cx-run` snapshots the task's commands,
+named from `.cx/routes.json` (`test`, `lint`, `typecheck`, ...), into the run's
+`~/.conductor/out/<id>/bin/cx-route`, which is on every executor's PATH: `cx-route test` runs
+that snapshot (an edit of the worktree's `routes.json` changes nothing), `cx-route` alone lists
+the names. Executors may run only `cx-route <name>` and `git status`, `git diff`, `git log`,
+`git show` (agy also `ls`): agy gets exactly these as per-run `--settings` grants (its first
+other command ends the run), Copilot as `--allow-shell` rules, and grok runs inside its
+repository's sandbox profile. Name the checks in the contract as `cx-route <name>`.
+`cx-init --user-grants` (optional, from inside the repo) writes that repository's grok profile
+ahead of its first grok run and removes the invalid profile conductor 0.2.0 wrote; agy needs no
+user-level grant any more. Never use the yolo / skip-permissions flags (`--yolo`,
 `--dangerously-skip-permissions`) outside Docker, and never `agy-handoff`, `agy-media` or
 `/antigravity:research` for conductor work (they always pass them: a grant over the whole
 machine).
@@ -184,12 +189,14 @@ copies it to `~/.conductor/out/<id>/task.md`, its canonical place, and into the 
 ## Context
 Files and pointers (paths, functions). No pasted file contents beyond short excerpts.
 ## Acceptance tests
-- Must pass: `npm test` …
+- Must pass: `cx-route test` (`npm test`) …
 - Existing tests that must not change: `tests/foo.test.ts` …
 ## Allowed changes
 Only paths matching: `src/feature/**`. Lockfiles: no.
 ## Allowed commands
-Exactly: `npm test` (from .cx/routes.json).
+Run checks only through cx-route: `cx-route test` (`npm test`), snapshotted from .cx/routes.json
+at dispatch (`cx-route` alone lists them). Also allowed: git status, git diff, git log, git show.
+No other shell command.
 ## Forbidden
 Editing .conductor/task.md, the tests listed above, CI config, .cx/routes.json or git hooks;
 installing, upgrading or patching dependencies; committing, pushing or branching; starting
@@ -200,7 +207,8 @@ issues. No full file contents, no raw logs. End with exactly one line: DIGEST: <
 ```
 
 `id` and `base` may be left out (`--id`, `--base`, else a generated id and `HEAD`); `commands`
-are the only shell commands the executor may run (default: the routes commands);
+are the checks the executor may run through `cx-route` (default: the routes commands; a
+command that is not a routes command gets the name `cmd-1`, `cmd-2`, ...);
 `"subagents": true` lets a Grok task use subagents. A one-line task may go as quoted text
 instead of `--task-file` (wrapped into the same template with the routes commands and no
 `allowed_paths`); prefer task files.
@@ -533,9 +541,9 @@ Grok remote sessions, which the user starts: grok 1.0.70 can only resume one).
 | G6 | Check the served model every run; any mismatch (including `GHCP_FALLBACK` on a Fusion lane) fails the run | `cx-run` (21): Copilot `models_used`, agy raw mode's init event, Grok `modelUsage`; agy wrapper mode and the claude lane record `unverified` |
 | G7 | Cross-family review; your own review scaled to risk; every accepted finding confirmed at file:line, every rejected one gets a reason | Step 4 |
 | G8 | No self-reported success: a digest you relay ends with "VERIFY THIS" until you verified it | `cx-run`'s `VERIFY THIS:` line |
-| G9 | Versions pinned at install level; model and effort passed explicitly every time | `cx-doctor`; `cx-run`'s preflight (26) |
+| G9 | No version pins: each lane checks the live `--help` for every flag it emits before it runs; model and effort passed explicitly every time | `cx-run`'s preflight (26 flag contract); `cx-doctor` shows the versions last verified |
 | G10 | Workers fenced by the environment: `CX_WORKER=1`, worker shims, `GROK_CLAUDE_*_ENABLED=false`, scrubbed `COPILOT_*` and API keys; no skip-permissions outside Docker; no conductor content in a repo's `CLAUDE.md` or `.claude/` | `cx-run`'s worker environment; the hand steps' prefixes (never exported); `cx-init` writes nothing there |
-| G11 | Secrets: repos with secrets use Docker lanes (v1.1) or exclude pools in `.cx/routes.json` (default all on); Grok always runs under a sandbox profile | routes.json `pools`; the `cx-workspace` profile (`cx-init --user-grants`) |
+| G11 | Secrets: repos with secrets use Docker lanes (v1.1) or exclude pools in `.cx/routes.json` (default all on); Grok always runs under a sandbox profile | routes.json `pools`; each repository's `cx-<repo>-<hash>` profile (extends `strict`; the grok lane or `cx-init --user-grants` writes it) |
 
 After every run, before you accept anything:
 
@@ -582,7 +590,9 @@ After every run, before you accept anything:
   whatever the job's rc (read `<jobdir>/rc`), and its status output contains the job's task
   text (match `  state=running` exactly).
 - **Parallel `--continue` races**: resume only by explicit session or conversation id.
-- **Copilot 1.0.106-1** lacks the Fusion flag strings: stay on 1.0.105.
+- **CLI updates**: nothing is pinned. Before every run each lane checks that the live `--help`
+  (and `copilot help permissions`) still lists every flag it is about to pass; a missing one
+  stops the lane with exit 26 before it runs: use the next pool and tell the user.
 - **A Fusion refusal** re-runs on plain `auto` (billed) and prints `GHCP_FALLBACK`: a model
   mismatch on a Fusion lane.
 - **Grok's `worker` subcommand** registers this machine as a remote worker for a third-party
@@ -631,7 +641,7 @@ result` and `wait` relay the job's `CX_*` lines and exit with its code.
 | 23 | SPEC_TAMPERED | `.conductor/task.md` hash mismatch |
 | 24 | TAMPERED | A protected path changed, or the executor left the task branch (`BRANCH_TAMPERED`) |
 | 25 | ENV_FAILED | The repo's `setup` command failed (not charged to the executor) |
-| 26 | VERSION_MISMATCH | CLI version is not the pin; lane refused before running |
+| 26 | VERSION_MISMATCH | Flag contract: the CLI's live help lacks a flag the lane emits; lane refused before running |
 | 27 | PARTIAL | Partial output (agy print timeout expired with rc 0) |
 | 28 | NO_CAPACITY | Every eligible lane at its cap, disabled or paused (an explicit `cx-run` lane or `cx-wsl`: no pool slot within `CX_SLOT_WAIT_SECS`, 10 minutes) |
 | 40 | FORWARD_FAILED | Git Bash to WSL: `wsl.exe` or the distro missing, or wsl.exe failed or died |
@@ -668,8 +678,9 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
 - **Exit 11**: `cx-doctor --login-help <cli>` prints the fresh-login command; the user runs it
   in a WSL terminal. Logged in from a WSL terminal but not through `cx-wsl`: the keyring is
   unreachable through wsl.exe (no D-Bus); `cx-doctor --windows` explains the token-file route.
-- **Exit 26 / version pins**: `cx-doctor` prints the install command for the pinned version
-  (Copilot 1.0.105, Grok 1.0.70) and the auto-update exports for `~/.profile`.
+- **Exit 26 (flag contract)**: the CLI changed and its `--help` no longer lists a flag the lane
+  needs (the reason names it). Nothing is pinned and auto-update is the user's choice: take the
+  next pool in the order and report the flag; `cx-doctor` shows the versions last verified.
 - **`WRONG_TREE`** (exit 22): a worktree of the repo changed while agy ran, usually agy writing
   into its last project root (the main checkout or a previous task's worktree). The changed
   trees are in `~/.conductor/state/agy-paused` and the run's `agy.trees.changed`; report them
@@ -691,8 +702,11 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing
   was committed or gated; fail over after the reset. After a CI fix in apply mode
   (`ghcp-ci-debug --apply --dir "$WT"`), hand its edits back to `cx/<id>` first (Step 5).
-- **`permission required:`** on Grok's stderr: a denied tool (even with rc 0). Add the needed
-  routes command to the allow list or change the task; never widen to `--always-approve` on a
+- **`CX_DENIED`** (exit 15): read its `commands` and `hint`. agy and Copilot may run only
+  `cx-route <name>` and the git reads: a check the task needs belongs in `.cx/routes.json`
+  (then re-dispatch), any other command means the task asked for too much.
+- **`permission required:`** on Grok's stderr: a denied tool (even with rc 0), outside its
+  sandbox profile (writes go to the worktree and `/tmp` only). Change the task; never widen to `--always-approve` on a
   writer.
 - **gh without `@copilot` reviewer support**: upgrade gh or use the REST fallback of Step 5.
 - **Exit 13 from `cx-run` or `cx-wsl`**: no host record yet (`cx-run` refreshes a stale one); run `cx-doctor` from this session (it

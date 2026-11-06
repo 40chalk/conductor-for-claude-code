@@ -26,16 +26,17 @@
 #   --setup/--test/--lint/--typecheck <cmd>
 #                    override a detected command; an empty value ('') means none
 #
-# --user-grants (DESIGN section 15.7) writes the user-level grants instead, once per machine
-# (idempotent; never per run, parallel runs would race on these files): write_file(<worktree_root>)
-# and one command(<cmd>) per .cx/routes.json command of the repository at --dir (default: the
-# current directory, when it is one) merged into ~/.gemini/antigravity-cli/settings.json
-# permissions.allow; the grok_sandbox_profile profile (option, default cx-workspace; from
-# templates/grok-sandbox.toml: extends workspace, denies .env, keys and id_rsa files) added to
-# ~/.grok/sandbox.toml when absent; [cli] auto_update = false in ~/.grok/config.toml when absent.
-# A file that changes is first copied to <file>.cx-bak; other keys are kept; a file that cannot
-# be merged is a CONFLICT and nothing is written (exit 5). Run it again after adding routes
-# commands.
+# --user-grants (DESIGN section 15.7) writes the user-level settings a repository's executor runs
+# need, idempotently: the grok sandbox profile of the repository at --dir (default: the current
+# directory, when it is one), cx-<repo>-<8 hex>, from templates/grok-sandbox.toml (extends
+# grok's strict profile; read_only the repository's git directory and ~/.conductor/out), added
+# to ~/.grok/sandbox.toml or rewritten when it differs (cx-run's grok lane writes the same
+# profile on the repository's first grok run, so this is optional), and it removes the invalid
+# cx-workspace profile conductor 0.2.0 wrote there. agy needs no user-level grant (each raw agy
+# run passes its own --settings): a note names the global grants 0.2.0 left in
+# ~/.gemini/antigravity-cli/settings.json, which it never edits. Grok's auto-update setting is
+# yours: nothing pins a CLI version. A file that changes is first copied to <file>.cx-bak; a
+# result that would not parse is a CONFLICT and nothing is written (exit 5).
 #
 # Detection (repo root only): npm/pnpm/yarn/bun, Python (uv, poetry, pytest, ruff, mypy), Go,
 # Rust, then tests/run-tests.sh and Makefile targets. stdout: create/update/same/skipped/CONFLICT
@@ -115,10 +116,11 @@ if [ "$GRANTS" = 1 ]; then
   # shellcheck source=lib/worktree.sh
   . "$HERE/lib/worktree.sh"
   UG=(--home "$HOME" --grok-home "${GROK_HOME:-$HOME/.grok}" --profile "$(cx_opt grok_sandbox_profile)"
-      --template "$CX_ROOT/templates/grok-sandbox.toml" --grok-pin "$CX_PIN_GROK")
+      --template "$CX_ROOT/templates/grok-sandbox.toml" --out-root "${CX_HOME:-$HOME/.conductor}/out")
   TOP=""
   if [ -d "$DIR" ] && TOP="$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$TOP" ]; then
     UG+=(--repo "$TOP")
+    G="$(git -C "$TOP" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && [ -d "$G" ] && UG+=(--gcd "$(cd -- "$G" && pwd -P)")
     RT_CMDS=()
     o="$(python3 -I "$CX_LIB/normalize.py" routes --file "$TOP/.cx/routes.json")" && eval "$o"
     [ "${RT_FOUND:-0}" = 1 ] || cx_note "no .cx/routes.json in $TOP (cx-init writes one): no command grants"

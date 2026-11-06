@@ -3,9 +3,10 @@
 # scripts/adapters/agy.sh - the Antigravity lanes (docs/DESIGN.md section 15.2): agy-opus in raw
 # mode (default: the agy CLI itself, which alone shows the served model) or wrapper mode
 # (agy-delegate), and agy-gemini (always agy-delegate: digests, research, reviews).
-# The raw flags (--add-dir, --print-timeout, --output-format stream-json,
-# --disable-slash-commands, --new-project) are verified against `agy --help` 1.4.12 (DESIGN
-# section 20 item 4); A1 checks them against tests/fixtures/real/agy/help.txt.
+# The raw flags (--add-dir, --settings, --print-timeout, --output-format stream-json,
+# --disable-slash-commands, --new-project) are in `agy --help` 1.4.12 and 1.5.1 (DESIGN section
+# 20 item 4; A1 checks them against tests/fixtures/real/agy/help.txt and help-1.5.1.txt), and
+# the preflight checks them against the live --help before every run (no version pin).
 #
 # Usage: agy.sh probe|argv|run|parse [OPTIONS]   (the options of scripts/lib/adapter.sh)
 #        agy.sh -h|--help | --version
@@ -13,10 +14,19 @@
 #   model: --model <slug or label>, else option agy_opus_slug_tpl with the effort (low|medium|
 #   high; xhigh and max are not offered on agy: use the next pool). --agy-mode raw|wrapper
 #   (default raw for write mode, wrapper otherwise); a non-Opus model is always wrapper mode.
-#   raw argv:      <agy> --model <slug> --add-dir <WT> --print-timeout <T> --output-format
-#                  stream-json --disable-slash-commands -p <prompt>
+#   raw argv:      <agy> --model <slug> --add-dir <WT> --settings $OUT/agy-settings.json
+#                  --print-timeout <T> --output-format stream-json --disable-slash-commands
+#                  -p <prompt>
+#   grants (raw):  $OUT/agy-settings.json, session-only (agy never saves it): permissions.allow
+#                  write_file(<WT>) and command() for cx-route, git status, git diff, git log,
+#                  git show and ls (each simple command of a compound line must match one; one
+#                  denial ends a headless run). Reads inside the workspace need no grant. Never
+#                  --dangerously-skip-permissions, never a global grant. The default prompt tells
+#                  agy to read with its own file tools and that any other command ends the run.
 #   wrapper argv:  <agy-delegate> --model <M> --dir <WT> [--dir <DIR>...] --timeout <T> --digest <prompt>
-#                  (a prompt that starts with "-": "-" and the prompt on stdin)
+#                  (a prompt that starts with "-": "-" and the prompt on stdin). agy-delegate has
+#                  no --settings: a wrapper write run is denied unless your own agy settings
+#                  allow it (the raw mode, the default, carries its grants).
 #   environment:   the worker environment, GEMINI_API_KEY and GOOGLE_API_KEY unset; wrapper mode
 #                  adds AGY_USAGE_LOG=$CX_HOME/raw-usage.log and the shim set without agy
 #                  (agy-delegate finds agy with command -v).
@@ -33,8 +43,13 @@
 #                  after (cost.quota_delta). Wrapper mode: registration and snapshots too, with
 #                  the launch lock held for the whole call. TERM/INT/HUP kill the session at once
 #                  (agy ignores TERM).
-#   parse:         init.model (served), the result event's response, usage, denied_actions /
-#                  a permission finished_reason (-> 15), subagent_info or another model (-> 2),
+#   probe (free):  agy --version (recorded only), agy models (login, the slug listed), agy
+#                  --help (the flag contract: every flag of the argv, the registration's and
+#                  /usage's; wrapper mode also agy-delegate --help): 26 when one is missing.
+#   parse:         the real stream-json (agy 1.4.12: {"event": "init"|"step_update"|"result"}):
+#                  init.model (served), the result's response, usage, denied_actions named after
+#                  the tool step they stopped (the command line of a run_command) -> 15,
+#                  a permission finished_reason (-> 15), a subagent step or another model (-> 2),
 #                  an expired print timeout (-> 27); wrapper: model_served null, never 21.
 #
 # Exit codes: as scripts/lib/adapter.sh (0, 1, 2, 11, 13, 14, 26, 28, 130).
@@ -47,6 +62,9 @@ CX_PROG=adapter-agy
 . "$(dirname -- "${BASH_SOURCE[0]}")/../lib/adapter.sh"
 
 AGY_PAUSED="$CXA_HOME/state/agy-paused"
+# The raw lane's default prompt: agy ends a headless run at its first denied tool call, so it is
+# told which commands its per-run grants allow.
+AGY_TASK_PROMPT='Read .conductor/task.md in the working directory and do exactly what it says. Read and search files only with your own file tools (view_file, list_dir, grep_search, find_by_name), never with cat, find or grep. Run checks only as cx-route <name> (cx-route alone lists them); the only other shell commands allowed are git status, git diff, git log, git show and ls, and any other command ends the run unfinished. Do not spawn subagents. End with the DIGEST: line it specifies.'
 
 lane_setup() {
   CXA_EXECUTOR=agy CXA_SLOT_POOL=agy
@@ -97,9 +115,10 @@ lane_argv() {
   local d wt="${A_WT:-$PWD}" dur
   dur="$(cxa_dur "$A_TIMEOUT")"
   if [ "$CXA_VARIANT" = raw ]; then
+    [ "$A_PROMPT" != "$CX_TASK_PROMPT" ] || A_PROMPT="$AGY_TASK_PROMPT"
     CXA_ARGV=("$CXA_BIN" --model "$CXA_MODEL" --add-dir "$wt")
     for d in "${A_ADD[@]+"${A_ADD[@]}"}"; do CXA_ARGV+=(--add-dir "$d"); done
-    CXA_ARGV+=(--print-timeout "$dur" --output-format stream-json --disable-slash-commands -p "$A_PROMPT")
+    CXA_ARGV+=(--settings "$(agy_settings_file)" --print-timeout "$dur" --output-format stream-json --disable-slash-commands -p "$A_PROMPT")
   else
     CXA_ARGV=("$CXA_BIN" --model "$CXA_MODEL" --dir "$wt")
     for d in "${A_ADD[@]+"${A_ADD[@]}"}"; do CXA_ARGV+=(--dir "$d"); done
@@ -108,6 +127,28 @@ lane_argv() {
     CXA_ARGV+=(--timeout "$dur" --digest)
     if [[ $A_PROMPT == -* ]]; then CXA_ARGV+=(-); else CXA_ARGV+=("$A_PROMPT"); fi
   fi
+}
+
+# agy_settings_file: the run's session-only settings (a dry run without --out names the out
+# directory a run of that id would use).
+agy_settings_file() { printf '%s/agy-settings.json\n' "${A_OUT:-$CXA_HOME/out/${A_ID:-<id>}}"; }
+
+# lane_prepare (run, after the preflight, before the slot): the raw lane's per-run grants.
+lane_prepare() {
+  local wt="${A_WT:-$PWD}" wtp
+  if [ "$CXA_VARIANT" != raw ]; then
+    [ "$A_MODE" != write ] || cx_note "agy wrapper mode carries no per-run grants (agy-delegate has no --settings): its writes and commands are denied unless your own ~/.gemini/antigravity-cli/settings.json allows them; raw mode (the default) grants them per run"
+    return 0
+  fi
+  wtp="$(cd -- "$wt" 2>/dev/null && pwd -P)" || wtp=""
+  cxa_py agy-settings --out "$(agy_settings_file)" --wt "$wt" ${wtp:+--wt "$wtp"} \
+    || cxa_fail 2 FAILED "cannot write the agy run's grants $(agy_settings_file)"
+}
+
+lane_dry_extra() {
+  [ "$CXA_VARIANT" = raw ] || return 0
+  printf 'agy grants (--settings %s, session-only): %s\n' "$(agy_settings_file)" \
+    "write_file(${A_WT:-$PWD}) command(cx-route) command(git status) command(git diff) command(git log) command(git show) command(ls)"
 }
 
 # agy_trees FILE: a snapshot of every other worktree of the repo and of the repository's shared
@@ -312,9 +353,19 @@ lane_probe() {
   cxa_probe_cmd "$t/version" "$CXR_BIN_agy" --version
   cxa_probe_cmd "$t/models" "$CXR_BIN_agy" models
   mrc=$?
+  # The flag contract: the raw argv (or the wrapper's) and agy's own forms the lane always uses
+  # (registration --new-project --output-format json -p /model; /usage).
+  cxa_help agy "$CXR_BIN_agy" --help
+  CXA_CONTRACT+=(--need agy=--new-project --need agy=--output-format --need agy=-p)
+  if [ "$CXA_VARIANT" = wrapper ]; then
+    cxa_help wrapper "$CXA_BIN" --help
+    cxa_contract_argv wrapper
+  else
+    cxa_contract_argv agy
+  fi
   cxa_py probe --lane agy --bin "$CXR_BIN_agy" --wrapper "$([ "$CXA_VARIANT" = wrapper ] && printf '%s' "$CXA_BIN")" \
-    --version-out "$t/version" --min "$CX_MIN_AGY" --models-cli agy --models-out "$t/models" \
-    --models-rc "$mrc" --model "$CXA_MODEL" "${paused[@]+"${paused[@]}"}"
+    --version-out "$t/version" --verified "$CX_VERIFIED_AGY" --models-cli agy --models-out "$t/models" \
+    --models-rc "$mrc" --model "$CXA_MODEL" "${paused[@]+"${paused[@]}"}" "${CXA_CONTRACT[@]}"
 }
 
 cxa_main "$@"

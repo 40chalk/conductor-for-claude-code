@@ -34,8 +34,11 @@
 #   --windows-report F, --logins-only   internal (set by the Git Bash side)
 #
 # Every probe runs with stdin from /dev/null, cwd $CX_HOME/probe (kept empty) and a timeout
-# (CX_PROBE_TIMEOUT=<secs> caps them all). The Copilot login probe runs only on the pinned
-# Copilot version. Run the doctor outside Claude Code's Bash sandbox: Copilot, agy and grok
+# (CX_PROBE_TIMEOUT=<secs> caps them all). No CLI version is pinned: each version is reported
+# with the one the lanes were last verified against (an info line, never a failure), and each
+# lane checks the live --help for the flags it uses before every run. Copilot's login probe is
+# ghcp-models' own (free); without ghcp-models the raw invalid-model probe runs only on the
+# Copilot version where it is verified free. Run the doctor outside Claude Code's Bash sandbox: Copilot, agy and grok
 # cannot write their state directories inside it. stdout: the report; stderr: CX_HOST, CX_POOLS
 # (--pools), CX_DOCTOR, and CX_SIGNAL CHECKS_FAILED on exit 4.
 #
@@ -134,7 +137,7 @@ chk() {
 
 # ---------------------------------------------------------------- pure-bash rendering (Git Bash,
 # or an executor host without python3)
-SECTIONS=("Session" "Host" "Runtime" "Options" "CLIs" "Version pins" "Logins (free probes)" "Sibling plugins"
+SECTIONS=("Session" "Host" "Runtime" "Options" "CLIs" "Versions" "Logins (free probes)" "Sibling plugins"
           "Windows (Git Bash)" "Pools")
 N_OK=0 N_WARN=0 N_FAIL=0
 render_plain() {
@@ -877,7 +880,6 @@ fi
 POLICY_ON=on
 cx_bool "$(cx_opt policy)"
 case $? in 1) POLICY_ON=off ;; esac
-WT_ROOT="$(cx_expand_tilde "$(cx_opt worktree_root)")"
 SIB_TSV="$T/siblings.tsv"
 WRAP="$T/wrappers.tsv"
 : > "$WRAP"
@@ -891,6 +893,16 @@ fi
 declare -A WR=()
 while IFS=$'\t' read -r k v; do [ -n "$k" ] && WR[$k]="$v"; done < "$WRAP"
 GHCP_MODELS="${WR[ghcp_models]-}"
+
+# verified_info ID CLI VERSION VERIFIED: the version the lanes were last verified against, as an
+# info line (no pin: DESIGN section 5.4); never a warning or a failure.
+verified_info() {
+  if [ "$3" = "$4" ]; then
+    chk info "$1" "$S_CLI" "$2 $3 is the version the conductor's $2 lanes were last verified against"
+  else
+    chk info "$1" "$S_CLI" "$2 $3: the $2 lanes were last verified against $4; nothing is pinned: before each run the lane checks that the live $2 --help still lists every flag it uses (exit 26 when one is missing)"
+  fi
+}
 
 # ---------------------------------------------------------------- version probes (D8-D12)
 V_claude="" V_copilot="" V_grok="" V_agy="" V_gh=""
@@ -917,28 +929,30 @@ d8_d12() {
   # D9 copilot
   [ -n "$COPILOT_BIN_NOTE" ] && chk warn D9 "$S_CLI" "$COPILOT_BIN_NOTE" "unset GHCP_COPILOT_BIN, or point it at the copilot installed in WSL"
   if [ -z "$B_copilot" ]; then
-    chk fail D9 "$S_CLI" "copilot not found (GHCP_COPILOT_BIN, PATH, gh's copilot download)$(win_only copilot)" "npm install -g @github/copilot@$CX_PIN_COPILOT"
+    chk fail D9 "$S_CLI" "copilot not found (GHCP_COPILOT_BIN, PATH, gh's copilot download)$(win_only copilot)" "npm install -g @github/copilot"
   else
     probe copilot-version 15 env COPILOT_AUTO_UPDATE=false NO_COLOR=1 "$B_copilot" --version
     out="$(cat "$T/copilot-version.out" "$T/copilot-version.err" 2>/dev/null)"
     V_copilot="$(semver_of "$out")"
-    if [ "$V_copilot" = "$CX_PIN_COPILOT" ]; then
-      chk ok D9 "$S_CLI" "copilot $V_copilot (pinned $CX_PIN_COPILOT; $B_copilot)"
+    if [ -n "$V_copilot" ]; then
+      chk ok D9 "$S_CLI" "copilot $V_copilot ($B_copilot)"
+      verified_info D9 copilot "$V_copilot" "$CX_VERIFIED_COPILOT"
     else
-      chk fail D9 "$S_CLI" "copilot ${V_copilot:-version unknown} (pinned $CX_PIN_COPILOT): Copilot lanes refuse with exit 26" "npm install -g @github/copilot@$CX_PIN_COPILOT"
+      chk warn D9 "$S_CLI" "copilot --version printed no version ($B_copilot)"
     fi
   fi
   # D10 grok
   if [ -z "$B_grok" ]; then
-    chk fail D10 "$S_CLI" "grok not found$(win_only grok)" "install Grok Build $CX_PIN_GROK, then grok update --version $CX_PIN_GROK"
+    chk fail D10 "$S_CLI" "grok not found$(win_only grok)" "install Grok Build: npm install -g @xai-official/grok"
   else
     probe grok-version 15 "${GROK_ENV[@]}" "$B_grok" --version
     out="$(first_line "$T/grok-version.out")"
     if [[ $out =~ ^grok\ ([0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*)\ \( ]]; then V_grok="${BASH_REMATCH[1]}"; else V_grok="$(semver_of "$out")"; fi
-    if [ "$V_grok" = "$CX_PIN_GROK" ] && [[ $out =~ ^grok\ [0-9.]+\ \( ]]; then
-      chk ok D10 "$S_CLI" "$out (pinned $CX_PIN_GROK)"
+    if [ -n "$V_grok" ]; then
+      chk ok D10 "$S_CLI" "${out:-grok $V_grok} ($B_grok)"
+      verified_info D10 grok "$V_grok" "$CX_VERIFIED_GROK"
     else
-      chk fail D10 "$S_CLI" "grok ${V_grok:-version unknown} (pinned $CX_PIN_GROK)" "grok update --version $CX_PIN_GROK"
+      chk warn D10 "$S_CLI" "grok --version printed '${out:-nothing}'"
     fi
   fi
   # D11 agy
@@ -957,6 +971,7 @@ d8_d12() {
       chk warn D11 "$S_CLI" "agy --version printed '${out:-nothing}' (rc $rc)"
     elif [ "$(vcmp "$V_agy" "$CX_MIN_AGY")" -ge 0 ]; then
       chk ok D11 "$S_CLI" "agy $V_agy ($B_agy)"
+      verified_info D11 agy "$V_agy" "$CX_VERIFIED_AGY"
     elif [ "$(vcmp "$V_agy" 1.1.10)" -ge 0 ]; then
       chk warn D11 "$S_CLI" "agy $V_agy is older than $CX_MIN_AGY (no --output-format json)" "update agy"
     else
@@ -1121,8 +1136,11 @@ d15_d19() {
     fi
   fi
   # D16 copilot
-  if [ -z "$B_copilot" ] || [ "$V_copilot" != "$CX_PIN_COPILOT" ]; then
-    chk warn D16 "$S_LOG" "copilot login not probed: the free probe is only verified on $CX_PIN_COPILOT" "npm install -g @github/copilot@$CX_PIN_COPILOT"
+  if [ -z "$B_copilot" ]; then
+    :
+  elif [ -z "$GHCP_MODELS" ] && [ "$V_copilot" != "$CX_VERIFIED_COPILOT" ]; then
+    # Without ghcp-models only the raw invalid-model probe is left, measured free on one version.
+    chk warn D16 "$S_LOG" "copilot login not probed: ghcp-models is missing, and the raw invalid-model probe is verified free only on copilot $CX_VERIFIED_COPILOT (this is ${V_copilot:-unknown})" "install the ghcp plugin (its ghcp-models probes the login for free)"
   else
     copilot_probe ""
     if [ "$CP_STATE" = out ]; then
@@ -1188,13 +1206,32 @@ d15_d19() {
       fi
     fi
     if [ "${1:-}" = full ]; then
-      local prof sbx="${GROK_HOME:-$HOME/.grok}/sandbox.toml"
+      local prof sbx="${GROK_HOME:-$HOME/.grok}/sandbox.toml" n_cx=0
       prof="$(cx_opt grok_sandbox_profile)"
-      if [ "$PY" = 1 ] && cx_py toml-table "$sbx" "$prof" 2>/dev/null; then
-        chk ok D17 "$S_LOG" "grok sandbox profile $prof is defined in $sbx"
-      else
-        chk warn D17 "$S_LOG" "grok sandbox profile $prof is not defined in $sbx (Phase 2 cx-init --user-grants writes it; Phase 1 commands use --sandbox workspace)"
+      case "$prof" in
+        auto|cx-workspace)
+          [ -f "$sbx" ] && n_cx="$(grep -c '^# cx:begin cx-' "$sbx" 2>/dev/null)"
+          chk info D17 "$S_LOG" "grok writers run under their repository's own sandbox profile (cx-<repo>-<hash>, extends strict; ${n_cx:-0} in $sbx), written by a repository's first grok run or cx-init --user-grants" ;;
+        *)
+          if [ "$PY" = 1 ] && cx_py toml-table "$sbx" "$prof" 2>/dev/null; then
+            chk ok D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is defined in $sbx"
+          else
+            chk warn D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is not defined in $sbx: grok write runs fail to start" "define it, or set grok_sandbox_profile back to auto"
+          fi ;;
+      esac
+      if [ -f "$sbx" ] && grep -q '^# conductor: the grok sandbox profile every conductor grok writer runs under' "$sbx" 2>/dev/null; then
+        chk warn D17 "$S_LOG" "$sbx still holds the cx-workspace profile conductor 0.2.0 wrote (its deny globs are not valid grok paths)" "cx-init --user-grants (it removes exactly that block)"
       fi
+      # grok sandboxes its process with Landlock, and a profile with deny lists needs bubblewrap
+      # on Linux (grok refuses to start without it, measured 2026-11-06).
+      case "$CX_HOST" in
+        wsl|linux)
+          if abs_cmd bwrap >/dev/null; then
+            chk ok D17 "$S_LOG" "bubblewrap (bwrap) is installed (grok's sandbox may need it)"
+          else
+            chk warn D17 "$S_LOG" "bubblewrap (bwrap) is not installed: grok refuses to start a sandbox profile with deny lists without it" "sudo apt install -y bubblewrap"
+          fi ;;
+      esac
     fi
   fi
   # D18 agy
@@ -1236,11 +1273,10 @@ d15_d19() {
     fi
     if [ "${1:-}" = full ] && [ "$PY" = 1 ]; then
       local gf="$HOME/.gemini/antigravity-cli/settings.json" g
-      g="$(cx_py agy-grant "$gf" "$WT_ROOT" 2>/dev/null)"
-      if [ "$g" = ok ]; then
-        chk ok D18 "$S_LOG" "agy may write under $WT_ROOT (write_file grant)"
+      if g="$(cx_py agy-grants "$gf" 2>/dev/null)"; then
+        chk info D18 "$S_LOG" "$gf holds global agy grants ($g), likely from conductor 0.2.0's cx-init --user-grants: conductor runs no longer need them (each raw agy run gets its own --settings grants) and they apply to every agy session of yours; remove them if you do not want them"
       else
-        chk warn D18 "$S_LOG" "agy has no write_file($WT_ROOT) grant: agy write lanes fail with exit 15" "merge into $gf: $g"
+        chk info D18 "$S_LOG" "agy grants are per run (the raw lane passes --settings with write_file(<worktree>) and command() for cx-route and the git reads); no global grant is needed"
       fi
     fi
   fi
@@ -1566,32 +1602,14 @@ fi
 # D13, D20-D26 (siblings; computed above)
 cat "$SIB_TSV" >> "$CHECKS"
 
-# D14 auto-update pins
-S_PIN="Version pins"
-PIN_FIX="printf '%s\\n' 'export COPILOT_AUTO_UPDATE=false' 'export GROK_DISABLE_AUTOUPDATER=1' 'export AGY_CLI_DISABLE_AUTO_UPDATE=true' >> ~/.profile"
-for pv in COPILOT_AUTO_UPDATE=false GROK_DISABLE_AUTOUPDATER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true; do
-  name="${pv%%=*}" want="${pv#*=}"
-  if [ "$FORWARDED" = 1 ]; then
-    if grep -Eqs "^[[:space:]]*(export[[:space:]]+)?${name}=[\"']?${want}[\"']?[[:space:]]*(#.*)?$" \
-         "$HOME/.profile" "$HOME/.bashrc" "${CX_DETECT_ROOT:-}/etc/environment"; then
-      chk ok D14 "$S_PIN" "$name=$want is exported in your WSL login files"
-    else
-      chk warn D14 "$S_PIN" "$name=$want is not exported in ~/.profile, ~/.bashrc or /etc/environment (forwarded calls set it, WSL terminals do not)" "$PIN_FIX"
-    fi
-  elif [ "${!name-}" = "$want" ]; then
-    chk ok D14 "$S_PIN" "$name=$want"
-  else
-    chk warn D14 "$S_PIN" "$name is '${!name-unset}', not $want$([ "$name" = AGY_CLI_DISABLE_AUTO_UPDATE ] && printf ' (variable unverified)')" "$PIN_FIX"
-  fi
-done
+# D14 auto-update (information only: nothing is pinned, DESIGN section 5.4). Every conductor run
+# turns self-updates off for its own run (the worker environment); the user's CLIs update as
+# the user chooses.
+S_PIN="Versions"
 GCONF="${GROK_HOME:-$HOME/.grok}/config.toml"
 au=""
 [ "$PY" = 1 ] && au="$(cx_py toml-get "$GCONF" cli auto_update 2>/dev/null)"
-if [ "$au" = false ]; then
-  chk ok D14 "$S_PIN" "grok [cli] auto_update = false"
-else
-  chk warn D14 "$S_PIN" "grok [cli] auto_update is ${au:-not set} in $GCONF" "add auto_update = false under [cli] in $GCONF"
-fi
+chk info D14 "$S_PIN" "auto-update is your choice (COPILOT_AUTO_UPDATE=${COPILOT_AUTO_UPDATE-unset}, GROK_DISABLE_AUTOUPDATER=${GROK_DISABLE_AUTOUPDATER-unset}, AGY_CLI_DISABLE_AUTO_UPDATE=${AGY_CLI_DISABLE_AUTO_UPDATE-unset}, grok [cli] auto_update ${au:-not set}): each conductor run turns it off for that run only, and each lane checks the live --help for its flags first"
 
 d15_d19 full
 

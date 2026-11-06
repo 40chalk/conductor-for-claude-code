@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.2.1 — 2026-11-06
+
+Fixes from the first real runs (one small `cx-run` per lane on the user's machine, 2026-11-02)
+and from live probes of agy 1.5.1, grok 1.0.70 and Copilot CLI 1.0.105 (2026-11-06). No CLI
+version is pinned any more.
+
+- **No version pins.** `CX_PIN_*` are gone (`CX_VERIFIED_*`: the versions the lanes were last
+  verified against, shown by `cx-doctor` as info lines, never a failure). Instead every adapter
+  checks a **flag contract** in its free preflight: the CLI's live `--help` (and `copilot help
+  permissions`, and the Copilot argv `ghcp-delegate --print-command` builds) must list every flag
+  the lane is about to emit; a missing one refuses the lane before it runs with exit 26 (status
+  `VERSION_MISMATCH`, reason "flag contract"). The check is cached with the probe (10 minutes,
+  keyed by the flags and the binaries' identity, so an update re-probes at once). `cx-doctor`
+  no longer tells you to disable auto-update (D14 is one info line); the worker environment still
+  turns self-updates off for each run. D16 probes Copilot's login through `ghcp-models` (ghcp's
+  free probe) on any version; the raw invalid-model probe runs only on 1.0.105.
+- **`cx-route`.** At dispatch `cx-run` snapshots the task's checks, named from `.cx/routes.json`
+  (`test`, `lint`, `typecheck`, other keys; `cmd-N` for a task's own command), into
+  `$OUT/routes.json` and a generated, self-contained `$OUT/bin/cx-route` on the worker's PATH.
+  `cx-route <name>` runs only that snapshot (an edit of the worktree's `routes.json` never reaches
+  it), its exit status passes through, an unknown name or any extra argument exits 127. The task
+  template, the default prompt and the review prompt tell every executor to run checks only as
+  `cx-route <name>`.
+- **agy**: each raw run passes `--settings $OUT/agy-settings.json` (session-only): `write_file(<the
+  worktree>)` and `command()` for `cx-route`, `git status`, `git diff`, `git log`, `git show` and
+  `ls`, never `--dangerously-skip-permissions`; its prompt says to read with agy's own file tools
+  and that any other command ends the run (one denial ends a headless run). `cx-init
+  --user-grants` writes no agy grant any more (a note, and `cx-doctor` D18, name the global grants
+  0.2.0 left). The parser reads agy's real stream-json (`{"event": "init"|"step_update"|"result"}`)
+  and names a denied command from its `step_update` (`tool_info.parameters.CommandLine`) in
+  `result.json` `denied[].command` and `CX_DENIED.commands`; the hint no longer suggests a
+  routes edit as the fix for an agy denial.
+- **grok**: writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
+  `~/.grok/sandbox.toml` (extends `strict`; `read_only` the repository's git directory and
+  `~/.conductor/out`), written idempotently under a lock by the lane (or `cx-init
+  --user-grants`), with `--sandbox <it> --always-approve` instead of `--permission-mode
+  acceptEdits` and `--allow` rules (acceptEdits denied the first edit headless);
+  `GIT_CONFIG_GLOBAL=/dev/null` in its worker environment. Option `grok_sandbox_profile` now
+  defaults to `auto` (the 0.2.0 value `cx-workspace` counts as auto), and the invalid 0.2.0
+  `cx-workspace` block (glob deny paths) is removed from `sandbox.toml`. Served-model alias:
+  `grok-4.7` served as `grok-4.7-build` is accepted (an explicit suffix table); anything else
+  stays 21. `cx-doctor` D17 checks for bubblewrap on Linux and WSL.
+- **Copilot**: `--allow-shell cx-route` plus `git status`, `git diff`, `git log`, `git show`
+  (Copilot approves a shell call by its command name, so `shell(python3 -m unittest …)` never
+  matched and the real run's tests were denied); never `shell(python3)` or `shell(:*)`.
+- `PYTHONDONTWRITEBYTECODE=1` in every worker environment (Python checks left `__pycache__` in
+  the worktree).
+- Tests: the parsers on every real run directory (`tests/fixtures/real/*/sbx-*`), A1 against the
+  real agy 1.4.12 and 1.5.1, grok 1.0.70, Copilot 1.0.105 and `copilot help permissions` texts,
+  the flag contract refusing a stub help without a flag, `cx-route` refusing anything outside the
+  snapshot; new fixtures `real/agy/help-1.5.1.txt`, `real/copilot/help-permissions.txt` and
+  `real/ghcp/print-command-cx-route.txt`.
+
 ## 0.2.0 — 2026-11-01
 
 Phase 2 (docs/DESIGN.md section 15, build order items 1 to 3): every executor lane runs through

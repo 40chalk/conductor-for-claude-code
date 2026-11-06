@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(git status)",
-      "Bash(git diff:*)"
+      "Bash(git diff:*)",
+      "Bash(cx-route:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)"
     ],
     "deny": [
       "Bash(claude:*)",

@@ -62,6 +62,14 @@
 #                     gated cloud task unless --pr N is given again (a re-gate); a run is booked
 #                     in the ledger once. --dry-run checks the request only.
 #
+# Checks (cx-route): at dispatch the task's commands are snapshotted, named from .cx/routes.json
+# (test, lint, typecheck, other keys; cmd-1... for the task's own), into $OUT/routes.json and the
+# generated $OUT/bin/cx-route, which is on the worker's PATH. The prompts and the contract tell
+# every executor to run checks only as cx-route <name>; it runs nothing else, and an edit of the
+# worktree's .cx/routes.json never reaches it. Copilot may approve only cx-route and git status,
+# diff, log and show; agy gets the same as per-run --settings grants; grok runs in its
+# repository's sandbox profile (extends strict).
+#
 # Output: stdout = the digest, then "VERIFY THIS: <what to check>" and the diffstat (the claude
 # dispatch: its JSON). stderr = notes, CX_DENIED, CX_NOTE, CX_RESULT, then CX_SIGNAL (any exit
 # other than 0 and 1). result.json and answer.txt are in $CX_HOME/out/<id>/, with vars.sh for
@@ -74,7 +82,8 @@
 # answer); 10 QUOTA_EXHAUSTED; 11 AUTH_REQUIRED; 12 TIMEOUT; 13 CLI_MISSING; 14
 # MODEL_UNAVAILABLE; 15 PERMISSION_DENIED; 16 SANDBOX_BLOCKED; 20 GATE_FAILED (--finish of the
 # cloud lane: a gate check failed); 21 MODEL_MISMATCH; 22 WRONG_TREE; 23 SPEC_TAMPERED; 25
-# ENV_FAILED (the repo's setup failed; not charged to the executor); 26 VERSION_MISMATCH; 27
+# ENV_FAILED (the repo's setup failed; not charged to the executor); 26 VERSION_MISMATCH (the
+# flag contract: the CLI's live help lacks a flag the lane emits; no version is pinned); 27
 # PARTIAL; 28 NO_CAPACITY (no slot within CX_SLOT_WAIT_SECS, a pool disabled in routes.json, cap
 # 0, agy paused); 40 FORWARD_FAILED, 41 RUNTIME_MISSING, 42 PATH_UNMAPPABLE (Git Bash
 # forwarding); 43 HOST_UNSUPPORTED (a cloud session); 130 CANCELLED.
@@ -519,6 +528,18 @@ choose_auto() {
   explain "claude: chosen (end of the order)"
 }
 
+# review_prompt: the review lane's prompt (section 17.2); agy (agy-delegate, no grants) is told
+# to read with its own tools, since its first shell command ends the run.
+review_prompt() {
+  local p="Review the change in .conductor/change.diff against the code in this checkout. List findings as file:line - severity - issue, most severe first. Do not edit files."
+  case "$EXEC" in
+    agy) p="$p Read files with your own file tools and run no shell command: any command ends the run." ;;
+    claude) ;;
+    *) p="$p Run checks only as cx-route <name> (cx-route alone lists them)." ;;
+  esac
+  printf '%s\n' "$p"
+}
+
 # ------------------------------------------------------------------ result handling
 # finish_result EXIT_HINT: parse, emit, report, ledger; prints the single CX_SIGNAL and exits.
 finish_result() {
@@ -586,7 +607,7 @@ write_checks() {  # post-run facts of a write run (section 15.1 post-checks)
 
 write_vars() {  # $OUT/vars.sh for the skill's hand steps (Step 3 commit and gate, Step 5 GitHub)
   local p
-  p='Read .conductor/task.md in the working directory and do exactly what it says. Do not spawn subagents. End with the DIGEST: line it specifies.'
+  p='Read .conductor/task.md in the working directory and do exactly what it says. Run checks only as cx-route <name> (cx-route alone lists them). Do not spawn subagents. End with the DIGEST: line it specifies.'
   gh_repo
   { printf '%s=%q\n' ID "$ID" TOP "$TOP" BASE "$BASE" WT "$WT" OUT "$OUT" REPO "$REPO_GH" P "$p"
     echo 'G_ENV=(GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false)'
@@ -779,7 +800,7 @@ ADAPTER="$(lane_adapter "$EXEC")"
 if [ -n "$DRY" ]; then
   P_DRY=""
   [ "$MODE" != read ] || [ -n "$TASK_FILE" ] || P_DRY="$TASK_TEXT"
-  [ "$MODE" != review ] || P_DRY="Review the change in .conductor/change.diff against the code in this checkout. List findings as file:line - severity - issue, most severe first. Do not edit files."
+  [ "$MODE" != review ] || P_DRY="$(review_prompt)"
   lane_args "$ADAPTER"
   printf 'cx-run dry run: nothing created, no executor started\n'
   printf 'repo: %s\nbase: %s\nid: %s\nmode: %s\nexec: %s\n' "$TOP" "$BASE" "$ID" "$MODE" "$EXEC"
@@ -790,6 +811,12 @@ if [ -n "$DRY" ]; then
   elif [ "$MODE" != review ]; then printf 'task: free text (%s characters), wrapped into templates/task.md\n' "${#TASK_TEXT}"; fi
   printf 'setup: %s\n' "${RT_SETUP:-none}"
   printf 'allowed commands: %s\n' "$( [ "${#CMDS[@]}" -gt 0 ] && printf '%s; ' "${CMDS[@]}" | sed 's/; $//' || echo none)"
+  if [ "$EXEC" != copilot-cloud ]; then
+    RS_ARGS=()
+    for c in "${CMDS[@]+"${CMDS[@]}"}"; do RS_ARGS+=(--cmd "$c"); done
+    printf 'cx-route (%s/bin/cx-route, snapshotted at dispatch): %s\n' "$OUT" \
+      "$(norm route-snapshot --dry-run --routes "$TOP/.cx/routes.json" --out "$OUT" --dir "${WT:-$TOP}" --id "$ID" "${RS_ARGS[@]+"${RS_ARGS[@]}"}" | sed 's/$/;/' | tr '\n' ' ' | sed 's/; $//')"
+  fi
   for c in "${EXPLAIN_LINES[@]+"${EXPLAIN_LINES[@]}"}"; do printf 'explain: %s\n' "$c"; done
   if [ -n "$EXPLAIN" ] && [ "${#EXPLAIN_LINES[@]}" = 0 ]; then
     if probe "$ADAPTER"; then printf 'explain: %s: --exec %s; preflight green (cached: %s)\n' "$EXEC" "$EXEC" "$PRB_CACHED"
@@ -846,6 +873,17 @@ else
   DIR="$GATE"
 fi
 
+# The run's cx-route (DESIGN section 15.1): the task's checks, named from .cx/routes.json as it is
+# now, into $OUT/routes.json and $OUT/bin/cx-route (the worker's PATH has $OUT/bin). The worker
+# runs checks only through it; an edit of the worktree's routes.json never reaches it.
+rm -rf -- "${OUT:?}/bin" "${OUT:?}/routes.json"
+if [ -n "$DIR" ]; then
+  RS_ARGS=()
+  for c in "${CMDS[@]+"${CMDS[@]}"}"; do RS_ARGS+=(--cmd "$c"); done
+  norm route-snapshot --routes "$TOP/.cx/routes.json" --out "$OUT" --dir "$DIR" --id "$ID" "${RS_ARGS[@]+"${RS_ARGS[@]}"}" \
+    || { unmark; cx_signal FAILED 2 "cannot write the run's cx-route snapshot into $OUT"; }
+fi
+
 PROMPT=""
 if [ -n "$TASK_FILE" ]; then
   cx_task_from_file "$OUT" "$TASK_FILE" || { unmark; cx_signal FAILED 2 "$CX_TASK_WHY"; }
@@ -863,7 +901,7 @@ if [ "$MODE" = review ]; then
     cx_signal EMPTY_OUTPUT 3 "nothing to review (empty diff)"
   fi
   mkdir -p -- "$GATE/.conductor" && cp -f -- "$OUT/change.diff" "$GATE/.conductor/change.diff"
-  PROMPT="Review the change in .conductor/change.diff against the code in this checkout. List findings as file:line - severity - issue, most severe first. Do not edit files."
+  PROMPT="$(review_prompt)"
 elif [ "$MODE" = read ] && [ -z "$TASK_FILE" ]; then
   PROMPT="$TASK_TEXT"
 fi

@@ -4,7 +4,8 @@
 #
 # Sourced, never run. Pure bash plus the Git Bash tool list of DESIGN section 3.1, because the
 # shims, the forwarder and the Windows part of cx-doctor run it under Git Bash, where python3 is
-# never used (cx_py_ok is false there whatever PATH holds). It defines the version and pins, the
+# never used (cx_py_ok is false there whatever PATH holds). It defines the version, the last
+# verified CLI versions (doctor info only: nothing is pinned, DESIGN section 5.4), the
 # exit-code table with its constant CX_SIGNAL reasons, notes, cx_signal / cx_emit, timeouts,
 # WSL output decoding, the path-option wrappers and forwarding step 0 (DESIGN section 7.3).
 #
@@ -15,9 +16,14 @@ if [ "${CX_COMMON_SH:-}" = "${BASH_SOURCE[0]}" ] && declare -F cx_note >/dev/nul
 fi
 CX_COMMON_SH="${BASH_SOURCE[0]}"
 
-CX_VERSION=0.2.0
-CX_PIN_COPILOT=1.0.105
-CX_PIN_GROK=1.0.70
+CX_VERSION=0.2.1
+# The CLI versions the lanes were last verified against (doctor info lines only, never a
+# refusal: each adapter checks the live --help for every flag it emits before each run, the
+# flag contract of DESIGN section 5.4). The minimums are doctor warnings only.
+CX_VERIFIED_COPILOT=1.0.105
+CX_VERIFIED_GROK=1.0.70
+CX_VERIFIED_AGY=1.5.1
+CX_VERIFIED_CLAUDE=2.1.316
 CX_MIN_CLAUDE=2.1.316
 CX_MIN_AGY=1.1.12
 CX_MIN_GH_COPILOT_REVIEW=2.89.0
@@ -121,7 +127,7 @@ declare -gA CX_STATUS_REASON=(
   [SPEC_TAMPERED]="the task contract hash does not match"
   [TAMPERED]="a protected path changed"
   [ENV_FAILED]="the repo setup command failed"
-  [VERSION_MISMATCH]="the CLI version differs from the pin"
+  [VERSION_MISMATCH]="the CLI lacks a flag the lane needs (flag contract)"
   [PARTIAL]="the executor returned partial output"
   [NO_CAPACITY]="every eligible lane is at its cap, disabled or paused"
   [FORWARD_FAILED]="wsl.exe failed, the WSL distribution is missing, or the WSL VM stopped"

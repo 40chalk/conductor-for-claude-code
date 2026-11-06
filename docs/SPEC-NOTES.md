@@ -126,7 +126,7 @@ into DESIGN.md and delete them here.
     PATH it builds comes from it. A sibling wrapper that moved is re-resolved once from
     `installed_plugins.json` for the call, but the record is not rewritten (`cx-doctor` does
     that). For `ghcp-*`, `GHCP_COPILOT_BIN` is set to the record's `bin.copilot` when unset: it
-    is the binary the doctor checked against the pin, and an unset or invalid value makes ghcp
+    is the binary the doctor checked, and an unset or invalid value makes ghcp
     fall back to whatever `copilot` is on PATH. The lookup is `cxlib.py wsl-resolve` (no Python
     in bash).
 30. **No `CX_FORWARD` for cx-wsl.** §7.4 step 7 emits `CX_FORWARD` for every forwarded command,
@@ -514,3 +514,29 @@ spec left open.
    suite sets 2. Not an option and not forwarded (a forwarded run uses the default).
 6. **agy-delegate prompts starting with `-`** go on stdin (its documented `-` form) instead of
    after `--`, which agy-delegate's help does not document.
+
+## 0.2.1 (2026-11-06): choices the live-probe decisions left open
+
+1. **`cx-route` is generated, self-contained bash** (`$OUT/bin/cx-route`, written by
+   `normalize.py route-snapshot` with the commands inlined), not a shipped script reading a
+   snapshot: grok's `strict` profile reads only the worktree, system paths and its `read_only`
+   grants, so the command must need no runtime file and no python. Its own refusals exit 127
+   (a name not in the snapshot, any argument after the name); every other status is the
+   check's. Names: the `.cx/routes.json` key holding the command, else `cmd-N`.
+2. **The grok profile grants `$CX_HOME/out` read-only** besides the git common directory: a
+   per-repository profile cannot name a per-run directory, and each run's `cx-route` lives
+   there. Other runs' outputs (digests, task files, diffs) become readable to grok writers;
+   `$CX_HOME/secrets` and the ledger stay outside.
+3. **`$OUT/bin` comes right after the worker shims on PATH**, so the shims still win over any
+   CLI name and nothing on the record path can shadow `cx-route`.
+4. **The flag contract is cached with the probe** (10 minutes) and keyed by the argv's flags
+   and the binaries' resolved path, mtime and size, so a CLI that updated itself is checked
+   again on the next run, while a help text change without a new binary waits for the cache.
+5. **Option `grok_sandbox_profile` defaults to `auto`**; the 0.2.0 default `cx-workspace` (which
+   Claude Code may have saved into settings) counts as `auto`, so no saved value keeps the
+   invalid profile in use.
+6. **agy wrapper mode keeps no grants** (agy-delegate has no `--settings`): a write in wrapper
+   mode is denied unless the user's own agy settings allow it; the adapter says so. Raw mode,
+   the default, carries the per-run grants; the Gemini review lane only reads.
+7. **The review prompt is lane-aware**: agy (agy-delegate, no grants) is told to read with its
+   own file tools and run no shell command; the other executors may run `cx-route <name>`.

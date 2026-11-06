@@ -27,7 +27,8 @@
 #           prints the commit (also $OUT/copilot-cloud.head) for the gate checkout; exit 2 when the
 #           fetch fails or the commit is not that pull request's head (errors in
 #           $OUT/copilot-cloud.fetch.err).
-#   probe (free): gh --version, gh auth status, gh agent-task --help (the preview command exists).
+#   probe (free): gh --version, gh auth status, gh agent-task --help (the preview command exists),
+#           ghcp-cloud --help (the flag contract: 26 when it lacks a flag of the argv).
 #
 # Exit codes: as scripts/lib/adapter.sh (0, 1, 2, 11, 13, 130).
 
@@ -89,8 +90,10 @@ lane_probe() {
   cxa_probe_cmd "$t/auth" "$CXR_BIN_gh" auth status
   arc=$?
   cxa_probe_cmd "$t/at" "$CXR_BIN_gh" agent-task --help && ok=true
+  cxa_help ghcp-cloud "$CXA_BIN" --help
+  cxa_contract_argv ghcp-cloud
   cxa_py probe --lane copilot-cloud --bin "$CXR_BIN_gh" --wrapper "$CXA_BIN" --version-out "$t/version" \
-    --version-ok "$ok" --auth-out "$t/auth" --auth-kind rc --auth-rc "$arc" --model-ok true
+    --version-ok "$ok" --auth-out "$t/auth" --auth-kind rc --auth-rc "$arc" --model-ok true "${CXA_CONTRACT[@]}"
 }
 
 # cc_repo_of URL: host/owner/repo of a git remote URL (https, ssh, scp-like), lower-case.

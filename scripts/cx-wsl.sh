@@ -142,7 +142,7 @@ fi
 
 case "$TOOL" in
   ghcp-*)
-    # The copilot binary the doctor checked against the pin, unless the caller chose one: an
+    # The copilot binary the doctor recorded, unless the caller chose one: an
     # unset or invalid GHCP_COPILOT_BIN makes ghcp fall back to whatever copilot is on PATH.
     [ -n "${GHCP_COPILOT_BIN:-}" ] || [ -z "$COPILOT_BIN" ] || export GHCP_COPILOT_BIN="$COPILOT_BIN"
     # The token route (cx-doctor --login-help copilot, W9): when Copilot's keyring login is

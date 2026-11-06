@@ -8,7 +8,7 @@ owns the spec, the gates and the merge; executors draft.
 | Executor | How the conductor reaches it | Used for |
 |---|---|---|
 | GitHub Copilot CLI | your `ghcp` plugin (`ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-models`, `ghcp-cloud`) | Opus 5.5 at high effort, Fusion, GPT-family review, PR review, CI triage, the Copilot cloud agent (its pull requests go through the same gate) |
-| Grok Build | the raw `grok` 1.0.70 CLI (never the grok-build bridge plugin) | exploration, mechanical edits, tests to a contract, docs, commit and PR text |
+| Grok Build | the raw `grok` CLI (last verified 1.0.70; never the grok-build bridge plugin) | exploration, mechanical edits, tests to a contract, docs, commit and PR text |
 | Antigravity | the raw `agy` CLI for Opus, the `antigravity` plugin (`agy-delegate`, `agy-job`) for Gemini | Opus 5.5 at high effort, Gemini-family review, long digests (media and research wait for the v1.1 Docker lane: `agy-media` and `/antigravity:research` always pass `--yolo`) |
 | Claude | your own subagents | architecture, one-way doors, xhigh/max reasoning, merge conflicts, small or judgement-heavy edits |
 
@@ -40,8 +40,9 @@ The full build spec is `docs/DESIGN.md`; this README condenses it.
 
 Every executor run is one `cx-run`: one task, one id, one worktree `~/.cx-wt/<repo>-<id>` on
 branch `cx/<id>`, the task contract (`.conductor/task.md`, hashed), the repo's `setup`, the
-shared pool slot, the worker environment (worker shims first on PATH, `CX_WORKER=1`, API keys
-and `CLAUDE_PLUGIN_OPTION_*` unset, auto-updates off), then the denial, served-model and tree
+shared pool slot, the worker environment (worker shims first on PATH, then the run's
+`cx-route`; `CX_WORKER=1`, API keys and `CLAUDE_PLUGIN_OPTION_*` unset, self-updates off for the
+run, `PYTHONDONTWRITEBYTECODE=1`), then the denial, served-model and tree
 checks, `~/.conductor/out/<id>/result.json`, one ledger line and one `CX_RESULT` line. `cx-job`
 runs the same in the background (`JOB_ID`, `status`, `wait`, `result`, `kill`, `list`,
 `unpause agy`). Claude still commits and gates by hand (the skill's Step 3) until Phase 3's
@@ -75,12 +76,26 @@ cx-run --finish t4 --pr 42                                             # ... who
   hooks and ignored files are compared with a snapshot; a change there ends the run 22
   `WRONG_TREE` and pauses agy dispatch until `cx-job unpause agy`.
 
-Once per machine (and after adding routes commands), from inside the repository, `cx-init
---user-grants` merges agy's write grant for `worktree_root` and one `command(...)` per routes
-command into `~/.gemini/antigravity-cli/settings.json`, adds the grok `cx-workspace` sandbox
-profile to `~/.grok/sandbox.toml` and `[cli] auto_update = false` to `~/.grok/config.toml`,
-each with a `.cx-bak` backup (`--dry-run` shows what it would change). `cx-doctor` checks the
-result.
+- **Checks run only through `cx-route`.** At dispatch `cx-run` snapshots the task's checks from
+  `.cx/routes.json` into the run's `~/.conductor/out/<id>/bin/cx-route` (`cx-route test`,
+  `cx-route lint`, ...; `cx-route` alone lists them; editing the worktree's `routes.json`
+  changes nothing). Executors may run only that and `git status`, `git diff`, `git log`,
+  `git show`: agy gets exactly these as per-run `--settings` grants (one denied command ends a
+  headless agy run), Copilot as `--allow-shell` rules (it matches a shell call by its command
+  name), and grok runs in its repository's sandbox profile.
+- **No version pins.** Before every run each lane checks that the CLI's live `--help` (and
+  `copilot help permissions`) still lists every flag it is about to pass; a missing one refuses
+  the lane with exit 26 before anything runs. `cx-doctor` shows the versions the lanes were last
+  verified against as information; auto-update is your choice.
+
+Grok writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
+`~/.grok/sandbox.toml` (extends grok's `strict`; read-only access to the repository's git
+directory and `~/.conductor/out`), which the first grok run of a repository writes. `cx-init
+--user-grants` (optional, from inside the repository) writes it ahead of time and removes the
+invalid `cx-workspace` profile 0.2.0 wrote, with a `.cx-bak` backup (`--dry-run` shows what it
+would change). agy needs no global grant any more: remove the `write_file(...)` and
+`command(...)` rules 0.2.0 put into `~/.gemini/antigravity-cli/settings.json` if you do not
+want them (`cx-doctor` lists them).
 
 ## Install
 
@@ -100,7 +115,9 @@ already keep git checkouts LF). Never install ghcp, antigravity or grok-build on
 side: their policies would send Claude to run their wrappers in Git Bash, bypassing WSL.
 
 Prerequisites, all in WSL: python3 ≥ 3.8, bash ≥ 4.4, coreutils and util-linux (`timeout`,
-`setsid`, `flock`, `sha256sum`), git ≥ 2.31; Copilot CLI 1.0.105, grok 1.0.70, agy, gh; Claude
+`setsid`, `flock`, `sha256sum`), git ≥ 2.31, bubblewrap (`bwrap`) for grok's sandbox; Copilot
+CLI, grok, agy, gh (any version whose help still lists the flags the lanes use; last verified:
+Copilot 1.0.105, grok 1.0.70, agy 1.5.1); Claude
 Code itself, logged in (`claude auth login`; the sibling plugins install into it, also when you
 work from the Windows app); and the two sibling plugins, each with its marketplace:
 
@@ -114,7 +131,7 @@ No jq, no node, no pip packages.
 ## First run
 
 1. `/conductor:doctor` in a Claude Code session (or `cx-doctor` from its Bash tool, outside the
-   sandbox): host, prerequisites, CLI versions against the pins, free login probes, sibling
+   sandbox): host, prerequisites, CLI versions (with the versions last verified), free login probes, sibling
    plugin overlap. It never calls a model. In a plain WSL terminal `cx-doctor` is not on PATH:
    use `~/.conductor/runtime/current/bin/cx-doctor` there, after `/conductor:doctor
    --install-runtime` (or any call forwarded from Windows) has created that copy.
@@ -139,7 +156,7 @@ No jq, no node, no pip packages.
 | `cx-doctor --windows` | Git Bash only: the Windows-side checks W1–W11 |
 | `cx-doctor --login-help [cli]` | Fresh-login commands per CLI |
 | `cx-init [--dry-run] [--force] [--only agents\|routes\|copilot]` | The repo bundle |
-| `cx-init --user-grants [--dry-run]` | The user-level grants: agy's write grant, the grok `cx-workspace` profile, grok's `auto_update = false` |
+| `cx-init --user-grants [--dry-run]` | The repository's grok sandbox profile (optional: its first grok run writes it); removes 0.2.0's invalid `cx-workspace` profile; never writes agy grants |
 | `cx-run [OPTIONS] (--task-file F \| '<task>' \| - \| -- '<task>')` | One task on one executor lane (above); `--finish ID [--pr N]`, `--dry-run`, `--explain`, `--background` |
 | `cx-job start\|status\|wait\|result\|kill\|list\|unpause agy` | Background `cx-run` jobs (`cx-run --background` is `cx-job start`) |
 | `cx-wsl TOOL [ARG...]` | One allow-listed WSL-side tool with the per-tool environment prefixes and its pool slot: exactly `ghcp-delegate`, `ghcp-job`, `ghcp-handoff`, `ghcp-ci-debug`, `ghcp-models`, `ghcp-cloud`, `agy-delegate`, `agy-job`, `agy`, `grok`, `gh`, `git`, `bash` (never `agy-handoff` or `agy-media`, which always pass `--yolo`). The skill uses it for `gh`, `git`, `ghcp-cloud list`/`view`, its two hand executor calls (`cx-wsl grok` for commit messages, `cx-wsl ghcp-ci-debug`) and, from Windows, the hand steps (`cx-wsl bash -s < FILE`); every other executor run is a `cx-run` |
@@ -164,7 +181,7 @@ Every option is a string; an empty value means the default.
 | `copilot_xhigh_ok` | `false` | Allow `--reasoning-effort xhigh` on Copilot Opus (`max` is never sent) |
 | `grok_bulk_model` | `grok-4.7` | Grok model for mechanical lanes |
 | `grok_bulk_effort` | `high` | Grok effort for mechanical lanes |
-| `grok_sandbox_profile` | `cx-workspace` | grok sandbox profile every grok writer runs under |
+| `grok_sandbox_profile` | `auto` | grok sandbox profile every grok writer runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile |
 | `review_model_gemini` | `Gemini 4 Argon (High)` | Gemini-family reviewer |
 | `review_model_gpt` | `gpt-6.1-sol` | GPT-family reviewer |
 | `cap_agy` / `cap_copilot` / `cap_grok` | `2` / `3` / `5` | Concurrency limits (throughput, not spend): pool slots shared by every session, thread and forwarded call on the computer (`~/.conductor/locks`); `0` turns a pool off |
@@ -291,7 +308,7 @@ path, commands through `cx-wsl bash -c`). `cx-doctor` reports the workflow setti
 | 14 | `MODEL_UNAVAILABLE` | Model, slug or effort refused before any model call |
 | 15 | `PERMISSION_DENIED` | A denied write, or a denial with no answer or diff |
 | 16 | `SANDBOX_BLOCKED` | Claude Code's Bash sandbox blocks the executor: rerun outside it |
-| 20–28 | `GATE_FAILED` … `NO_CAPACITY` | Gate red (`cx-run --finish` of the cloud lane; `cx-gate` in Phase 3), model mismatch (21), wrong tree (22, agy paused until `cx-job unpause agy`), task contract edited (23), tampering (24, the skill's Step 3 `BRANCH_TAMPERED`), the repo's setup failed (25), version pin (26), partial output (27), no capacity (28: a pool full for `CX_SLOT_WAIT_SECS`, disabled or paused) |
+| 20–28 | `GATE_FAILED` … `NO_CAPACITY` | Gate red (`cx-run --finish` of the cloud lane; `cx-gate` in Phase 3), model mismatch (21), wrong tree (22, agy paused until `cx-job unpause agy`), task contract edited (23), tampering (24, the skill's Step 3 `BRANCH_TAMPERED`), the repo's setup failed (25), flag contract (26: the CLI's help lacks a flag the lane passes), partial output (27), no capacity (28: a pool full for `CX_SLOT_WAIT_SECS`, disabled or paused) |
 | 40 | `FORWARD_FAILED` | `wsl.exe` missing or failed, distribution missing, or the WSL VM stopped |
 | 41 | `RUNTIME_MISSING` | No runtime copy in WSL (or a version mismatch): `cx-doctor --install-runtime` |
 | 42 | `PATH_UNMAPPABLE` | A path (or the working directory) has no equivalent on the other side |

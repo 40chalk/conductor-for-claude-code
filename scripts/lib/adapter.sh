@@ -7,12 +7,14 @@
 #   <lane>.sh probe [OPTIONS]            free preflight JSON on stdout (cached 10 minutes in
 #                                        $CX_HOME/state/preflight.json, per caller side: a WSL
 #                                        terminal and a forwarded call never share an entry;
-#                                        --refresh skips the cache)
+#                                        --refresh skips the cache), with the flag contract: the
+#                                        CLI's live --help must list every flag the lane is about
+#                                        to emit (no version pins, DESIGN section 5.4)
 #   <lane>.sh argv  [OPTIONS]            writes $OUT/<lane>.argv and $OUT/<lane>.env (NUL-separated;
 #                                        NAME= with no value = unset) and $OUT/<lane>.meta.json;
 #                                        with --dry-run nothing is written: it prints the lane,
 #                                        model, effort, argv (printf %q), env names, cwd, worktree
-#   <lane>.sh run   [OPTIONS]            preflight (the probe: 13, 26, 11, 14, agy paused 28), the
+#   <lane>.sh run   [OPTIONS]            preflight (the probe: 13, 26 flag contract, 11, 14, agy paused 28), the
 #                                        pool slot (locks.sh: 28), the running mark, then the
 #                                        executor in the worker environment under setsid and
 #                                        timeout; writes $OUT/<lane>.out, .err, rc, <lane>.run.json
@@ -27,13 +29,16 @@
 #
 # Exit codes (DESIGN section 4.1): 0 (run: the executor ran, whatever its own status, which
 # parse classifies), 1 usage, 2 FAILED, 11 AUTH_REQUIRED, 13 CLI_MISSING, 14 MODEL_UNAVAILABLE,
-# 26 VERSION_MISMATCH, 28 NO_CAPACITY (no slot, cap 0, agy paused or below its floor), 130
+# 26 VERSION_MISMATCH (the flag contract: the CLI's help lacks a flag the lane emits), 28
+# NO_CAPACITY (no slot, cap 0, agy paused or below its floor), 130
 # CANCELLED. Every exit outside {0, 1} prints one CX_SIGNAL line, last, unless CX_SIGNAL_OWNER
 # is set (cx-run sets it: the caller then prints the single signal of the whole run).
 #
-# Worker environment (section 15.6): CX_WORKER=1; PATH = the worker shims, then the host
-# record's path; COPILOT_AUTO_UPDATE=false GROK_DISABLE_AUTOUPDATER=1
-# AGY_CLI_DISABLE_AUTO_UPDATE=true NO_COLOR=1; ANTHROPIC_API_KEY XAI_API_KEY GEMINI_API_KEY
+# Worker environment (section 15.6): CX_WORKER=1; PATH = the worker shims, then $OUT/bin (the
+# run's cx-route, which runs only the task's routes.json checks as cx-run snapshotted them), then
+# the host record's path; COPILOT_AUTO_UPDATE=false GROK_DISABLE_AUTOUPDATER=1
+# AGY_CLI_DISABLE_AUTO_UPDATE=true NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 (no __pycache__ in the
+# worktree when the checks run Python); ANTHROPIC_API_KEY XAI_API_KEY GEMINI_API_KEY
 # GOOGLE_API_KEY and every CLAUDE_PLUGIN_OPTION_* unset (the siblings read option variables of
 # their own); executors by absolute path from the host record; cwd the worktree or gate checkout.
 # A lane whose wrapper finds its executor by name (agy-delegate: command -v agy) gets the shim
@@ -54,7 +59,7 @@ declare -F cx_opt >/dev/null 2>&1 || . "$CX_LIB/options.sh"
 # shellcheck source=locks.sh
 declare -F cx_lock_acquire >/dev/null 2>&1 || . "$CX_LIB/locks.sh"
 
-CX_TASK_PROMPT='Read .conductor/task.md in the working directory and do exactly what it says. Do not spawn subagents. End with the DIGEST: line it specifies.'
+CX_TASK_PROMPT='Read .conductor/task.md in the working directory and do exactly what it says. Run checks only as cx-route <name> (cx-route alone lists them). Do not spawn subagents. End with the DIGEST: line it specifies.'
 CXA_HOME="${CX_HOME:-${HOME:-}/.conductor}"
 CXA_NORM="$CX_LIB/normalize.py"
 
@@ -248,12 +253,17 @@ cxa_worker_env() {
     case "$v" in CLAUDE_PLUGIN_OPTION_*) cxa_unset "$v" ;; esac
   done
   cxa_set CX_WORKER 1
-  cxa_set PATH "$shims:$p"
+  cxa_set PATH "$shims:$(cxa_route_bin):$p"
   cxa_set COPILOT_AUTO_UPDATE false
   cxa_set GROK_DISABLE_AUTOUPDATER 1
   cxa_set AGY_CLI_DISABLE_AUTO_UPDATE true
   cxa_set NO_COLOR 1
+  cxa_set PYTHONDONTWRITEBYTECODE 1
 }
+
+# cxa_route_bin: the run's $OUT/bin, where cx-run puts cx-route (a dry run without --out names
+# the out directory a run of that id would use).
+cxa_route_bin() { printf '%s/bin\n' "${A_OUT:-$CXA_HOME/out/${A_ID:-<id>}}"; }
 
 # cxa_env_args: CXA_ENV as env(1) arguments in CXA_ENVARGS (-u NAME, NAME=VALUE), plus every
 # CLAUDE_PLUGIN_OPTION_* present now (a job runner may carry other ones than argv saw).
@@ -344,20 +354,63 @@ cxa_probe_cmd() {
   (cd -- "$CXA_HOME/probe" && cxa_run_env && cx_timeout 30 env "${CXA_ENVARGS[@]}" "$@") < /dev/null > "$f" 2>&1
 }
 
+# cxa_flags: the flag tokens of CXA_ARGV after the executable ("--x=v" counts as "--x"; nothing
+# after a literal "--"), sorted, comma-joined: the flag contract's part of the probe cache key.
+cxa_flags() {
+  local a
+  local -a f=()
+  for a in "${CXA_ARGV[@]:1}"; do
+    [ "$a" = -- ] && break
+    [[ $a =~ ^(--?[A-Za-z][A-Za-z0-9-]*)(=.*)?$ ]] && f+=("${BASH_REMATCH[1]}")
+  done
+  [ "${#f[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${f[@]}" | LC_ALL=C sort -u | paste -sd, -
+}
+
+# cxa_bin_ids: the identity (resolved path, mtime, size) of the lane's binaries, for the probe
+# cache key: a CLI that updated itself is probed (and its flag contract checked) again at once.
+cxa_bin_ids() {
+  local b r
+  for b in "${CXA_BIN:-}" "${CXA_CLI:-}"; do
+    [ -n "$b" ] || continue
+    r="$(readlink -f -- "$b" 2>/dev/null)" || r="$b"
+    printf '%s:%s;' "$r" "$(stat -L -c '%Y.%s' -- "$r" 2>/dev/null)"
+  done
+}
+
+# cxa_help NAME CMD...: one free help probe for the flag contract (DESIGN section 5.4): the
+# output goes to $CXA_PROBE_TMP/help.NAME, and CXA_CONTRACT gains --help-file NAME=<it>::<label>.
+CXA_CONTRACT=()
+cxa_help() {
+  local name="$1" label
+  shift
+  label="${1##*/} ${*:2}"
+  cxa_probe_cmd "$CXA_PROBE_TMP/help.$name" "$@"
+  CXA_CONTRACT+=(--help-file "$name=$CXA_PROBE_TMP/help.$name::$label")
+}
+# cxa_contract_argv NAME: the run's argv (CXA_ARGV) must fit help NAME.
+cxa_contract_argv() { CXA_CONTRACT+=(--argv-file "$1=$CXA_PROBE_TMP/argv"); }
+
 # cxa_probe: prints the probe JSON (cached unless --refresh).
 cxa_probe() {
   local key j tmp
+  # The flag contract checks the argv the run is about to use: built here when the probe runs on
+  # its own (cx-run's preflight, before the worktree exists).
+  [ "${#CXA_ARGV[@]}" -gt 0 ] || lane_argv
   # The caller side is part of the key: logins differ between a WSL terminal and a call forwarded
   # through wsl.exe (no keyring there; the token file signs Copilot in), so a green probe of one
-  # side never answers for the other (D16, W9).
+  # side never answers for the other (D16, W9). The flags are part of it too: a probe of other
+  # flags (another mode) never answers for these.
   key="$CX_ADAPTER|$CXA_VARIANT|${CXA_BIN:-}|${CXA_CLI:-}|$CXA_MODEL|${A_FUSION:-}|${CXA_PROBE_SALT:-}"
   key="$key|fwd=${CX_FORWARDED:-0}|tok=$([ -e "$CXA_HOME/secrets/copilot-token" ] && echo 1 || echo 0)|env=$([ -n "${COPILOT_GITHUB_TOKEN:-}" ] && echo 1 || echo 0)"
+  key="$key|mode=$A_MODE|flags=$(cxa_flags)|bins=$(cxa_bin_ids)"
   if [ -z "$A_REFRESH" ] && j="$(cxa_py cache-get --key "$key" 2>/dev/null)" && [ -n "$j" ]; then
     printf '%s\n' "$j"
     return 0
   fi
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/cx-probe.XXXXXXXX")" || cxa_fail 2 FAILED "mktemp failed"
   CXA_PROBE_TMP="$tmp"
+  printf '%s\0' "${CXA_ARGV[@]}" > "$tmp/argv"
   j="$(lane_probe)"
   rm -rf -- "$tmp"
   [ -n "$j" ] || cxa_fail 2 FAILED "the $CX_ADAPTER probe produced nothing"
@@ -551,6 +604,9 @@ cxa_run() {
     cxa_files_write
   fi
   cxa_preflight
+  # lane_prepare: what a lane needs in place before the slot and the executor (grok: its
+  # repository's sandbox profile); it fails with its own exit before anything ran.
+  declare -F lane_prepare >/dev/null 2>&1 && lane_prepare
   trap cxa_on_signal INT TERM HUP
   trap cxa_on_exit EXIT
   cxa_mark_running

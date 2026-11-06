@@ -8,16 +8,27 @@
 #        copilot.sh -h|--help | --version
 #
 #   argv (write):  <ghcp-delegate> --model <copilot_opus_id> --effort <E> --dir <WT> --write
-#                  --allow-shell <cmd>... --timeout <T>s --digest -- <prompt>
+#                  --allow-shell cx-route --allow-shell 'git status' --allow-shell 'git diff'
+#                  --allow-shell 'git log' --allow-shell 'git show' --timeout <T>s --digest -- <prompt>
+#                  Copilot approves a shell call by its command name (and git's first-level
+#                  subcommand), so shell(python3 -m unittest ...) never matches and shell(python3)
+#                  would allow python3 -c: the routes commands run through the run's cx-route
+#                  (ghcp turns each --allow-shell into --allow-tool 'shell(<it>)'). Never
+#                  shell(python3), never shell(:*).
 #   Fusion:        --fusion standard|max instead of --model/--effort
-#   read/review:   no --write; --add-dir <DIR> for each --add-dir (the diff's directory)
+#   read/review:   no --write; --add-dir <DIR> for each --add-dir (the diff's directory); the same
+#                  --allow-shell list
 #   effort: low|medium|high, xhigh only with option copilot_xhigh_ok=true, never max (#5149).
 #   environment:   the worker environment, unset COPILOT_ALLOW_ALL COPILOT_AUTO_TIER
 #                  COPILOT_MODEL COPILOT_PROVIDER_BASE_URL and GH_TOKEN/GITHUB_TOKEN (except the
 #                  one the host record names as copilot_token_env), COPILOT_HOME as recorded;
 #                  GHCP_COPILOT_BIN=<the recorded copilot>, GHCP_USAGE_LOG=$CX_HOME/raw-usage.log;
 #                  COPILOT_GITHUB_TOKEN from $CX_HOME/secrets/copilot-token (0600) at run time.
-#   probe (free):  copilot --version (pin 1.0.105), then ghcp-models --json only on the pin.
+#   probe (free):  copilot --version (recorded only; last verified 1.0.105), ghcp-models --json
+#                  (ghcp's own free catalog probe: login and model), and the flag contract:
+#                  ghcp-delegate --help for the argv, copilot --help for the Copilot argv
+#                  ghcp-delegate --print-command builds from it (free), copilot help permissions
+#                  for the shell() and write() kinds: 26 when one is missing.
 #   parse:         answer = stdout; GHCP_SESSION / GHCP_USAGE / GHCP_DENIED / GHCP_FALLBACK;
 #                  served model = every models_used[].model (Fusion: any GHCP_FALLBACK -> 21);
 #                  copilot#5149 (xhigh, >= 30,000 output tokens, empty answer) -> 2; ghcp's
@@ -72,6 +83,10 @@ lane_env() {
   cxa_copilot_token
 }
 
+# The shell commands a Copilot run may approve (decision 5 of the 2026-11-06 probes): the run's
+# cx-route and the read-only git subcommands; the routes commands themselves only through cx-route.
+COPILOT_SHELL=(cx-route 'git status' 'git diff' 'git log' 'git show')
+
 # The ghcp-delegate arguments after the binary (shared by argv and the dry run's --print-command).
 copilot_args() {
   local c d
@@ -80,7 +95,7 @@ copilot_args() {
   CPA+=(--dir "${A_WT:-$PWD}")
   [ "$A_MODE" = write ] && CPA+=(--write)
   for d in "${A_ADD[@]+"${A_ADD[@]}"}"; do CPA+=(--add-dir "$d"); done
-  for c in "${A_ALLOW[@]+"${A_ALLOW[@]}"}"; do CPA+=(--allow-shell "$c"); done
+  for c in "${COPILOT_SHELL[@]}"; do CPA+=(--allow-shell "$c"); done
   # "--" ends ghcp-delegate's options: a prompt that starts with "-" stays the prompt.
   CPA+=(--timeout "${A_TIMEOUT}s" --digest -- "$A_PROMPT")
 }
@@ -101,17 +116,31 @@ lane_dry_extra() {
 }
 
 lane_probe() {
-  local t="$CXA_PROBE_TMP" ver mrc="" ok=() pin="$CX_PIN_COPILOT"
+  local t="$CXA_PROBE_TMP" mrc
   cxa_probe_cmd "$t/version" "$CXA_CLI" --version
-  ver="$(cx_py semver "$(cat "$t/version")" 2>/dev/null)"
-  if [ "$ver" = "$pin" ]; then
-    # Free only on the pinned version (the invalid-model probe, DESIGN section 1.2, D16).
-    cxa_probe_cmd "$t/models" "${CXR_BIN_ghcp_models:-/nonexistent}" --json
-    mrc=$?
-    ok=(--models-cli copilot --models-out "$t/models" --models-rc "$mrc")
-  fi
+  # ghcp's own catalog probe (an invalid --model, refused before any model call; ghcp-models
+  # documents it as free): login and the model list, whatever the Copilot version.
+  cxa_probe_cmd "$t/models" "${CXR_BIN_ghcp_models:-/nonexistent}" --json
+  mrc=$?
+  cxa_help ghcp "$CXA_BIN" --help
+  cxa_contract_argv ghcp
+  cxa_help copilot "$CXA_CLI" --help
+  cxa_help perms "$CXA_CLI" help permissions
+  copilot_print "$t/print"
+  CXA_CONTRACT+=(--argv-shell "copilot=$t/print" --need "perms=shell(")
+  [ "$A_MODE" != write ] || CXA_CONTRACT+=(--need "perms=write(")
   cxa_py probe --lane copilot --bin "$CXA_CLI" --wrapper "$CXA_BIN" --version-out "$t/version" \
-    --pin "$pin" --model "$CXA_MODEL" "${ok[@]+"${ok[@]}"}"
+    --verified "$CX_VERIFIED_COPILOT" --model "$CXA_MODEL" --models-cli copilot --models-out "$t/models" \
+    --models-rc "$mrc" "${CXA_CONTRACT[@]}"
+}
+
+# copilot_print FILE: ghcp-delegate --print-command of this run's arguments (free: nothing runs),
+# with --dir the probe directory (the worktree may not exist yet), into FILE.
+copilot_print() {
+  local A_WT="$CXA_HOME/probe"
+  copilot_args
+  cxa_probe_cmd "$1.all" "$CXA_BIN" --print-command "${CPA[@]}"
+  grep -m 1 '^/' "$1.all" > "$1" 2>/dev/null
 }
 
 cxa_main "$@"

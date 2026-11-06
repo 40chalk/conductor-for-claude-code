@@ -10,7 +10,9 @@ The goal above is all the conductor wrote; read the code it names before you cha
 ## Allowed changes
 Only what the goal needs. Lockfiles: no.
 ## Allowed commands
-Exactly: {{commands}} (from .cx/routes.json).
+Run checks only through cx-route: {{commands}}, snapshotted from .cx/routes.json at
+dispatch (`cx-route` alone lists them). Also allowed: git status, git diff, git log, git show.
+No other shell command.
 ## Forbidden
 Editing .conductor/task.md, tests, CI config, .cx/routes.json or git hooks;
 installing, upgrading or patching dependencies; committing, pushing or branching; starting

@@ -1,6 +1,6 @@
 {
   "name": "conductor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Claude Code conducts; the subscriptions you already pay for execute. The conductor routes each piece of work to the executor best suited to it: GitHub Copilot CLI through the ghcp plugin, Grok Build through the raw grok CLI, and Antigravity through the raw agy CLI for Opus plus the antigravity plugin's wrappers for Gemini. It sends Opus 5.5 fan-out to the included pools (Antigravity claude-opus-5-5-high, then Copilot claude-opus-5.5 at high effort, then Claude's own subagents) and keeps Claude the judge of quality: Claude owns the spec, the gates and the merge. Free health checks (cx-doctor), a repo bundle writer (cx-init), Windows Git Bash to WSL forwarding (cx-wsl) and one session-start routing policy.",
   "author": {
     "name": "40chalk",
@@ -95,8 +95,8 @@
     "grok_sandbox_profile": {
       "type": "string",
       "title": "Grok sandbox profile",
-      "description": "User-level grok sandbox profile (defined in ~/.grok/sandbox.toml) that every grok writer runs under. Default cx-workspace, written by cx-init --user-grants in Phase 2; Phase 1 commands use grok's built-in workspace profile.",
-      "default": "cx-workspace"
+      "description": "Grok sandbox profile every grok writer runs under. auto (default): each repository's own profile cx-<repo>-<hash> in ~/.grok/sandbox.toml (extends strict; written by the first grok run or cx-init --user-grants); cx-workspace (the 0.2.0 default) counts as auto; any other name is a profile of your own, used as it is.",
+      "default": "auto"
     },
     "review_model_gemini": {
       "type": "string",
