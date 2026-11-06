@@ -1158,6 +1158,23 @@ doc_bg grok-sbev-link STUB_GROK_SANDBOX_EVENT=unenforced GROK_HOME="$DOCS/grok-s
 doc_bg grok-prof-ro CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=read-only -- --no-record
 doc_bg grok-prof-strict CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=strict -- --no-record
 doc_bg grok-prof-mine CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=mine -- --no-record
+# D17's login retry (one, 2 s later): the first bare grok models alone fails.
+doc_bg grok-flake STUB_GROK_MODELS_ONCE=unauth STUB_GROK_MODELS_ONCE_FILE="$DOCS/grok-flake.once" -- --no-record
+doc_bg grok-flake-net STUB_GROK_MODELS_ONCE=network STUB_GROK_MODELS_ONCE_FILE="$DOCS/grok-flake-net.once" -- --no-record
+# D17's resolver records: WSL's /etc/resolv.conf -> /mnt/wsl/resolv.conf under CX_DETECT_ROOT, a
+# sandbox.toml with a conductor profile written before 0.2.2 (no /mnt/wsl) and a current cx-strict.
+mkdir -p "$DOCS/res-wsl/root/etc" "$DOCS/res-wsl/root/mnt/wsl" "$DOCS/res-wsl/grok"
+printf 'nameserver 10.255.255.254\n' > "$DOCS/res-wsl/root/mnt/wsl/resolv.conf"; ln -s /mnt/wsl/resolv.conf "$DOCS/res-wsl/root/etc/resolv.conf"
+printf '127.0.0.1 localhost\n' > "$DOCS/res-wsl/root/etc/hosts"
+{ printf '# cx:begin cx-old-0123abcd\n[profiles.cx-old-0123abcd]\nextends = "strict"\nread_only = ["/x/.git", "/x/routes"]\n# cx:end cx-old-0123abcd\n'
+  printf '# cx:begin cx-strict\n[profiles.cx-strict]\nextends = "strict"\nread_only = ["/mnt/wsl"]\n# cx:end cx-strict\n'
+  printf '[profiles.mine]\nextends = "strict"\nread_only = ["/srv"]\n'; } > "$DOCS/res-wsl/grok/sandbox.toml"
+doc_bg res-wsl CX_DETECT_ROOT="$DOCS/res-wsl/root" GROK_HOME="$DOCS/res-wsl/grok" -- --no-record
+doc_bg res-wsl-strict CX_DETECT_ROOT="$DOCS/res-wsl/root" GROK_HOME="$DOCS/res-wsl/grok" CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=strict -- --no-record
+doc_bg res-wsl-mine CX_DETECT_ROOT="$DOCS/res-wsl/root" GROK_HOME="$DOCS/res-wsl/grok" CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=mine -- --no-record
+# ... a dangling resolv.conf.
+mkdir -p "$DOCS/res-gone/root/etc"; ln -s /mnt/wsl/resolv.conf "$DOCS/res-gone/root/etc/resolv.conf"
+doc_bg res-gone CX_DETECT_ROOT="$DOCS/res-gone/root" -- --no-record
 doc_bg ghcp-auth STUB_GHCP_MODELS=auth -- --no-record
 doc_bg ghcp-sandbox STUB_GHCP_MODELS=sandbox -- --no-record
 doc_bg ghcp-timeout STUB_GHCP_MODELS=timeout -- --no-record
@@ -1483,6 +1500,37 @@ check "[X]   option grok_sandbox_profile=strict (a built-in, never defined in sa
 doc_use grok-prof-mine
 check "[X]   ... a custom name that sandbox.toml does not define: ! D17, not a built-in and not defined there" \
   eval 'd_warn D17 "grok sandbox profile mine (option grok_sandbox_profile) is not one of grok'"'"'s built-ins and not defined in"'
+doc_use grok-flake
+check "[X]   D17 login retry: the first grok models says You are not authenticated, the retry 2 s later lists models: ok D17 saying so (one retry: two bare grok models calls), exit 0" \
+  eval 'rc_is 0 && d_ok D17 "grok is logged in (4 models listed; after one retry 2 s later: the first grok models said You are not authenticated)" && [ "$(grep -c "^grok	.*argv: models$" "$DLOG")" = 2 ]'
+doc_use grok-flake-net
+check "[X]   ... the first grok models fails with a network error and lists nothing, the retry lists models: ok D17 naming the first answer" \
+  eval 'd_ok D17 "after one retry 2 s later: the first grok models (rc 1) listed no models: Error: failed to fetch models: error sending request: network is unreachable)" && [ "$(grep -c "^grok	.*argv: models$" "$DLOG")" = 2 ]'
+check "[X]   ... still unauthenticated or failing on the retry: cross / ! D17 say so (twice, 2 s apart); a green login probes once" \
+  eval 'doc_use grok-unauth && d_fail D17 "grok is not logged in (grok models said so twice, 2 s apart)" && [ "$(grep -c "^grok	.*argv: models$" "$DLOG")" = 2 ] && doc_use grok-net && d_warn D17 "network is unreachable; after one retry 2 s later: the first grok models (rc 1) listed no models: Error: failed to fetch models: error sending request: network is unreachable" && doc_use green && [ "$(grep -c "^grok	.*argv: models$" "$DLOG")" = 1 ]'
+doc_use res-wsl
+check "[X]   D17 resolver records on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf): info listing the targets (1 outside strict's read set), ok naming read_only /mnt/wsl in conductor's profiles; ! for the conductor profile in sandbox.toml that lacks it (fixed by that repository's next grok run), none for cx-strict or a profile of the user's" \
+  eval 'd_info D17 "grok'"'"'s resolver and TLS files: /etc/resolv.conf -> /mnt/wsl/resolv.conf, /etc/hosts (1 outside strict'"'"'s read set" && d_ok D17 "conductor'"'"'s grok profiles (each repository'"'"'s cx-<repo>-<hash> and cx-strict) add read_only /mnt/wsl for /etc/resolv.conf -> /mnt/wsl/resolv.conf" && d_warn D17 "$DOCS/res-wsl/grok/sandbox.toml: conductor'"'"'s profile cx-old-0123abcd lacks read_only /mnt/wsl (grok'"'"'s resolver and TLS files there): grok runs under it cannot read them until that repository'"'"'s next grok run rewrites it" && ! d_warn D17 "profile cx-strict lacks" && ! d_warn D17 "profile mine" && ! d_warn D17 "cannot be granted"'
+doc_use res-wsl-strict
+check "[X]   ... option grok_sandbox_profile=strict there: ! D17, the built-in strict cannot read /mnt/wsl (set it back to auto)" \
+  eval 'd_warn D17 "option grok_sandbox_profile names grok'"'"'s built-in strict, which cannot read /mnt/wsl (grok'"'"'s resolver and TLS files there)" && out_has "set grok_sandbox_profile back to auto (conductor'"'"'s profiles add them)"'
+doc_use res-wsl-mine
+check "[X]   ... option grok_sandbox_profile naming a profile of the user's whose read_only lacks /mnt/wsl: ! D17 naming the directory to add" \
+  eval 'd_warn D17 "option grok_sandbox_profile names your own profile mine, to which conductor adds nothing: its read_only lacks /mnt/wsl" && out_has "add /mnt/wsl to its read_only, or set grok_sandbox_profile back to auto"'
+# The grants a home-like path never gets (the suite's own homes lie under /tmp, inside strict's
+# read set, so these run cxlib.py grok-resolver directly on host paths under /srv).
+RH="$DOCS/res-home/root"
+mkdir -p "$RH/etc" "$RH/srv/me/.conductor/certs" "$RH/srv/x"
+printf 'nameserver 10.0.0.1\n' > "$RH/srv/me/resolv.conf"; ln -s /srv/me/resolv.conf "$RH/etc/resolv.conf"
+printf 'pem\n' > "$RH/srv/ca.pem"; printf 'pem\n' > "$RH/srv/x/ca.pem"
+env SSL_CERT_FILE=/srv/ca.pem SSL_CERT_DIR="/srv/me/.conductor/certs:/:/srv/x" "$REAL_PY" -I "$CXLIB" grok-resolver --section Logins \
+  --home /srv/me --grok-home /srv/me/.grok --cx-home /srv/me/.conductor --resolver-root "$RH" > "$DOCS/res-home.tsv" 2>&1
+O="$DOCS/res-home.tsv"
+check "[X]   ... grants never given (cxlib.py grok-resolver on /srv paths): /etc/resolv.conf -> /srv/me/resolv.conf in the home directory /srv/me ! 'grok cannot resolve any host name under any conductor profile' with the fix; SSL_CERT_FILE=/srv/ca.pem (/srv contains the home) and SSL_CERT_DIR entries inside the conductor's home or / ! 'may not verify TLS'; /srv/x is the one grant" \
+  eval 'grep -Fqx "warn	D17	Logins	grok cannot resolve any host name under any conductor profile: /etc/resolv.conf -> /srv/me/resolv.conf, outside strict'"'"'s read set, and its directory /srv/me cannot be granted (it is your home directory /srv/me)	make /etc/resolv.conf resolve to a file outside your home directory, ~/.grok, ~/.conductor and your checkouts (on WSL its default link to /mnt/wsl/resolv.conf works)" "$O" && out_has "its directory /srv cannot be granted (it contains your home directory /srv/me)" && out_has "/srv/me/.conductor/certs, outside strict'"'"'s read set, and its directory /srv/me/.conductor/certs cannot be granted (it lies inside the conductor'"'"'s home /srv/me/.conductor" && out_has "its directory / cannot be granted (it is /)" && grep -q "^ok	D17	Logins	conductor'"'"'s grok profiles (each repository'"'"'s cx-<repo>-<hash> and cx-strict) add read_only /srv/x for /srv/x: grok can read them there$" "$O" && [ "$(grep -c "^warn	" "$O")" = 4 ]'
+doc_use res-gone
+check "[X]   ... a dangling /etc/resolv.conf: ! D17 naming its missing target; the green doctor (no resolver file under its empty root): no resolver line at all" \
+  eval 'd_warn D17 "/etc/resolv.conf points at /mnt/wsl/resolv.conf, which does not exist: no host name resolves here" && doc_use green && ! out_has "resolver and TLS files" && ! out_has "resolv.conf"'
 doc_use ghcp-auth
 check "[P26] ghcp-models rc 11: cross D16 with the copilot login fix" eval 'rc_is 4 && d_fail D16 "copilot is not logged in" && out_has "fix: copilot login"'
 doc_use ghcp-sandbox
@@ -1528,6 +1576,8 @@ check "[P27] deny rules: the Agent(...) spelling is accepted; a missing one is !
   eval 'd_ok D24 "antigravity:antigravity-delegate is denied" && d_warn D24 "grok-build:grok-delegate is not denied" && out_has "{\"permissions\": {\"deny\": [\"Task(grok-build:grok-delegate)\"]}}"'
 check "[P27] allow rules missing: D25 info (no warning, never written)" \
   eval 'd_info D25 "autonomy allow rule(s) missing" && d_info D25 "Bash(cx-run:*)" && d_info D25 "Bash(cx-wsl grok:*)" && ! d_info D25 "Bash(ghcp-delegate:*)" && ! d_info D25 "agy:*)" && ! d_warn D25'
+check "[X]   D24's and D25's notes name no Claude Code version (no pin): the Task(...) rule syntax is unverified; how Claude Code matches env -u prefixes and multi-line steps is unverified" \
+  eval 'd_warn D24 "grok-build:grok-delegate is not denied (the Task(...) rule syntax is unverified)" && d_info D25 "how Claude Code matches env -u prefixes and multi-line steps is unverified" && ! grep -E "\[D2[45]\]\$" "$O" | grep -q "2\.1\.316"'
 doc_use green
 check "[P27] both sibling options off: ok D21 and D22" eval 'd_ok D21 && d_ok D22'
 doc_use sib-policy-off
@@ -2661,6 +2711,24 @@ check "[A14] worker environment (grok): worker-shims first on PATH, then the run
 GP_NAME="$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "$REPO/.git" && pwd -P)")"
 check "[X]   grok write run: the repository's sandbox profile $GP_NAME (extends strict; read_only the git common dir and \$CX_HOME/routes, never \$CX_HOME/out) is written to ~/.grok/sandbox.toml before grok starts, and grok ran with --sandbox $GP_NAME --always-approve (no --permission-mode, no --allow)" \
   eval 'grep -qx "\[profiles.$GP_NAME\]" "$AD/home/.grok/sandbox.toml" && grep -qx "extends = \"strict\"" "$AD/home/.grok/sandbox.toml" && grep -Fqx "read_only = [\"$(cd -- "$REPO/.git" && pwd -P)\", \"$AD/home/.conductor/routes\"]" "$AD/home/.grok/sandbox.toml" && [ -d "$AD/home/.conductor/routes" ] && grep -q "^grok	.*--sandbox $GP_NAME --always-approve --no-subagents --max-turns 60" "$ADL" && ! grep "^grok	.*--prompt-file" "$ADL" | grep -Eq -- "--permission-mode|--allow "'
+# WSL's resolver (measured: /etc/resolv.conf -> /mnt/wsl/resolv.conf, outside strict's read set,
+# and grok then resolved no host name): the repository's profile adds /mnt/wsl. CX_DETECT_ROOT
+# holds that tree; the stub's sandbox log lists the profile's read_only, as grok does.
+ADR_ROOT="$AD/wslroot"
+mkdir -p "$ADR_ROOT/etc" "$ADR_ROOT/mnt/wsl"; printf 'nameserver 10.255.255.254\n' > "$ADR_ROOT/mnt/wsl/resolv.conf"; ln -sfn /mnt/wsl/resolv.conf "$ADR_ROOT/etc/resolv.conf"
+adr grok "$AD/o-wsl" STUB_GROK_RUN=ok CX_DETECT_ROOT="$ADR_ROOT" STUB_GROK_SANDBOX_EVENT=enforced STUB_GROK_EVENT_RW="WS $AD/home/.grok/sessions /var/tmp" -- --wt "$AD/wt-t1"
+check "[X]   ... on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf, outside strict's read set): the profile's read_only gains /mnt/wsl after the git dir and the routes, with a note; the per-run check's event reads it (sandbox_check.resolver_unreadable empty); the run is ok" \
+  eval '[ "$PR" = "0 ok" ] && grep -Fqx "read_only = [\"$(cd -- "$REPO/.git" && pwd -P)\", \"$AD/home/.conductor/routes\", \"/mnt/wsl\"]" "$AD/home/.grok/sandbox.toml" && err_has "read_only adds /mnt/wsl: grok'"'"'s resolver and TLS files there lie outside strict'"'"'s read set (cx-doctor D17)" && [ "$("$REAL_PY" -I "$NORM" field "$AD/o-wsl/grok.run.json" sandbox_check.resolver_unreadable)" = "[]" ]'
+adr grok "$AD/o-wsl" STUB_GROK_RUN=ok CX_DETECT_ROOT="$ADR_ROOT" STUB_GROK_SANDBOX_EVENT=enforced STUB_GROK_EVENT_RO=strict STUB_GROK_EVENT_RW="WS $AD/home/.grok/sessions /var/tmp" -- --wt "$AD/wt-t1"
+check "[X]   ... a sandbox log whose event does not list /mnt/wsl (the profile not applied as written): the run goes on (no refusal) with a note naming /etc/resolv.conf -> /mnt/wsl/resolv.conf, and run.json's sandbox_check.resolver_unreadable lists it" \
+  eval '[ "$PR" = "0 ok" ] && err_has "cannot read /etc/resolv.conf -> /mnt/wsl/resolv.conf (grok'"'"'s resolver file)" && "$REAL_PY" -I "$NORM" field "$AD/o-wsl/grok.run.json" sandbox_check.resolver_unreadable | grep -Fq "\"real\": \"/mnt/wsl/resolv.conf\""'
+mkdir -p "$AD/plain"
+adr grok "$AD/o-plain" STUB_GROK_RUN=ok CX_DETECT_ROOT="$ADR_ROOT" -- --wt "$AD/plain" --mode read
+check "[X]   a grok run outside a git checkout runs under conductor's cx-strict (on the WSL tree: read_only [/mnt/wsl] only), written into ~/.grok/sandbox.toml first, then the per-run check grok --sandbox cx-strict models there; never plain strict" \
+  eval '[ "$PR" = "0 ok" ] && grep -qx "# cx:begin cx-strict" "$AD/home/.grok/sandbox.toml" && sed -n "/^# cx:begin cx-strict$/,/^# cx:end cx-strict$/p" "$AD/home/.grok/sandbox.toml" | grep -Fqx "read_only = [\"/mnt/wsl\"]" && grep -q "^grok	cwd=$AD/plain	argv: --sandbox cx-strict models$" "$ADL" && grep "^grok	.*--prompt-file $AD/plain/" "$ADL" | tail -n 1 | grep -q -- "--sandbox cx-strict --always-approve"'
+adr grok "$AD/o-wsl" STUB_GROK_RUN=ok -- --wt "$AD/wt-t1"
+check "[X]   ... back on a host whose resolver files lie inside strict's read set, the profile loses /mnt/wsl again" \
+  eval '[ "$PR" = "0 ok" ] && grep -Fqx "read_only = [\"$(cd -- "$REPO/.git" && pwd -P)\", \"$AD/home/.conductor/routes\"]" "$AD/home/.grok/sandbox.toml"'
 "$REAL_PY" -I "$NORM" emit --out "$O1" 2> "$AD/emit.err"
 check "[A2]  emit: one CX_RESULT line (single-line json.dumps, ASCII) with path and status ok; no CX_DENIED for a clean run" \
   eval '[ "$(tj count "$AD/emit.err" CX_RESULT)" = 1 ] && tj linejson "$AD/emit.err" CX_RESULT && [ "$(tj line "$AD/emit.err" CX_RESULT status)" = ok ] && [ "$(tj line "$AD/emit.err" CX_RESULT path)" = "$O1/result.json" ] && ! grep -q "^CX_DENIED" "$AD/emit.err"'
@@ -2928,6 +2996,22 @@ local A10_BAD=""
 adr grok "$O1" STUB_GROK_RUN=error -- --wt "$AD/wt-t1"; { [ "$PR" = "2 failed" ] && rj reason | grep -q "no sessionId"; } || A10_BAD="$A10_BAD [error object: $PR]"
 adr grok "$O1" STUB_GROK_RUN=auth -- --wt "$AD/wt-t1"; [ "$PR" = "11 auth" ] || A10_BAD="$A10_BAD [auth: $PR]"
 check "[A10] grok: an error object without sessionId (rc 1) -> 2; 'You are not authenticated' -> 11${A10_BAD:+:$A10_BAD}" test -z "$A10_BAD"
+# grok could not reach its API (measured on WSL, 2026-11-06: rc 1 after 28 minutes of grok's own
+# retries, usage 0, "error sending request for url" on stderr and "dns error" in grok's own log).
+local NET_BAD="" UL="$AD/home/.grok/logs/unified.jsonl"
+adr grok "$O1" STUB_GROK_RUN=connect -- --wt "$AD/wt-t1"
+{ [ "$PR" = "2 failed" ] && [ "$(rj reason)" = "grok could not reach its API (a connection or DNS failure; cx-doctor D17): error sending request for url (https://cli-chat-proxy.grok.com/v1/responses) (no model call)" ] \
+    && [ ! -e "$O1/grok.netlog.txt" ] && grep -Fq "about 28 minutes" "$RJ"; } || NET_BAD="$NET_BAD [connect: $PR $(rj reason)]"
+adr grok "$O1" STUB_GROK_RUN=dns -- --wt "$AD/wt-t1"
+{ [ "$PR" = "2 failed" ] && [ "$(rj reason)" = "grok could not resolve its API's host name (DNS; cx-doctor D17): client error (Connect): dns error: failed to lookup address information: Try again (no model call)" ] \
+    && [ "$(cat "$O1/grok.netlog.txt")" = "client error (Connect): dns error: failed to lookup address information: Try again" ] && grep -Fq "grok said: error sending request for url" "$RJ"; } || NET_BAD="$NET_BAD [dns: $PR $(rj reason)]"
+adr grok "$O1" STUB_GROK_RUN=connect -- --wt "$AD/wt-t1"
+{ [ "$PR" = "2 failed" ] && rj reason | grep -q "^grok could not reach its API" && grep -q "dns error" "$UL"; } || NET_BAD="$NET_BAD [an earlier run's log line counted: $PR]"
+adr grok "$O1" STUB_GROK_RUN=dnstimeout -- --wt "$AD/wt-t1"
+{ [ "$PR" = "12 timeout" ] && [ "$(rj reason)" = "the grok run hit the wall clock: grok could not resolve its API's host name (DNS; cx-doctor D17): client error (Connect): dns error: failed to lookup address information: Try again" ]; } || NET_BAD="$NET_BAD [timeout: $PR $(rj reason)]"
+adr grok "$O1" STUB_GROK_RUN=ok -- --wt "$AD/wt-t1"
+{ [ "$PR" = "0 ok" ] && [ ! -e "$O1/grok.netlog.txt" ]; } || NET_BAD="$NET_BAD [ok run: $PR]"
+check "[X]   grok could not reach its API, no model call: 'error sending request for url' -> 2 FAILED with a reason naming a connection or DNS failure and cx-doctor D17 (and a note: grok's retries can hold a run for about 28 minutes); a 'dns error' grok appended to its own log during the run -> the reason names DNS and the logged phrase (text only); a line an earlier run left there does not count; rc 124 -> 12 TIMEOUT with the DNS reason; an ok run keeps no netlog${NET_BAD:+:$NET_BAD}" test -z "$NET_BAD"
 local AX_BAD=""
 adr claude "$O1" STUB_CLAUDE_RUN=mismatch -- --wt "$AD/wt-t1" --headless; [ "$PR" = "21 model_mismatch" ] || AX_BAD="$AX_BAD [claude: $PR]"
 check "[X]   claude --headless: modelUsage naming another model -> 21${AX_BAD:+:$AX_BAD}" test -z "$AX_BAD"
@@ -3258,6 +3342,34 @@ local SEVF="$FIX/real/grok/sandbox-events-1.0.70.jsonl" SEV1
 SEV1="$(head -n 1 "$SEVF" | wc -c)"
 check "[X]   cxlib grok-sandbox-event on grok's real sandbox log: the strict probe's line (workspace /root/.conductor/probe), the write run's profile and the read run's read-only start are enforced on linux/landlock; reading only the bytes after the first line finds nothing for the write run's workspace; the read-only line writes ~/.grok and names no read_only_paths, the strict-based ones keep ~/.grok read-only" \
   eval '[ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/probe)" = "enforced	linux/landlock	strict" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "enforced	linux/landlock	cx-textutil-78d1f9c2" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from "$SEV1" --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "none	-	-" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/gate/live-grok-read-1.1)" = "enforced	linux/landlock	read-only" ] && [ "$(grep -c "\"read_only_paths\":\[[^]]*\"/root/.grok\"" "$SEVF")" = 2 ] && grep "\"profile\":\"read-only\"" "$SEVF" | grep -Fq "\"read_write_paths\":[\"/root/.grok\",\"/tmp\",\"/var/tmp\"]}" && ! grep "\"profile\":\"read-only\"" "$SEVF" | grep -q read_only_paths'
+# cxlib root_realpath (the resolver targets of grok's profiles, DESIGN section 15.7): with ROOT
+# empty (production) it resolves as os.path.realpath; with a test ROOT (CX_DETECT_ROOT) an
+# absolute link target resolves inside that root.
+RRP_BAD="$("$REAL_PY" -I - "$CXLIB" "$TMP/rrp" <<'PY'
+import importlib.util, os, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("cxlib", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+t = sys.argv[2]
+os.makedirs(t + "/real/x/y", exist_ok=True); os.makedirs(t + "/root/etc", exist_ok=True); os.makedirs(t + "/root/mnt/wsl", exist_ok=True)
+for name, target in (("l1", "real/x"), ("l2", "l1/../x"), ("l3", t + "/l1/y"), ("l4", "/nonexistent/z"), ("loop", t + "/loop"), ("l5", "l3/..")):
+    if not os.path.lexists(t + "/" + name):
+        os.symlink(target, t + "/" + name)
+if not os.path.lexists(t + "/root/etc/resolv.conf"):
+    os.symlink("/mnt/wsl/resolv.conf", t + "/root/etc/resolv.conf")
+open(t + "/root/mnt/wsl/resolv.conf", "w").write("nameserver 10.255.255.254\n")
+bad = []
+for p in ("/l1", "/l2", "/l3", "/l4", "/l1/../real", "/l3/missing/../..", "/l5", "/real/x/y/../.."):
+    a, b = m.root_realpath("", t + p), os.path.realpath(t + p)
+    if a != b:
+        bad.append("%s: %s != %s" % (p, a, b))
+if m.root_realpath("", t + "/loop") is not None:
+    bad.append("a loop is not None")
+if m.root_realpath(t + "/root", "/etc/resolv.conf") != "/mnt/wsl/resolv.conf":
+    bad.append("ROOT: %s" % m.root_realpath(t + "/root", "/etc/resolv.conf"))
+print("; ".join(bad))
+PY
+)" || RRP_BAD="the checker failed"
+check "[X]   cxlib root_realpath: with ROOT empty it resolves exactly as os.path.realpath (relative, absolute and chained links, .., a missing tail; a loop -> None); with a test ROOT an absolute link resolves inside it${RRP_BAD:+: $RRP_BAD}" test -z "$RRP_BAD"
 # The write probes (0.2.2; live, the build container, 2026-11-06, grok 1.0.70, linux/landlock
 # plus bubblewrap): what grok's agent could write in ~/.grok under the built-in read-only and
 # under strict. The docs rely on these facts (DESIGN section 1.3, section 20 item 76).
@@ -4273,6 +4385,7 @@ cat > "$SLEEPER" <<'SH'
 #!/bin/bash
 d="${0%/*}"; n="${0##*/}"
 case "${1-}" in --version) echo "$n 1.4.12"; exit 0 ;; models|usage|status|result|list|inspect) echo free; exit 0 ;; esac
+[ "${1-}" = --sandbox ] && [ "${3-}" = models ] && [ $# -eq 3 ] && { echo free; exit 0; }   # cx-wsl's per-run grok check
 case " $* " in *" --print-command "*|*" -p /usage "*|*" -p /model "*|*" -p /config "*) echo free; exit 0 ;; esac
 s="$(cat "$d/sleep.$n" 2>/dev/null || cat "$d/sleep" 2>/dev/null || echo 1)"
 printf 'start %s %s %s %s\n' "$n" "$$" "$(date +%s.%N)" "${CX_SLOT_FDS:-none}" >> "$d/events"
@@ -4390,12 +4503,12 @@ sd se se-busy CLAUDE_PLUGIN_OPTION_CAP_COPILOT=1 CX_SLOT_WAIT_SECS=1 -- "$CXWSL"
 s_use se-busy
 check "[X]   cx-wsl ghcp-job start returns at once, and its detached job keeps the copilot slot: with cap_copilot=1 a following ghcp-delegate exits 28" \
   eval '[ "$(cat "$WH/se-job.rc")" = 0 ] && grep -q "^JOB_ID " "$WH/se-job.out" && rc_is 28 && one_signal NO_CAPACITY'
-sd se se-nest CLAUDE_PLUGIN_OPTION_CAP_GROK=1 CX_SLOT_WAIT_SECS=1 -- bash -c '. "$1" || exit 9; cx_slot_take grok || exit $?; "$2" grok -p "nested task" --sandbox strict --cwd "$3"' _ "$LOCKS_LIB" "$CXWSL" "$TMP/work"
+sd se se-nest CLAUDE_PLUGIN_OPTION_CAP_GROK=1 CX_SLOT_WAIT_SECS=1 -- bash -c '. "$1" || exit 9; cx_slot_take grok || exit $?; "$2" grok -p "nested task" --sandbox cx-strict --cwd "$3"' _ "$LOCKS_LIB" "$CXWSL" "$TMP/work"
 s_use se-nest
 check "[X]   a shell that holds the only grok slot (cx_slot_take grok, cap_grok=1) runs cx-wsl grok -p inside: the child reuses the inherited slot (CX_SLOT_FDS) instead of waiting" \
   eval 'rc_is 0 && out_has "answer from grok" && grep -q "^start grok .*grok\.1=" "$WH/se.bin/events"'
 t0=$SECONDS
-sd se se-cap0 CLAUDE_PLUGIN_OPTION_CAP_GROK=0 CX_SLOT_WAIT_SECS=30 -- "$CXWSL" grok -p task --sandbox strict --cwd "$TMP/work"
+sd se se-cap0 CLAUDE_PLUGIN_OPTION_CAP_GROK=0 CX_SLOT_WAIT_SECS=30 -- "$CXWSL" grok -p task --sandbox cx-strict --cwd "$TMP/work"
 s_use se-cap0
 check "[X]   cap_grok=0: cx-wsl grok -p exits 28 at once (the pool is disabled), one CX_SIGNAL NO_CAPACITY" \
   eval 'rc_is 28 && one_signal NO_CAPACITY && err_has "the grok pool is disabled (cap_grok=0)" && [ $((SECONDS - t0)) -lt 20 ] && [ "$(grep -c "^start grok " "$WH/se.bin/events")" = 1 ]'
@@ -5203,29 +5316,86 @@ check "[X]   ... an LF step: unchanged, stderr empty" eval 'rc_is 0 && [ "$(cat 
 runin $'echo ok-step\n' wsl_direct "$CW_HOME" env TMPDIR="$TMP/no-such-tmpdir" "$CXWSL" bash -s
 check "[X]   cx-wsl bash -s buffers the step in \$CX_HOME/tmp (0700, yours), never in \$TMPDIR or /tmp, which grok runs may write (appended lines would run unsandboxed): with TMPDIR a missing directory the step still runs; the buffer is gone afterwards" \
   eval 'rc_is 0 && [ "$(cat "$O")" = ok-step ] && err_empty && [ "$(stat -c %a -- "$CW_HOME/.conductor/tmp")" = 700 ] && [ -z "$(ls -A -- "$CW_HOME/.conductor/tmp")" ]'
-# cx-wsl grok runs (the skill's commit-message call): only --sandbox strict, only with an absolute
-# --cwd directory, and grok runs from that directory (its process cwd, which strict lets it
-# write, is --cwd). Refused forms exit 1 before the slot, and grok never starts.
+# cx-wsl grok runs (the skill's commit-message call): only --sandbox cx-strict (conductor's strict
+# plus the resolver directories), only with an absolute --cwd directory, and grok runs from that
+# directory (its process cwd, which strict lets it write, is --cwd). Refused forms exit 1 before
+# the slot, and grok never starts.
 mkdir -p "$TMP/cw-msg"; printf 'Write a commit message.\n' > "$TMP/cw-msg/prompt.txt"
 CWP="--prompt-file $TMP/cw-msg/prompt.txt -m m --effort low --always-approve --no-subagents --output-format plain"
 CW_BAD=""
 for c in "-p x --cwd $TMP/cw-msg" "$CWP --cwd $TMP/cw-msg" "$CWP --cwd $TMP/cw-msg --sandbox read-only" "$CWP --cwd $TMP/cw-msg --sandbox=off" \
-         "$CWP --cwd $TMP/cw-msg --sandbox strict --sandbox workspace" "$CWP --cwd $TMP/cw-msg --sandbox" "$CWP --sandbox strict" \
-         "$CWP --sandbox strict --cwd cw-msg" "$CWP --sandbox strict --cwd $TMP/no-such-dir"; do
+         "$CWP --cwd $TMP/cw-msg --sandbox strict" "$CWP --cwd $TMP/cw-msg --sandbox=strict" \
+         "$CWP --cwd $TMP/cw-msg --sandbox cx-strict --sandbox workspace" "$CWP --cwd $TMP/cw-msg --sandbox" "$CWP --sandbox cx-strict" \
+         "$CWP --sandbox cx-strict --cwd cw-msg" "$CWP --sandbox cx-strict --cwd $TMP/no-such-dir"; do
   read -r -a CMD <<< "$c"
   : > "$TMP/cw-grok.log"
   run wsl_direct "$CW_HOME" env STUB_LOG="$TMP/cw-grok.log" STUB_GROK_RUN=ok "$CXWSL" grok "${CMD[@]}"
   { rc_is 1 && no_signal && err_has "cx-wsl: " && [ ! -s "$TMP/cw-grok.log" ]; } || CW_BAD="$CW_BAD [$c: rc $RC]"
 done
-check "[X]   cx-wsl grok runs need --sandbox strict (every --sandbox: not read-only, off, workspace, none, a missing value) and an absolute --cwd directory: exit 1 before the slot, grok never started${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
+check "[X]   cx-wsl grok runs need --sandbox cx-strict (every --sandbox: not strict, which cannot read WSL's resolver file, read-only, off, workspace, none, a missing value) and an absolute --cwd directory: exit 1 before the slot, grok never started${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
 CW_BAD=""
-for c in "$CWP --cwd $TMP/cw-msg --sandbox strict" "$CWP --cwd=$TMP/cw-msg --sandbox=strict"; do
+rm -f -- "$CW_HOME/.grok/sandbox.toml.cx-bak"; cp "$CW_HOME/.grok/sandbox.toml" "$TMP/cw-sbx.orig"
+for c in "$CWP --cwd $TMP/cw-msg --sandbox cx-strict" "$CWP --cwd=$TMP/cw-msg --sandbox=cx-strict"; do
   read -r -a CMD <<< "$c"
   : > "$TMP/cw-grok.log"
   run wsl_direct "$CW_HOME" env STUB_LOG="$TMP/cw-grok.log" STUB_GROK_RUN=ok "$CXWSL" grok "${CMD[@]}"
-  { rc_is 0 && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"; } || CW_BAD="$CW_BAD [$c: rc $RC]"
+  { rc_is 0 && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log" \
+      && [ "$(grep -n "^grok	cwd=$TMP/cw-msg	argv: --sandbox cx-strict models$" "$TMP/cw-grok.log" | cut -d: -f1)" = 1 ]; } || CW_BAD="$CW_BAD [$c: rc $RC]"
 done
-check "[X]   ... cx-wsl grok --cwd \$OUT/msg --sandbox strict (also --cwd=DIR --sandbox=strict) runs grok from that directory, whatever the caller's cwd${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
+check "[X]   ... cx-wsl grok --cwd \$OUT/msg --sandbox cx-strict (also --cwd=DIR --sandbox=cx-strict) first runs the per-run check (grok --sandbox cx-strict models, in that directory), then runs grok from that directory, whatever the caller's cwd${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
+"$REAL_PY" -I - "$CW_HOME/.grok/sandbox.toml" <<'PY2' > "$TMP/cw-sbx.check"
+import sys, tomllib
+d = tomllib.load(open(sys.argv[1], "rb"))
+print(d["profiles"]["cx-strict"], d["profiles"]["cx-workspace"])
+PY2
+check "[X]   ... the first call wrote conductor's cx-strict into ~/.grok/sandbox.toml between cx:begin/cx:end lines (extends strict; read_only empty: no resolver file of this host lies outside strict's read set), the user's other profile kept, the old file in sandbox.toml.cx-bak" \
+  eval 'grep -qx "# cx:begin cx-strict" "$CW_HOME/.grok/sandbox.toml" && grep -qx "# cx:end cx-strict" "$CW_HOME/.grok/sandbox.toml" && [ "$(cat "$TMP/cw-sbx.check")" = "{'"'"'extends'"'"': '"'"'strict'"'"', '"'"'read_only'"'"': []} {'"'"'extends'"'"': '"'"'workspace'"'"'}" ] && cmp -s "$TMP/cw-sbx.orig" "$CW_HOME/.grok/sandbox.toml.cx-bak"'
+# WSL's resolver: /etc/resolv.conf links to /mnt/wsl/resolv.conf, outside strict's read set
+# (measured on WSL: under strict grok resolved no host name). CX_DETECT_ROOT holds that tree.
+CWR="$TMP/cw-root"
+mkdir -p "$CWR/etc/ssl/certs" "$CWR/mnt/wsl" "$CWR/opt/corp"
+printf 'nameserver 10.255.255.254\n' > "$CWR/mnt/wsl/resolv.conf"; ln -s /mnt/wsl/resolv.conf "$CWR/etc/resolv.conf"
+printf '127.0.0.1 localhost\n' > "$CWR/etc/hosts"; printf 'pem\n' > "$CWR/etc/ssl/certs/ca-certificates.crt"; printf 'pem\n' > "$CWR/opt/corp/ca.pem"
+CWGH="$CW_HOME/.grok"
+cwr() {  # VAR=VALUE...: cx-wsl grok --cwd $OUT/msg --sandbox cx-strict on the WSL resolver tree, an enforced sandbox log
+  : > "$TMP/cw-grok.log"
+  run wsl_direct "$CW_HOME" env STUB_LOG="$TMP/cw-grok.log" STUB_GROK_RUN=ok CX_DETECT_ROOT="$CWR" STUB_GROK_SANDBOX_EVENT=enforced \
+    STUB_GROK_EVENT_RW="WS $CWGH/sessions /var/tmp" "$@" "$CXWSL" grok "${CWOK[@]}"
+}
+read -r -a CWOK <<< "$CWP --cwd $TMP/cw-msg --sandbox cx-strict"
+cwr SSL_CERT_FILE=/opt/corp/ca.pem
+check "[X]   ... on WSL (/etc/resolv.conf -> /mnt/wsl/resolv.conf; SSL_CERT_FILE=/opt/corp/ca.pem): cx-strict gains read_only [/mnt/wsl, /opt/corp] (sorted; /etc/hosts and the CA bundle in /etc need nothing) with a note, the sandbox log's event reads them (no unreadable note), grok runs (exit 0)" \
+  eval 'rc_is 0 && grep -Fqx "read_only = [\"/mnt/wsl\", \"/opt/corp\"]" "$CWGH/sandbox.toml" && err_has "read_only adds /mnt/wsl, /opt/corp: grok'"'"'s resolver and TLS files there lie outside strict'"'"'s read set (cx-doctor D17)" && ! err_has "cannot read" && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"'
+cwr SSL_CERT_FILE=/opt/corp/ca.pem
+check "[X]   ... the same call again: the profile is the same (no note), grok runs" eval 'rc_is 0 && err_empty && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"'
+cwr STUB_GROK_EVENT_RO=strict
+check "[X]   ... a sandbox log whose event for \$OUT/msg lists strict's own read paths only (the profile's read_only missing): one note per resolver target it cannot read (/etc/resolv.conf -> /mnt/wsl/resolv.conf: no host name resolves), never a refusal; grok runs" \
+  eval 'rc_is 0 && err_has "grok'"'"'s sandbox log shows profile cx-strict cannot read /etc/resolv.conf -> /mnt/wsl/resolv.conf (grok'"'"'s resolver file) in $TMP/cw-msg: grok cannot resolve any host name under it (cx-doctor D17)" && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log"'
+"$REAL_PY" -I - "$CWGH/sandbox.toml" <<'PY2'
+import re, sys
+p = sys.argv[1]
+t = open(p).read()
+t = re.sub(r"(?ms)^# cx:begin cx-strict\n.*?^# cx:end cx-strict\n", "[profiles.cx-strict]\nextends = \"workspace\"\nread_write = [\"/\"]\n", t)
+open(p, "w").write(t)
+PY2
+cwr
+check "[X]   ... a widened [profiles.cx-strict] without conductor's cx:begin/cx:end lines (extends workspace, read_write /) is replaced by conductor's own before the check and the call, with a note" \
+  eval 'rc_is 0 && grep -qx "# cx:begin cx-strict" "$CWGH/sandbox.toml" && ! grep -Fq "read_write" "$CWGH/sandbox.toml" && [ "$(grep -c "^\[profiles.cx-strict\]" "$CWGH/sandbox.toml")" = 1 ] && err_has "replaced it with conductor'"'"'s own profile of that name"'
+mkdir -p "$TMP/cw-msg/.grok"; printf '[profiles.cx-strict]\nextends = "workspace"\n' > "$TMP/cw-msg/.grok/sandbox.toml"
+cwr
+check "[X]   ... a .grok/sandbox.toml in --cwd (a per-project file that could redefine cx-strict): exit 2 FAILED before grok starts at all" \
+  eval 'rc_is 2 && one_signal FAILED && err_has "holds .grok/sandbox.toml" && [ ! -s "$TMP/cw-grok.log" ]'
+rm -rf -- "${TMP:?}/cw-msg/.grok"
+cwr STUB_GROK_SANDBOX=refuse
+check "[X]   ... the per-run check says the sandbox was not applied (grok --sandbox cx-strict models): exit 2 with one CX_SIGNAL FAILED naming it, grok never ran the prompt" \
+  eval 'rc_is 2 && one_signal FAILED && err_has "grok --sandbox cx-strict models in $TMP/cw-msg says the sandbox was not applied" && ! grep -q -- "--prompt-file" "$TMP/cw-grok.log"'
+cwr STUB_GROK_EVENT_RW="WS $CWGH /var/tmp"
+check "[X]   ... the check's event grants write to grok's home: exit 2 FAILED naming the path, grok never ran the prompt" \
+  eval 'rc_is 2 && one_signal FAILED && err_has "grok'"'"'s sandbox profile cx-strict grants write to grok'"'"'s home $CWGH" && ! grep -q -- "--prompt-file" "$TMP/cw-grok.log"'
+cwr SSL_CERT_DIR="/:/opt/corp"
+check "[X]   ... SSL_CERT_DIR naming / and /opt/corp: /opt/corp is granted, / never (a note names it and why), grok runs" \
+  eval 'rc_is 0 && grep -Fqx "read_only = [\"/mnt/wsl\", \"/opt/corp\"]" "$CWGH/sandbox.toml" && err_has "not granted: / (it is /), for /, outside strict'"'"'s read set: grok may not verify TLS certificates under this profile (cx-doctor D17)"'
+cp "$TMP/cw-sbx.orig" "$CWGH/sandbox.toml"
 run env -u CLAUDE_CONFIG_DIR -u CX_HOME HOME="$TMP/cxwsl-norecord" WSL_DISTRO_NAME=Ubuntu PATH="$WSL_PATH0" "$CXWSL" grok --version
 check "[P45] no host record -> 13 CLI_MISSING with one CX_SIGNAL (retry: cx-doctor)" \
   eval 'rc_is 13 && one_signal CLI_MISSING && line_is CX_SIGNAL retry "cx-doctor (from a Claude Code session; in a WSL terminal, where cx-doctor is not on PATH: ~/.conductor/runtime/current/bin/cx-doctor, created once by cx-doctor --install-runtime)" && err_has "run /conductor:doctor in a Claude Code session in WSL, or ~/.conductor/runtime/current/bin/cx-doctor in a WSL terminal" && err_has "create that copy once with /conductor:doctor --install-runtime" && out_empty'
@@ -5404,8 +5574,8 @@ PY
 )" || SYNC_BAD="the checker failed"
 check "[P43] every non-comment line of every bash block in DESIGN section 12.2 appears in the SKILL verbatim${SYNC_BAD:+ (missing: $SYNC_BAD)}" test -z "$SYNC_BAD"
 # The skill's commit-message call (0.2.2): in the SKILL and in DESIGN section 12.2 each bash block
-# with a cx-wsl grok line empties $OUT/msg first, and that line runs under --sandbox strict (and
-# no other profile) with the prompt file and --cwd in $OUT/msg; no grok line in any bash block of
+# with a cx-wsl grok line empties $OUT/msg first, and that line runs under --sandbox cx-strict
+# (conductor's strict plus the resolver directories, and no other profile) with the prompt file and --cwd in $OUT/msg; no grok line in any bash block of
 # the SKILL, DESIGN, README, the commands or templates/ names --sandbox read-only or --cwd "$TOP";
 # no task contract under /tmp or /var/tmp, which every strict-based grok run may write (the
 # failover re-reads it).
@@ -5426,7 +5596,7 @@ for name, text in (("SKILL", rd("skills/conductor/SKILL.md")), ("DESIGN 12.2", s
             if not ln.startswith("cx-wsl grok "):
                 continue
             n += 1
-            for need in ('--sandbox strict ', '--cwd "$OUT/msg" ', '--prompt-file "$OUT/msg/prompt.txt" '):
+            for need in ('--sandbox cx-strict ', '--cwd "$OUT/msg" ', '--prompt-file "$OUT/msg/prompt.txt" '):
                 if need not in ln:
                     bad.append("%s: cx-wsl grok line lacks %s" % (name, need.strip()))
             if len(re.findall(r"--sandbox[ =]", ln)) != 1:
@@ -5451,7 +5621,7 @@ for f in files:
 print(" | ".join(bad[:5]))
 PY
 )" || GMSG_BAD="the checker failed"
-check "[X]   the commit-message call (SKILL and DESIGN 12.2): \$OUT/msg emptied and the prompt written there first, then one cx-wsl grok line with --sandbox strict (only), --cwd \"\$OUT/msg\" and --prompt-file \"\$OUT/msg/prompt.txt\"; no doc bash block runs grok under read-only or with --cwd \"\$TOP\"; no task contract under /tmp${GMSG_BAD:+: $GMSG_BAD}" test -z "$GMSG_BAD"
+check "[X]   the commit-message call (SKILL and DESIGN 12.2): \$OUT/msg emptied and the prompt written there first, then one cx-wsl grok line with --sandbox cx-strict (only), --cwd \"\$OUT/msg\" and --prompt-file \"\$OUT/msg/prompt.txt\"; no doc bash block runs grok under read-only or with --cwd \"\$TOP\"; no task contract under /tmp${GMSG_BAD:+: $GMSG_BAD}" test -z "$GMSG_BAD"
 # The built-ins that let grok write its home: normalize.py GROK_HOME_WRITERS and cx-doctor's D17
 # case arm are the same list (the per-run name refusal and the doctor's failure).
 GHW_PY="$("$REAL_PY" -I - "$ROOT/scripts/lib/normalize.py" <<'PY'

@@ -241,9 +241,13 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
 - `<checkout>/.conductor/` is the conductor's: written only through `cx_cdir` (a real directory
   holding no symlink) and `cx_cput` (a new file); a read or review of a commit that tracks
   `.conductor` exits 2 before its checkout; `info/exclude` gets `/.conductor` (no slash).
-- `cx-wsl grok` runs (forms that take a slot) need `--sandbox strict` and an absolute `--cwd`
-  (else 1) and run from that directory; the skill's one `cx-wsl grok` line is pinned by a
-  static check (`$OUT/msg` emptied first, strict only, no `--cwd "$TOP"`).
+- `cx-wsl grok` runs (forms that take a slot) need `--sandbox cx-strict` and an absolute `--cwd`
+  (else 1), write and check `cx-strict` once the slot is held (else 2), and run from that
+  directory; the skill's one `cx-wsl grok` line is pinned by a static check (`$OUT/msg` emptied
+  first, cx-strict only, no `--cwd "$TOP"`).
+- Every grok profile conductor writes (each repository's `cx-<repo>-<hash>`, `cx-strict`) adds
+  the resolver and TLS directories of `cxlib.grok_resolver_plan` (never `/`, a home, `$CX_HOME`
+  or a checkout); tests make those files under `CX_DETECT_ROOT`, never the host's.
 
 ## Changes that touch many files
 
@@ -281,7 +285,11 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   `## x.y.z — date` heading in `CHANGELOG.md` (`[P2]`).
 - **grok's home-writing built-ins** (`off`, `devbox`, `workspace`, `read-only`):
   `GROK_HOME_WRITERS` in `normalize.py` and D17's case arm in `cx-doctor.sh` (a static `[X]`
-  check pins them equal), DESIGN §1.3, §8.3 D17, §15.2 and §15.7, README, SKILL troubleshooting.
+  check pins them equal), the names `cxlib.py` `cmd_grok_resolver` skips, DESIGN §1.3, §8.3
+  D17, §15.2 and §15.7, README, SKILL troubleshooting.
+- **grok's strict read set or resolver files**: `GROK_STRICT_READ` and `GROK_RESOLVER_FILES` in
+  `cxlib.py`, the base `read_only_paths` of the grok stub's sandbox-log line, DESIGN §1.3, §8.3
+  D17 and §15.7, README.
 - **Pin bump**: `CX_PIN_*` in `common.sh`, DESIGN §1 and §5.4, README.
 - **New shipped file**: DESIGN §13.4, `CX_SHIPPED_FILES`/`CX_SHIPPED_EXEC`,
   `install-runtime.sh` dirs and D4's subset (`[P41]`).
@@ -332,8 +340,8 @@ Do not treat these as facts (DESIGN §20): the Windows app's `$PWD` form for `\\
 projects and which shell runs hooks on Windows; whether WSL keeps detached jobs alive after the
 last `wsl.exe` exits; wsl.exe's stdin/Ctrl-C relay and `WSL_UTF8`; agy's `--output-format json`
 and `/usage` shapes and whether `/usage` is zero-quota; grok's logged-in `models` listing and
-exit code; the `Task(...)`/`Agent(...)` deny-rule syntax and how env-prefixed allow rules match on
-2.1.316; whether `claude plugin update` re-copies an unchanged version; above all whether
+exit code; the `Task(...)`/`Agent(...)` deny-rule syntax and how Claude Code matches env-prefixed
+allow rules; whether `claude plugin update` re-copies an unchanged version; above all whether
 `claude remote-control` started inside WSL serves Work locally threads with the WSL plugins
 (live check L11, first); the SubagentStart matcher's alternation and injection timing, bridge
 children's `CLAUDE_CODE_SESSION_ATTENDED`, and what a compacting subagent's SessionStart payload
@@ -344,6 +352,8 @@ its `-p /model|/usage|/config` slash forms cost quota (items 67, 68; its flags t
 verified against the captured 1.4.12 help), and claude -p's result shape (§20); whether grok
 reads `--prompt-file` before its sandbox applies or under it, whether its daemon backend ever
 runs a conductor run, and which directory `strict`'s CWD grant follows when the process cwd and
-`--cwd` differ (items 77, 78, 80; all moot or refused by construction); under the built-in
+`--cwd` differ (items 77, 78, 80; all moot or refused by construction); that grok works end to
+end on WSL once its profiles read the resolver directories, whether it accepts `read_only = []`,
+which CA bundle it reads and the JSON shape of `~/.grok/logs/unified.jsonl` (item 81); under the built-in
 `read-only` only an append-open of grok's protected set was measured denied, not a rename in the
 writable `~/.grok` (item 76).

@@ -22,8 +22,14 @@
 #                  write-probe-strict-1.0.70.txt; no child network; /tmp and /var/tmp are shared,
 #                  so the conductor keeps nothing it re-reads there, common.sh cx_tmpdir) plus
 #                  read_only access to the git directory (git status in a
-#                  worktree) and $CX_HOME/routes (each run's cx-route; never the out
-#                  directories, which hold other runs' tasks, diffs and digests; grok's own
+#                  worktree), $CX_HOME/routes (each run's cx-route; never the out
+#                  directories) and the directories that hold this host's resolver and TLS
+#                  files where those lie outside strict's read set (on WSL /mnt/wsl, for
+#                  /etc/resolv.conf -> /mnt/wsl/resolv.conf: without it grok resolves no host
+#                  name, measured; cxlib.py grok_resolver_plan, never /, a home or a checkout).
+#                  Outside a git checkout: conductor's cx-strict (strict plus those directories
+#                  only). Never the out directories, which hold other runs' tasks, diffs and
+#                  digests; grok's own
 #                  ~/.grok/sessions, which every grok run reads and writes, holds every grok
 #                  session's transcript, other runs' tasks and answers included). The
 #                  sandbox is the boundary, so every tool is approved inside it (a headless run
@@ -77,16 +83,23 @@
 #                  a directory above it or one inside it, but ~/.grok/sessions and below), refuses
 #                  the run (2) before any prompt, as does a line saying the sandbox was not
 #                  applied; no log or no event changes nothing; the facts (platform included)
-#                  go into grok.run.json as sandbox_check. Once the slot is held the profile is
-#                  written again (the run may have waited for it), then the prompt file, grok,
-#                  then grok usage <uuid> (free).
+#                  go into grok.run.json as sandbox_check, with the resolver and TLS files the
+#                  event's read paths do not cover (resolver_unreadable; a note each, never a
+#                  refusal). Once the slot is held the profile is written again (the run may
+#                  have waited for it), then the prompt file, grok (the size of grok's own log
+#                  ~/.grok/logs/unified.jsonl recorded first), then the connection and DNS
+#                  failures among the bytes grok appended to that log (grok.netlog.txt, text
+#                  only) and grok usage <uuid> (free).
 #   parse:         JSON text / sessionId / modelUsage / usage / stopReason (verified on 1.0.70;
 #                  text joins every turn's message with no separator, so with --json-schema the
 #                  answer is structuredOutput as JSON; without one, text stays the answer, with
 #                  a note); any "permission required:" on stderr -> 15; a modelUsage key other
 #                  than the model or its -build alias -> 21; a stderr line saying the sandbox
 #                  was not applied -> 2 (and, when grok went on anyway, a reason saying it ran
-#                  unconfined). Slot pool: grok (cap_grok).
+#                  unconfined); rc not 0 with no model call and "error sending request for url"
+#                  (or a connect or DNS failure) on stderr or in grok.netlog.txt -> 2 with a
+#                  reason naming it (DNS when grok's log says so) and cx-doctor D17 (12 when the
+#                  wall clock ended grok's retries first). Slot pool: grok (cap_grok).
 #
 # Exit codes: as scripts/lib/adapter.sh (0, 1, 2, 11, 13, 14, 26, 28, 130).
 
@@ -118,7 +131,9 @@ lane_setup() {
 }
 
 # grok_profile: the sandbox profile of a run in any mode (GROK_PROFILE), with GROK_GCD (the git
-# common directory it grants) when it is the repository's own (GROK_PROFILE_AUTO=1).
+# common directory it grants) when it is the repository's own (GROK_PROFILE_AUTO=1), or
+# conductor's cx-strict outside a git checkout (GROK_PROFILE_AUTO=2). Both are conductor's own,
+# written with the resolver directories (cxlib.py grok_resolver_plan, DESIGN section 15.7).
 GROK_PROFILE="" GROK_GCD="" GROK_PROFILE_AUTO=0
 grok_profile() {
   local opt="${CXA_OPT[grok_sandbox_profile]:-auto}" d gcd=""
@@ -134,8 +149,8 @@ grok_profile() {
     gcd=""
   done
   if [ -z "$gcd" ]; then
-    # Not a git checkout: grok's strict profile as it is (nothing to grant).
-    GROK_PROFILE=strict GROK_PROFILE_AUTO=0
+    # Not a git checkout: conductor's cx-strict (strict plus the resolver directories only).
+    GROK_PROFILE=cx-strict GROK_PROFILE_AUTO=2
     return 0
   fi
   GROK_GCD="$(cd -- "$gcd" && pwd -P)"
@@ -184,24 +199,30 @@ lane_argv() {
 lane_dry_extra() {
   [ -n "$GROK_PROFILE" ] || grok_profile
   if [ "$GROK_PROFILE_AUTO" = 1 ]; then
-    printf 'sandbox profile: %s (extends strict; read_only %s and %s/routes; added to %s before the run when missing)\n' \
+    printf 'sandbox profile: %s (extends strict; read_only %s, %s/routes and the resolver directories cx-doctor D17 lists; added to %s before the run when missing or different)\n' \
       "$GROK_PROFILE" "$GROK_GCD" "$CXA_HOME" "$(grok_sandbox_file)"
+  elif [ "$GROK_PROFILE_AUTO" = 2 ]; then
+    printf 'sandbox profile: %s (not a git checkout: extends strict; read_only the resolver directories cx-doctor D17 lists; added to %s before the run when missing or different)\n' \
+      "$GROK_PROFILE" "$(grok_sandbox_file)"
   else
     printf 'sandbox profile: %s (yours, or a built-in; used as it is)\n' "$GROK_PROFILE"
   fi
 }
 
-# grok_apply_profile: the repository's profile in ~/.grok/sandbox.toml, written under a lock
-# when it is missing or differs (a note says what changed); 2 FAILED when it cannot be.
+# grok_apply_profile: the run's profile in ~/.grok/sandbox.toml (the repository's, or cx-strict),
+# with the resolver directories, written under a lock when it is missing or differs (a note says
+# what changed, or names a directory it cannot grant); 2 FAILED when it cannot be.
 grok_apply_profile() {
   local out rc
+  local -a which=(--strict)
   # grok refuses a profile whose read_only names no directory: both exist before it starts.
   mkdir -p -- "$CXA_HOME/locks" "$CXA_HOME/routes"
-  out="$(cx_py grok-profile --gcd "$GROK_GCD" --sandbox "$(grok_sandbox_file)" --template "$CX_ROOT/templates/grok-sandbox.toml" \
-           --routes-root "$CXA_HOME/routes" --lock "$CXA_HOME/locks/grok-sandbox.lock" 2>&1)"
+  [ "$GROK_PROFILE_AUTO" != 1 ] || which=(--gcd "$GROK_GCD" --template "$CX_ROOT/templates/grok-sandbox.toml" --routes-root "$CXA_HOME/routes")
+  out="$(cx_py grok-profile "${which[@]}" --sandbox "$(grok_sandbox_file)" --lock "$CXA_HOME/locks/grok-sandbox.lock" \
+           --workspace "${A_WT:-$PWD}" --home "${HOME:-}" --grok-home "$(grok_home)" --cx-home "$CXA_HOME" 2>&1)"
   rc=$?
   [ "$rc" = 0 ] || cxa_fail 2 FAILED "cannot write the grok sandbox profile $GROK_PROFILE into $(grok_sandbox_file): ${out:-rc $rc}"
-  case "$out" in same*|"") ;; *) cx_note "${1:+$1: }$out" ;; esac
+  case "$out" in ""|"same $GROK_PROFILE") ;; *) cx_note "${1:+$1: }$out" ;; esac
 }
 
 # grok_check_run PROFILE: the per-run profile check (free; DESIGN section 15.2): grok --sandbox
@@ -210,7 +231,7 @@ grok_apply_profile() {
 # only the bytes it appended to grok's sandbox log. A refusal (2 FAILED) names the profile, the
 # path and the log; the facts go into grok.run.json (sandbox_check).
 grok_check_run() {
-  local sb="$1" wt="${A_WT:-$PWD}" ev ev0 ev1 rc f v
+  local sb="$1" wt="${A_WT:-$PWD}" ev ev0 ev1 rc f v l
   # A built-in that lets grok write its home (normalize.py GROK_HOME_WRITERS) is refused by its
   # name alone, before grok starts at all: the check itself would start grok under it in the
   # checkout (with off: no sandbox at all).
@@ -226,6 +247,11 @@ grok_check_run() {
   v="$(cxa_py grok-check --profile "$sb" --workspace "$wt" --grok-home "$(grok_home)" --probe-out "$f" --probe-rc "$rc" \
          --events "$ev" --from "$ev0" --to "$ev1" --json-out "$A_OUT/grok.sandbox-check.json")" \
     || cxa_fail 2 FAILED "the per-run check of grok's sandbox profile $sb failed (normalize.py grok-check)"
+  # The verdict, then a "note <text>" line per resolver file the logged profile cannot read.
+  while IFS= read -r l; do
+    case "$l" in "note "*) cx_note "${l#note }" ;; esac
+  done <<< "$v"
+  v="${v%%$'\n'*}"
   case "$v" in
     ok) ;;
     "refuse "*) cxa_fail 2 FAILED "${v#refuse }: refused before the run's prompt" ;;
@@ -255,8 +281,8 @@ lane_prepare() {
   done
   [ -n "$sb" ] || cxa_fail 2 FAILED "the grok argv names no --sandbox profile"
   [ -n "$GROK_PROFILE" ] || grok_profile
-  # Written only for the profile the argv names, and only when it is the repository's own.
-  if [ "$GROK_PROFILE_AUTO" = 1 ] && [ "$sb" = "$GROK_PROFILE" ]; then
+  # Written only for the profile the argv names, and only when it is conductor's own.
+  if [ "$GROK_PROFILE_AUTO" != 0 ] && [ "$sb" = "$GROK_PROFILE" ]; then
     grok_apply_profile
     GROK_APPLY=1
   fi
@@ -276,10 +302,22 @@ lane_exec() {
     cx_note "cannot write $wt/.conductor/prompt.txt${CX_CDIR_WHY:+ ($CX_CDIR_WHY)}"
     return 0
   fi
+  # grok's own log: only the bytes this run appends are searched afterwards (lane_postrun).
+  GROK_ULOG0="$(grok_events_size "$(grok_ulog_file)")"
   cxa_exec_default
 }
 
+# grok's own log (measured on 1.0.70: a failed API call logs its connection error there; the
+# JSON shape of its lines was not captured, so only their text is searched).
+grok_ulog_file() { printf '%s\n' "$(grok_home)/logs/unified.jsonl"; }
+GROK_ULOG0=""
 lane_postrun() {
+  local u
+  rm -f -- "$A_OUT/grok.netlog.txt"
+  if [ -n "$GROK_ULOG0" ]; then
+    u="$(grok_ulog_file)"
+    cxa_py grok-netlog --file "$u" --from "$GROK_ULOG0" --to "$(grok_events_size "$u")" --out "$A_OUT/grok.netlog.txt" || true
+  fi
   [ -n "${CXA_SESSION_HINT:-}" ] || return 0
   cxa_probe_cmd "$A_OUT/grok.usage.txt" "$CXA_BIN" usage "$CXA_SESSION_HINT" || true
 }

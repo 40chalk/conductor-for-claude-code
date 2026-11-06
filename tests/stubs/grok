@@ -3,6 +3,9 @@
 # ${STUB_GROK_HELP:-the real grok 1.0.70 help, fixtures/real/grok/help.txt} (free); models ->
 # fixtures/grok-models-auth.txt when STUB_GROK_AUTH=1, else the verified unauthenticated text,
 # rc ${STUB_GROK_MODELS_RC:-0} (STUB_GROK_MODELS_FAIL=network: one error line, no ids, rc 1);
+# STUB_GROK_MODELS_ONCE=unauth|network with STUB_GROK_MODELS_ONCE_FILE: the first bare models
+# call (none exists yet: it creates that file) answers the unauthenticated text, rc 0, or the
+# network error, rc 1; later calls answer as above (D17's retry).
 # usage -> fixture; STUB_ENV_FILE receives its environment. A prompt run (--prompt-file or
 # -p/--single) needs STUB_GROK_RUN, else it is billable; its JSON is SYNTHETIC in the keys grok
 # 1.0.70 really prints (text, sessionId, modelUsage, usage, stopReason; with --json-schema also
@@ -22,7 +25,12 @@
 # output and exit codes in --cwd/cx-route.out), gitlink (ok, and it rewrites --cwd/.git to point
 # at --cwd/.evil, a git directory whose core.fsmonitor touches ${STUB_GROK_PWNED:-/dev/null}),
 # embedded (ok, plus an embedded repository without a commit in --cwd/sub, which git add cannot
-# index). STUB_GROK_SEEN=FILE: a prompt run writes into FILE what it found in --cwd: "cwd=<it>",
+# index), connect (grok 1.0.70's real stderr line when it cannot reach its API: Error: Internal
+# error: "reqwest error stream: error sending request for url (...)", no stdout, rc 1), dns (the
+# same, after appending a SYNTHETIC line holding the measured text "client error (Connect): dns
+# error: failed to lookup address information: Try again" to ${GROK_HOME:-$HOME/.grok}/logs/unified.jsonl,
+# whose real JSON shape was not captured), dnstimeout (that log line, then rc 124 as if the
+# wall clock ended grok's retries). STUB_GROK_SEEN=FILE: a prompt run writes into FILE what it found in --cwd: "cwd=<it>",
 # then --cwd/.conductor/change.diff (a regular file's text, else "NO-DIFF").
 # --sandbox <profile> models (the free sandbox probe) -> the models listing, unless
 # STUB_GROK_SANDBOX says the sandbox cannot apply: refuse (grok 1.0.70's real "warning: sandbox
@@ -35,7 +43,10 @@
 # ProfileApplied line to grok's sandbox log ${GROK_HOME:-$HOME/.grok}/sessions/sandbox-events.jsonl,
 # in the shape grok 1.0.70 logs (fixtures/real/grok/sandbox-events-1.0.70.jsonl): enforced
 # (enforced true, platform linux/landlock, workspace = its cwd, read_write_paths the workspace,
-# $GROK_HOME/sessions, /tmp and /var/tmp, as the real strict-based lines), homewrite (enforced
+# $GROK_HOME/sessions, /tmp and /var/tmp, read_only_paths strict's system directories, the
+# workspace, $GROK_HOME and the read_only entries of [profiles.<profile>] in
+# $GROK_HOME/sandbox.toml, as the real strict-based lines; STUB_GROK_EVENT_RO=strict lists strict's
+# own paths only, as if the profile added nothing), homewrite (enforced
 # true, read_write_paths $GROK_HOME, /tmp and /var/tmp and no read_only_paths, as the real
 # read-only line), unenforced (enforced false, platform linux/unsupported: SYNTHETIC, no real
 # unenforced event has been seen) or other (that unenforced line for another workspace,
@@ -52,8 +63,19 @@ nosb_refuse() {
   nosb_warn
   printf "error: could not apply the '%s' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n" "$1" >&2
 }
+# prof_ro PROFILE: the read_only entries of [profiles.PROFILE] in grok's sandbox.toml, as the
+# comma-joined JSON strings conductor writes there.
+prof_ro() {
+  local f="${GROK_HOME:-$HOME/.grok}/sandbox.toml"
+  [ -f "$f" ] || return 0
+  awk -v want="[profiles.$1]" '
+    $0 == want { on = 1; next }
+    on && /^\[/ { exit }
+    on && /^read_only = \[/ { s = $0; sub(/^read_only = \[/, "", s); sub(/\][[:space:]]*$/, "", s); gsub(/", "/, "\",\"", s); print s; exit }
+  ' "$f"
+}
 sbx_event() {
-  local ws enf=true plat=linux/landlock gh="${GROK_HOME:-$HOME/.grok}" d rw ro p
+  local ws enf=true plat=linux/landlock gh="${GROK_HOME:-$HOME/.grok}" d rw ro p x=""
   d="$gh/sessions"
   ws="$(pwd -P)"
   case "${STUB_GROK_SANDBOX_EVENT:-}" in
@@ -62,7 +84,9 @@ sbx_event() {
     other) enf=false plat=linux/unsupported ws=/elsewhere ;;
     *) return 0 ;;
   esac
-  rw="\"$ws\",\"$d\",\"/tmp\",\"/var/tmp\"" ro=",\"read_only_paths\":[\"/usr\",\"/etc\",\"$ws\",\"$gh\"]"
+  [ "${STUB_GROK_EVENT_RO:-}" = strict ] || x="$(prof_ro "$1")"
+  rw="\"$ws\",\"$d\",\"/tmp\",\"/var/tmp\""
+  ro=",\"read_only_paths\":[\"/usr\",\"/lib\",\"/lib64\",\"/bin\",\"/sbin\",\"/etc\",\"/dev\",\"/proc\",\"/sys\",\"/tmp\",\"/run\",\"/var\",\"$ws\",\"$gh\"${x:+,$x}]"
   [ "$STUB_GROK_SANDBOX_EVENT" != homewrite ] || rw="\"$gh\",\"/tmp\",\"/var/tmp\"" ro=""
   if [ -n "${STUB_GROK_EVENT_RW+x}" ]; then
     rw=""
@@ -75,7 +99,9 @@ sbx_event() {
   printf '{"timestamp":"%s","event_type":"ProfileApplied","profile":"%s","workspace":"%s","platform":"%s","enforced":%s,"restrict_network":true,"read_write_paths":[%s]%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$ws" "$plat" "$enf" "$rw" "$ro" >> "$d/sandbox-events.jsonl"
 }
+SBX_PROBE=""
 if [ "${1-}" = --sandbox ] && [ $# -eq 3 ] && [ "$3" = models ]; then
+  SBX_PROBE=1
   sbx_event "$2"
   case "${STUB_GROK_SANDBOX:-}" in
     refuse) nosb_refuse "$2"; exit 1 ;;
@@ -95,6 +121,14 @@ case "${1-}" in
     exit 0 ;;
   models)
     [ $# -eq 1 ] || stub_billable grok "$@"
+    if [ -n "${STUB_GROK_MODELS_ONCE:-}" ] && [ -z "${SBX_PROBE:-}" ] && [ -n "${STUB_GROK_MODELS_ONCE_FILE:-}" ] \
+       && [ ! -e "$STUB_GROK_MODELS_ONCE_FILE" ]; then
+      : > "$STUB_GROK_MODELS_ONCE_FILE"
+      case "$STUB_GROK_MODELS_ONCE" in
+        unauth) cat "$STUB_FIX/grok-models-unauth.txt"; exit 0 ;;
+        network) printf 'Error: failed to fetch models: error sending request: network is unreachable\n' >&2; exit 1 ;;
+      esac
+    fi
     if [ "${STUB_GROK_MODELS_FAIL:-}" = network ]; then
       printf 'Error: failed to fetch models: error sending request: network is unreachable\n' >&2
       exit 1
@@ -163,6 +197,14 @@ case "$run" in
       && git -C "$cwd/.evil" config core.fsmonitor "touch ${STUB_GROK_PWNED:-/dev/null}" \
       && printf 'gitdir: .evil\n' > "$cwd/.git" ;;
   embedded) mkdir -p "$cwd/sub" && git -C "$cwd/sub" init -q ;;
+  connect|dns|dnstimeout)
+    if [ "$run" != connect ]; then
+      mkdir -p -- "${GROK_HOME:-$HOME/.grok}/logs"
+      printf '{"level":"WARN","message":"client error (Connect): dns error: failed to lookup address information: Try again"}\n' >> "${GROK_HOME:-$HOME/.grok}/logs/unified.jsonl"
+    fi
+    [ "$run" != dnstimeout ] || exit 124
+    printf 'Error: Internal error: "reqwest error stream: error sending request for url (https://cli-chat-proxy.grok.com/v1/responses)"\n' >&2
+    exit 1 ;;
   relink) mv -- "$cwd/.conductor" "$cwd/.cdx" && ln -s .cdx "$cwd/.conductor" ;;
   ok|denied|mismatch|nodiff|tamper) ;;
   *) stub_billable grok "$@" ;;

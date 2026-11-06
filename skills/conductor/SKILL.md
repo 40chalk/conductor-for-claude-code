@@ -67,7 +67,7 @@ integrated gate at merge.
 | Second opinion on Opus-written code | `agy-gemini` Argon High; `copilot-gpt` too on `high_risk` paths | `grok` xhigh | Opus reviewing Opus is never independent (`same_family_as_conductor`) |
 | Second opinion on Grok/Gemini-written code | `claude`, depth scaled by risk | — | — |
 | PR / issue / CI triage | `copilot-github` (`ghcp-ci-debug`); issues and PRs: fetch with `gh`, then a read-only `copilot-gpt` digest (Step 5; never `--github` for triage) | `grok` digest of `gh run view <id> --log-failed` | Fixes go through the same gates |
-| Commit messages, PR text, changelogs | `grok` low/medium, `--sandbox strict` in a directory that holds only the prompt file with the diff (Step 2) | `copilot-gpt` (`gpt-6-luna`) | You edit; nothing that is not in the diff |
+| Commit messages, PR text, changelogs | `grok` low/medium, `--sandbox cx-strict` (strict plus this host's resolver directories) in a directory that holds only the prompt file with the diff (Step 2) | `copilot-gpt` (`gpt-6-luna`) | You edit; nothing that is not in the diff |
 | Merge conflicts / integration fixes | `claude` | — | Integrated gate |
 | UI / frontend code | `claude` designs; Opus lanes make 2–3 parallel variants (one worktree each) | `claude` subagent | Screenshots, a11y lint; you pick and say why |
 | Media understanding | v1.1 Docker lane (`agy-media` always passes `--yolo`); until then you read what you can (images, transcripts) | — | Check the timestamps you rely on |
@@ -278,10 +278,14 @@ cx-run --mode read --exec copilot '<question>'                                  
 Not lanes: `agy-media` and `/antigravity:research` (both always pass `--yolo`); research goes
 to your own WebSearch and Grok, media waits for the v1.1 Docker lane. Commit messages, PR text
 and changelogs go to Grok with the diff inside the prompt file (one call; `vars.sh` is written
-by `cx-run`). Grok runs under its built-in `strict` profile in a directory of its own that holds
-only the prompt (`$OUT/msg/`, emptied first; `cx-wsl` runs grok from its `--cwd` and refuses a
-grok run without `--sandbox strict` or without an absolute `--cwd`): it may write only there, in
-`~/.grok/sessions`, `/tmp` and `/var/tmp`. Nothing the conductor later reads, sources or runs
+by `cx-run`). Grok runs under conductor's `cx-strict` profile (grok's built-in `strict` plus
+read-only access to the directories outside strict's read set that hold this host's resolver
+and TLS files: on WSL `/etc/resolv.conf` links to `/mnt/wsl/resolv.conf`, which plain `strict`
+cannot read, so grok could resolve no host name; `cx-wsl` writes the profile and checks it
+before the call) in a directory of its own that holds only the prompt (`$OUT/msg/`, emptied
+first; `cx-wsl` runs grok from its `--cwd` and refuses a grok run without `--sandbox cx-strict`
+or without an absolute `--cwd`): it may write only there, in `~/.grok/sessions`, `/tmp` and
+`/var/tmp`. Nothing the conductor later reads, sources or runs
 lies in any of them (`vars.sh`, the routes and the contract live under `~/.conductor`, and
 `cx-wsl bash -s` buffers a step in `~/.conductor/tmp`); keep nothing you will run or re-read in
 `/tmp` either. Never `--sandbox read-only` (it lets grok write `~/.grok`: its binary, ripgrep and
@@ -291,7 +295,7 @@ plugins) and never `--cwd "$TOP"`:
 . "$HOME/.conductor/out/t1/vars.sh"
 rm -rf -- "${OUT:?}/msg" && mkdir -p -- "$OUT/msg"                                       # holds only the prompt
 { printf '%s\n\n' 'Write a commit message (a subject under 72 characters, a blank line, a short body) for the diff below. Describe only what the diff shows.'; git -C "$TOP" diff "$BASE" "cx/$ID"; } > "$OUT/msg/prompt.txt"
-cx-wsl grok --prompt-file "$OUT/msg/prompt.txt" -m grok-4.7 --effort low --cwd "$OUT/msg" --sandbox strict --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
+cx-wsl grok --prompt-file "$OUT/msg/prompt.txt" -m grok-4.7 --effort low --cwd "$OUT/msg" --sandbox cx-strict --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
 ```
 
 ### Step 3: after every run (the conductor commits; the gate never runs in `$WT`)
@@ -718,8 +722,8 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
 - **grok refused with exit 2** ("cannot apply its sandbox", including "its sandbox log says
   … ran unenforced", "holds .grok/sandbox.toml", "cannot write the grok sandbox profile",
   and the per-run check's "grants write to grok's home" or "is grok's built-in … profile"):
-  grok approves every tool inside its sandbox, so the lane never runs without it, nor under a
-  profile that lets grok write `~/.grok` (its binary, ripgrep and plugins run outside any
+  grok approves every tool inside its sandbox, so the lane (and `cx-wsl grok`, for `cx-strict`)
+  never runs without it, nor under a profile that lets grok write `~/.grok` (its binary, ripgrep and plugins run outside any
   sandbox later). `cx-doctor` D17 names the cause (Landlock and bubblewrap on Linux and WSL; a
   second definition of the repository's profile in `~/.grok/sandbox.toml`; option
   `grok_sandbox_profile` naming a built-in that writes `~/.grok`: set it back to `auto`; for a
@@ -733,9 +737,17 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
 - **Exit 2 "the worktree's .conductor cannot hold the task"** (a re-dispatch): the earlier
   executor made `.conductor` a symlink or put one in it. Nothing was written; inspect the
   worktree, then dispatch the task afresh under a new id.
-- **Exit 1 from `cx-wsl grok`**: a grok call without `--sandbox strict` (every `--sandbox` it
-  names) or without an absolute `--cwd` directory. Use the commit-message lines of Step 2
-  verbatim.
+- **Exit 1 from `cx-wsl grok`**: a grok call without `--sandbox cx-strict` (every `--sandbox` it
+  names; plain `strict` cannot read the resolver file on WSL) or without an absolute `--cwd`
+  directory. Use the commit-message lines of Step 2 verbatim. Exit 2 from it: `cx-strict` could
+  not be written into `~/.grok/sandbox.toml`, or its check refused it (the note says why, as
+  for the lane below).
+- **grok "could not reach its API" or "could not resolve its API's host name"** (exit 2, or 12
+  when the timeout ended it): grok made no model call (grok retries on its own for about 28
+  minutes first). Run `cx-doctor`: D17's resolver lines name the files grok must read under its
+  sandbox profile (on WSL `/etc/resolv.conf` links to `/mnt/wsl/resolv.conf`) and any it cannot;
+  a profile written before 0.2.2 gains the directory on the repository's next grok run. Until
+  D17 is clean, use another lane; a network outage looks the same.
 - **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
   checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing

@@ -42,7 +42,9 @@ Subcommands (DESIGN section 4.4 plus helpers used by cx-doctor and cx-init):
   init-apply ...               bundle writer (section 9.2); exit 0 or 5
   user-grants ...              cx-init --user-grants (section 15.7): the repository's grok
                                sandbox profile (and a note on agy's 0.2.0 global grants); exit 0 or 5
-  grok-profile ...             the repository's grok sandbox profile, under a lock (section 15.7)
+  grok-profile ...             the repository's grok sandbox profile, or conductor's cx-strict
+                               (--strict), with the resolver directories, under a lock (section 15.7)
+  grok-resolver ...            D17's resolver and TLS records (section 8.3)
   agy-grants FILE              the global write_file/command grants of agy's settings (D18 info)
   pools-mtd --file F [--set N] reads or writes the month-to-date record (section 8.4)
 """
@@ -428,32 +430,13 @@ def grok_sandbox_events(path, start, end, workspace):
     WORKSPACE (as given or resolved) and whose "enforced" is a boolean, in log order, each as
     {"profile", "platform", "enforced", "read_write_paths"} (the strings of its list, None when
     the event has none). Neither the read-only nor the strict-based events list grok's
-    write-denied protected set (config.toml, sandbox.toml, hooks/, ...): only the grants."""
-    import stat
-    if not path or not workspace or end is None or end <= 0:
+    write-denied protected set (config.toml, sandbox.toml, hooks/, ...): only the grants.
+    read_only_paths is kept too (the strings of its list, None when the event has none)."""
+    if not path or not workspace:
         return []
-    start = start if isinstance(start, int) and 0 <= start <= end else 0
-    if end <= start:
+    data = read_appended(path, start, end, GROK_EVENTS_MAX)
+    if not data:
         return []
-    try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    except OSError:
-        return []
-    data = b""
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return []
-        os.lseek(fd, start, os.SEEK_SET)
-        n = min(end - start, GROK_EVENTS_MAX)
-        while len(data) < n:
-            chunk = os.read(fd, n - len(data))
-            if not chunk:
-                break
-            data += chunk
-    except OSError:
-        return []
-    finally:
-        os.close(fd)
     want = {os.path.abspath(workspace), os.path.realpath(workspace)}
     found = []
     for line in data.decode("utf-8", "replace").split("\n"):
@@ -474,9 +457,44 @@ def grok_sandbox_events(path, start, end, workspace):
             continue
         rw = ev.get("read_write_paths")
         rw = [x for x in rw if isinstance(x, str)] if isinstance(rw, list) else None
+        ro = ev.get("read_only_paths")
+        ro = [x for x in ro if isinstance(x, str)] if isinstance(ro, list) else None
         found.append({"profile": sanitize(ev.get("profile") or "?", 80), "platform": sanitize(ev.get("platform") or "unknown", 80),
-                      "enforced": enf, "read_write_paths": rw})
+                      "enforced": enf, "read_write_paths": rw, "read_only_paths": ro})
     return found
+
+
+def read_appended(path, start, end, cap, tail=False):
+    """Bytes [START, END) of PATH, what a CLI appended while one call ran ([0, END) when the file
+    shrank meanwhile; at most CAP bytes: the first ones, or with TAIL the last ones), never when
+    PATH itself is a symlink (O_NOFOLLOW: its last path component only) or no regular file, and
+    never blocking on a FIFO; b"" otherwise."""
+    import stat
+    if not path or end is None or not isinstance(end, int) or end <= 0:
+        return b""
+    start = start if isinstance(start, int) and 0 <= start <= end else 0
+    if end <= start:
+        return b""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return b""
+    data = b""
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return b""
+        n = min(end - start, cap)
+        os.lseek(fd, end - n if tail else start, os.SEEK_SET)
+        while len(data) < n:
+            chunk = os.read(fd, n - len(data))
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        return b""
+    finally:
+        os.close(fd)
+    return data
 
 
 def grok_sandbox_event(path, start, end, workspace):
@@ -520,6 +538,179 @@ def grok_home_write(paths, grok_home):
             if any(_path_under(h, x) or _path_under(x, h) for x in (pa, pr)):
                 return p
     return None
+
+
+# --------------------------------------------------------------------------- grok's resolver reads
+
+# strict's read set as grok 1.0.70 applies it (every strict-based ProfileApplied event of
+# tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl): these system directories, the working
+# directory and grok's home, with a profile's read_only entries added to the list. Measured
+# 2026-11-06 with a Landlock child holding the same read list: on WSL /etc/resolv.conf links to
+# /mnt/wsl/resolv.conf, which the list cannot read (EACCES), so getaddrinfo failed; with /mnt/wsl
+# added it resolved. A grok run under such a profile retried its API for 28 minutes, then failed.
+GROK_STRICT_READ = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/dev", "/proc", "/sys", "/tmp", "/run", "/var")
+# The files grok's name lookups (glibc's resolver configuration) and TLS (the usual CA bundles)
+# read on Linux, each with what it is for: dns (no name resolves without it), lookup, tls.
+# SSL_CERT_FILE and each SSL_CERT_DIR entry (colon-separated) join them when set.
+GROK_RESOLVER_FILES = (("/etc/resolv.conf", "dns"), ("/etc/hosts", "lookup"), ("/etc/nsswitch.conf", "lookup"),
+                       ("/etc/host.conf", "lookup"), ("/etc/gai.conf", "lookup"),
+                       ("/etc/ssl/certs/ca-certificates.crt", "tls"), ("/etc/ssl/cert.pem", "tls"),
+                       ("/etc/pki/tls/certs/ca-bundle.crt", "tls"))
+# conductor's own strict-based profile for grok calls outside a repository's profile (the
+# skill's commit-message call through cx-wsl, a grok lane run outside a git checkout): strict
+# plus the resolver directories only.
+GROK_STRICT_PROFILE = "cx-strict"
+GROK_RESOLVER_EFFECT = {"dns": "cannot resolve any host name", "lookup": "cannot read it for name lookups",
+                        "tls": "may not verify TLS certificates"}
+
+
+def root_realpath(root, path, limit=40):
+    """PATH (absolute, as this host names it) resolved as the kernel would with ROOT as / (ROOT ""
+    is the real /; the suite's CX_DETECT_ROOT a test tree, which prefixes every file detect.sh
+    reads): every symlink followed, an absolute target from ROOT again; a missing component and
+    what follows are kept as given, as os.path.realpath does. Returns the resolved path as the
+    host names it (without ROOT), or None for a link loop."""
+    import stat
+    root = (root or "").rstrip("/")
+    todo = [p for p in path.split("/") if p not in ("", ".")]
+    done = []
+    links = 0
+    while todo:
+        c = todo.pop(0)
+        if c == "..":
+            if done:
+                done.pop()
+            continue
+        cand = done + [c]
+        full = root + "/" + "/".join(cand)
+        try:
+            st = os.lstat(full)
+        except OSError:
+            done = cand
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            links += 1
+            if links > limit:
+                return None
+            try:
+                t = os.readlink(full)
+            except OSError:
+                return None
+            if t.startswith("/"):
+                done = []
+            todo = [p for p in t.split("/") if p not in ("", ".")] + todo
+            continue
+        done = cand
+    return "/" + "/".join(done)
+
+
+def grok_resolver_targets(root, env):
+    """The resolver and TLS files of this host that exist (a dangling link counts, with exists
+    False): GROK_RESOLVER_FILES, then SSL_CERT_FILE and each SSL_CERT_DIR entry of ENV (absolute
+    ones only), each as {"path", "kind" (dns, lookup, tls), "real" (resolved under ROOT, as the
+    host names it; None for a link loop), "exists", "dir"}. Every file is read under ROOT
+    (CX_DETECT_ROOT, empty in production)."""
+    root = (root or "").rstrip("/")
+    items = list(GROK_RESOLVER_FILES)
+    v = env.get("SSL_CERT_FILE") or ""
+    if v.startswith("/"):
+        items.append((v, "tls"))
+    for d in (env.get("SSL_CERT_DIR") or "").split(":"):
+        if d.startswith("/"):
+            items.append((d, "tls"))
+    res, seen = [], set()
+    for path, kind in items:
+        p = "/" + os.path.normpath(path).lstrip("/")
+        if p in seen or not os.path.lexists(root + p):
+            continue
+        seen.add(p)
+        real = root_realpath(root, p)
+        ok = real is not None and os.path.exists(root + real)
+        res.append({"path": p, "kind": kind, "real": real, "exists": ok, "dir": ok and os.path.isdir(root + real)})
+    return res
+
+
+def _path_forms(root, p):
+    """P as given (normalized) and resolved under ROOT: the two forms every comparison uses."""
+    if not p or not p.startswith("/"):
+        return []
+    forms = ["/" + os.path.normpath(p).lstrip("/")]
+    r = root_realpath(root, p)
+    if r and r not in forms:
+        forms.append(r)
+    return forms
+
+
+def grok_reads(root, path, bases):
+    """True when PATH (resolved, as the host names it) lies inside one of BASES (each as given and
+    resolved under ROOT)."""
+    return any(_path_under(path, f) for b in bases for f in _path_forms(root, b))
+
+
+def _grant_refusal(root, d, guards, cx_home):
+    """Why directory D may not become a read grant, else None: it is /, no directory, is or
+    contains a GUARDS path ((label, path) pairs: the home directory, grok's home, the conductor's
+    home, a checkout), or lies inside the conductor's home (other runs' tasks and diffs, the
+    Copilot token file)."""
+    if d == "/":
+        return "it is /"
+    if not os.path.isdir((root or "").rstrip("/") + d):
+        return "it is not a directory"
+    for label, p in guards:
+        for f in _path_forms(root, p):
+            if _path_under(f, d):
+                return "it %s %s %s" % ("is" if f == d else "contains", label, p)
+    for f in _path_forms(root, cx_home):
+        if _path_under(d, f):
+            return "it lies inside the conductor's home %s (other runs' tasks and diffs, the Copilot token file)" % cx_home
+    return None
+
+
+def grok_resolver_plan(root, env, home, grok_home, cx_home, protect=()):
+    """What every conductor grok profile adds for grok's resolver and TLS files (DESIGN section
+    15.7): {"platform", "targets", "dirs", "skipped"}. A target whose resolved path lies outside
+    strict's read set (GROK_STRICT_READ and grok's home) gets the directory that holds it (the
+    directory itself for an SSL_CERT_DIR entry) into "dirs" (sorted, unique), unless that
+    directory is /, is or contains HOME, GROK_HOME, CX_HOME or a PROTECT path ((label, path)
+    pairs: the run's checkout, the repository and its git directory), or lies inside CX_HOME:
+    those go to "skipped", with the reason. Linux only (grok's Landlock sandbox, where that read
+    set was measured); elsewhere nothing is added."""
+    plan = {"platform": sys.platform, "targets": [], "dirs": [], "skipped": []}
+    if not sys.platform.startswith("linux"):
+        return plan
+    guards = [("your home directory", home), ("grok's home", grok_home), ("the conductor's home", cx_home)] + list(protect)
+    for t in grok_resolver_targets(root, env):
+        t["inside"] = bool(t["exists"] and grok_reads(root, t["real"], GROK_STRICT_READ + (grok_home,)))
+        t["grant"] = t["skip"] = None
+        plan["targets"].append(t)
+        if not t["exists"] or t["inside"]:
+            continue
+        d = t["real"] if t["dir"] else os.path.dirname(t["real"])
+        why = _grant_refusal(root, d, guards, cx_home)
+        if why:
+            t["skip"] = why
+            plan["skipped"].append({"dir": d, "why": why, "path": t["path"], "real": t["real"], "kind": t["kind"]})
+        else:
+            t["grant"] = d
+            if d not in plan["dirs"]:
+                plan["dirs"].append(d)
+    plan["dirs"].sort()
+    return plan
+
+
+def grok_resolver_unreadable(root, env, grants):
+    """The resolver and TLS targets (grok_resolver_targets) whose resolved path lies under none of
+    GRANTS (a ProfileApplied event's read_only_paths and read_write_paths): what grok cannot read
+    under that profile. Linux only."""
+    if not sys.platform.startswith("linux"):
+        return []
+    return [t for t in grok_resolver_targets(root, env) if t["exists"] and not grok_reads(root, t["real"], grants)]
+
+
+def _target_text(t):
+    if t["real"] is None:
+        return "%s (a link loop)" % t["path"]
+    return t["path"] if t["real"] == t["path"] else "%s -> %s" % (t["path"], t["real"])
 
 
 def cmd_grok_sandbox_event(a):
@@ -1261,7 +1452,7 @@ def cmd_doctor_siblings(a):
         if "Task(%s)" % agent in deny or "Agent(%s)" % agent in deny:
             lines.append(rec_line("ok", "D24", sec, "subagent %s is denied" % agent))
         else:
-            lines.append(rec_line("warn", "D24", sec, "subagent %s is not denied (Task(...) rule syntax unverified on 2.1.316)" % agent,
+            lines.append(rec_line("warn", "D24", sec, "subagent %s is not denied (the Task(...) rule syntax is unverified)" % agent,
                                   "add to permissions.deny in %s: %s" % (os.path.join(a.config_dir, "settings.json"),
                                                                         json.dumps({"permissions": {"deny": ["Task(%s)" % agent]}}))))
     if P[AGY_ID]["installed"] or P[GROKB_ID]["installed"]:
@@ -1292,7 +1483,7 @@ def cmd_doctor_siblings(a):
             lines.append(rec_line("info", "D25", sec, "%d autonomy allow rule(s) missing in %s (%s); without them Claude Code prompts before each delegation (U2):"
                                   % (len(missing), where, sfile)))
             lines.append(rec_line("info", "D25", sec, json.dumps({"permissions": {"allow": missing}})))
-            lines.append(rec_line("info", "D25", sec, "the rules match the skill's commands as written (prefixes and $VAR text included); how 2.1.316 matches env -u prefixes and multi-line steps is unverified; the doctor never writes settings"))
+            lines.append(rec_line("info", "D25", sec, "the rules match the skill's commands as written (prefixes and $VAR text included); how Claude Code matches env -u prefixes and multi-line steps is unverified; the doctor never writes settings"))
         else:
             lines.append(rec_line("ok", "D25", sec, "autonomy allow rules present in %s" % where))
         if "Bash(cx-wsl:*)" in allow:
@@ -2366,13 +2557,41 @@ def _toml_str_list(items):
     return "[" + ", ".join(json.dumps(i, ensure_ascii=True) for i in items) + "]"
 
 
-def grok_profile_block(template, name, gcd, routes_root):
-    repo = os.path.dirname(gcd.rstrip("/")) if os.path.basename(gcd.rstrip("/")) == ".git" else gcd
-    body = template.replace("{{name}}", name).replace("{{repo}}", sanitize(repo, 300)).replace(
-        "{{read_only}}", _toml_str_list([gcd, routes_root]))
+def grok_repo_of(gcd):
+    """The main checkout of git common directory GCD (its parent when it is a .git directory)."""
+    return os.path.dirname(gcd.rstrip("/")) if os.path.basename(gcd.rstrip("/")) == ".git" else gcd
+
+
+def grok_profile_block(template, name, gcd, routes_root, extra=()):
+    """The repository's profile: read_only the git common directory, the routes directory and
+    EXTRA (the resolver directories of grok_resolver_plan)."""
+    ro = [gcd, routes_root] + [d for d in extra if d not in (gcd, routes_root)]
+    body = template.replace("{{name}}", name).replace("{{repo}}", sanitize(grok_repo_of(gcd), 300)).replace(
+        "{{read_only}}", _toml_str_list(ro))
     if not body.endswith("\n"):
         body += "\n"
     return "# cx:begin %s\n%s# cx:end %s\n" % (name, body, name)
+
+
+# cx-strict's text (no template file: it names no repository).
+GROK_STRICT_TEXT = """# conductor: grok's built-in strict profile plus read-only access to the directories outside
+# strict's read set that hold this host's resolver and TLS files (on WSL /etc/resolv.conf links to
+# /mnt/wsl/resolv.conf, which strict cannot read, so grok could not resolve any host name; cx-doctor
+# D17 lists them; none on most hosts). cx-wsl runs the skill's grok calls under it (commit messages,
+# PR text) and the grok lane runs under it outside a git checkout; both rewrite the lines between
+# cx:begin and cx:end when they differ, and any other [profiles.{{name}}] in this file is replaced
+# (the name is conductor's own), so put your own profiles under other names
+# (docs/DESIGN.md section 15.7).
+[profiles.{{name}}]
+extends = "strict"
+read_only = {{read_only}}
+"""
+
+
+def grok_strict_block(dirs):
+    """conductor's cx-strict profile: strict plus read_only DIRS (the resolver directories)."""
+    body = GROK_STRICT_TEXT.replace("{{name}}", GROK_STRICT_PROFILE).replace("{{read_only}}", _toml_str_list(list(dirs)))
+    return "# cx:begin %s\n%s# cx:end %s\n" % (GROK_STRICT_PROFILE, body, GROK_STRICT_PROFILE)
 
 
 def _toml_ok(text):
@@ -2411,11 +2630,12 @@ def _grok_unmarked_re(name):
                       r"(?:(?![ \t]*\[|# cx:(?:begin|end) )[^\n]*(?:\n|\Z))*" % (n, n, n), re.M)
 
 
-def grok_profile_plan(path, template, name, gcd, routes_root):
-    """(action, new_text, notes) for the repository's profile in sandbox.toml PATH: create,
-    update, same or conflict (the result would not parse, or would not hold exactly the
-    rendered profile). Every conductor grok run (write, read and review, and the skill's
-    commit-message call under the built-in strict) runs under a strict-based profile, and under
+def grok_profile_plan(path, name, block):
+    """(action, new_text, notes) for profile NAME, rendered as BLOCK (grok_profile_block, the
+    repository's; grok_strict_block, cx-strict), in sandbox.toml PATH: create, update, same or
+    conflict (the result would not parse, or would not hold exactly the rendered profile). Every
+    conductor grok run (write, read and review, and the skill's commit-message call under
+    cx-strict) runs under a strict-based profile, and under
     strict grok write-denies ~/.grok itself and sandbox.toml (measured on 1.0.70,
     tests/fixtures/real/grok/write-probe-strict-1.0.70.txt), so no conductor grok run can change
     this file. Under the built-in read-only an append-open of its protected set (config.toml,
@@ -2425,7 +2645,8 @@ def grok_profile_plan(path, template, name, gcd, routes_root):
     path's parents). What can change it: your own grok sessions without a sandbox (grok's
     default) or with devbox, other tools, and code planted earlier where 0.2.1's read-only runs
     could write (grok's binary in ~/.grok/bin, its ripgrep in ~/.grok/vendor,
-    ~/.grok/installed-plugins, auth.json), which runs outside any sandbox. The name cx-<repo>-<hash> is conductor's own (no person writes it), so every
+    ~/.grok/installed-plugins, auth.json), which runs outside any sandbox. The names cx-<repo>-<hash>
+    and cx-strict are conductor's own (no person writes them), so every
     definition of NAME is replaced by the rendered block, between the cx:begin/cx:end lines or
     not (markers something stripped never make a widened profile "the user's")."""
     notes = []
@@ -2435,7 +2656,6 @@ def grok_profile_plan(path, template, name, gcd, routes_root):
     if GROK_OLD_BLOCK in new:
         new = new.replace("\n\n" + GROK_OLD_BLOCK, "\n").replace("\n" + GROK_OLD_BLOCK, "\n").replace(GROK_OLD_BLOCK, "")
         notes.append("removed the 0.2.0 cx-workspace profile from %s (its deny globs are not valid grok paths)" % path)
-    block = grok_profile_block(template, name, gcd, routes_root)
     hole = "\0cx-profile\0"
     marked = re.compile(r"(?ms)^# cx:begin %s\n.*?^# cx:end %s(?:\n|\Z)" % (re.escape(name), re.escape(name)))
     m = marked.search(new)
@@ -2479,17 +2699,57 @@ def _write_user_file(path, data, existed):
     atomic_write(tgt, data, mode)
 
 
+def grok_plan_notes(plan, act):
+    """The notes a profile write prints about the resolver directories (cx-doctor D17)."""
+    notes = []
+    if plan["dirs"] and act in ("create", "update"):
+        notes.append("read_only adds %s: grok's resolver and TLS files there lie outside strict's read set (cx-doctor D17)"
+                     % ", ".join(plan["dirs"]))
+    for s in plan["skipped"]:
+        notes.append("not granted: %s (%s), for %s, outside strict's read set: grok %s under this profile (cx-doctor D17)"
+                     % (s["dir"], s["why"], _target_text(s), GROK_RESOLVER_EFFECT.get(s["kind"], "cannot read it")))
+    return notes
+
+
+def grok_plan_for(a, gcd):
+    """grok_resolver_plan from grok-profile's / user-grants' options (each defaults to the
+    environment: HOME, GROK_HOME, CX_HOME, CX_DETECT_ROOT, SSL_CERT_FILE, SSL_CERT_DIR)."""
+    home = a.home or os.environ.get("HOME", "")
+    grok_home = a.grok_home or os.environ.get("GROK_HOME") or os.path.join(home, ".grok")
+    cx_home = getattr(a, "cx_home", "") or os.environ.get("CX_HOME") or os.path.join(home, ".conductor")
+    root = a.resolver_root if a.resolver_root is not None else os.environ.get("CX_DETECT_ROOT", "")
+    protect = []
+    if getattr(a, "workspace", ""):
+        protect.append(("the run's checkout", a.workspace))
+    if gcd:
+        protect += [("the repository", grok_repo_of(gcd)), ("the repository's git directory", gcd)]
+    return grok_resolver_plan(root, os.environ, home, grok_home, cx_home, protect)
+
+
 def cmd_grok_profile(a):
-    """grok-profile --gcd D --name-only | --sandbox F --template T --routes-root R [--lock L]
-    [--dry-run]: the repository's sandbox profile (DESIGN section 15.7), written idempotently
-    under the lock; prints "<action> <name>" (and notes); exit 0, 5 conflict, 2 error."""
-    gcd = os.path.realpath(a.gcd)
-    name = grok_profile_name(gcd)
-    if a.name_only:
-        out(name + "\n")
-        return 0
-    if not (a.sandbox and a.template and a.routes_root):
-        err("cxlib: grok-profile needs --sandbox, --template and --routes-root\n")
+    """grok-profile --gcd D --name-only | (--gcd D --template T --routes-root R | --strict)
+    --sandbox F [--lock L] [--dry-run] [--workspace W] [--home H] [--grok-home G] [--cx-home C]
+    [--resolver-root R]: the repository's sandbox profile, or with --strict conductor's
+    cx-strict (DESIGN section 15.7), each with the resolver directories grok_resolver_plan finds
+    (W, the run's checkout, is never granted), written idempotently under the lock; prints
+    "<action> <name>" (and notes); exit 0, 5 conflict, 2 error."""
+    gcd = None
+    if a.strict:
+        name = GROK_STRICT_PROFILE
+    else:
+        if not a.gcd:
+            err("cxlib: grok-profile needs --gcd or --strict\n")
+            return 2
+        gcd = os.path.realpath(a.gcd)
+        name = grok_profile_name(gcd)
+        if a.name_only:
+            out(name + "\n")
+            return 0
+        if not (a.template and a.routes_root):
+            err("cxlib: grok-profile needs --template and --routes-root\n")
+            return 2
+    if not a.sandbox:
+        err("cxlib: grok-profile needs --sandbox\n")
         return 2
     lk = None
     try:
@@ -2498,9 +2758,15 @@ def cmd_grok_profile(a):
             os.makedirs(os.path.dirname(os.path.abspath(a.lock)), exist_ok=True)
             lk = open(a.lock, "a")
             fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
-        act, new, notes = grok_profile_plan(a.sandbox, read_text(a.template), name, gcd, a.routes_root)
+        plan = grok_plan_for(a, gcd)
+        if gcd:
+            block = grok_profile_block(read_text(a.template), name, gcd, a.routes_root, plan["dirs"])
+        else:
+            block = grok_strict_block(plan["dirs"])
+        act, new, notes = grok_profile_plan(a.sandbox, name, block)
         if act in ("create", "update") and not a.dry_run:
             _write_user_file(a.sandbox, new, os.path.exists(_ug_target(a.sandbox)))
+        notes += grok_plan_notes(plan, act)
     except OSError as e:
         err("cxlib: grok-profile: %s\n" % e)
         return 2
@@ -2509,6 +2775,109 @@ def cmd_grok_profile(a):
             lk.close()
     out("%s %s%s\n" % (act, name, "".join("; " + sanitize(n, 300) for n in notes)))
     return 5 if act == "conflict" else 0
+
+
+def _sandbox_profiles(path):
+    """{name: read paths (read_only plus read_write; None when unknown)} of the profiles conductor
+    marked (# cx:begin NAME) in sandbox.toml PATH: tomllib when it parses the file, else the
+    block's own read_only line (written by _toml_str_list)."""
+    try:
+        text = read_text(_ug_target(path))
+    except OSError:
+        return {}
+    names = re.findall(r"(?m)^# cx:begin (cx-[A-Za-z0-9._-]+)$", text)
+    res = {}
+    for n in names:
+        parsed, prof = _toml_profile(text, n)
+        if parsed is True and isinstance(prof, dict):
+            paths = []
+            for k in ("read_only", "read_write"):
+                v = prof.get(k)
+                paths += [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+            res[n] = paths
+            continue
+        m = re.search(r"(?ms)^# cx:begin %s\n(.*?)^# cx:end %s$" % (re.escape(n), re.escape(n)), text)
+        ro = re.search(r"(?m)^read_only = (\[.*\])$", m.group(1)) if m else None
+        try:
+            v = json.loads(ro.group(1)) if ro else None
+        except ValueError:
+            v = None
+        res[n] = [x for x in v if isinstance(x, str)] if isinstance(v, list) else None
+    return res
+
+
+def cmd_grok_resolver(a):
+    """grok-resolver --section S [--home H] [--grok-home G] [--cx-home C] [--resolver-root R]
+    [--sandbox F] [--profile P]: D17's resolver records (DESIGN section 8.3): the resolver and TLS
+    targets, the directories conductor's grok profiles add for those outside strict's read set,
+    the ones it cannot grant (! grok cannot resolve names under any conductor profile), the
+    conductor profiles in F whose read paths lack one of those directories (! fixed by the
+    profile's next write), and option grok_sandbox_profile P naming strict or a profile of the
+    user's own that lacks one. Linux only (nothing elsewhere)."""
+    plan = grok_plan_for(a, None)
+    if not plan["platform"].startswith("linux"):
+        return 0
+    root = a.resolver_root if a.resolver_root is not None else os.environ.get("CX_DETECT_ROOT", "")
+    sec, lines = a.section, []
+    tg = plan["targets"]
+    outside = [t for t in tg if t["exists"] and not t["inside"]]
+    if tg:
+        lines.append(rec_line("info", "D17", sec, "grok's resolver and TLS files: %s (%s outside strict's read set: the "
+                              "system directories %s, the working directory and grok's home)" % (
+                                  ", ".join(_target_text(t) + ("" if t["exists"] else " (missing)") for t in tg),
+                                  "%d" % len(outside) if outside else "none", " ".join(GROK_STRICT_READ))))
+    granted = [t for t in outside if t["grant"]]
+    if plan["dirs"]:
+        lines.append(rec_line("ok", "D17", sec, "conductor's grok profiles (each repository's cx-<repo>-<hash> and cx-strict) "
+                              "add read_only %s for %s: grok can read them there" % (
+                                  ", ".join(plan["dirs"]), ", ".join(_target_text(t) for t in granted))))
+    elif tg and not outside:
+        lines.append(rec_line("ok", "D17", sec, "grok's resolver and TLS files lie inside strict's read set: no profile needs more"))
+    for s in plan["skipped"]:
+        t = {"path": s["path"], "real": s["real"]}
+        if s["kind"] == "dns":
+            text = "grok cannot resolve any host name under any conductor profile: %s, outside strict's read set, and its directory %s cannot be granted (%s)"
+            fix = "make %s resolve to a file outside your home directory, ~/.grok, ~/.conductor and your checkouts (on WSL its default link to /mnt/wsl/resolv.conf works)" % s["path"]
+        elif s["kind"] == "tls":
+            text = "grok may not verify TLS certificates under any conductor profile: %s, outside strict's read set, and its directory %s cannot be granted (%s)"
+            fix = "keep the CA bundle (SSL_CERT_FILE, SSL_CERT_DIR) outside your home directory, ~/.grok, ~/.conductor and your checkouts"
+        else:
+            text = "grok cannot read %s under any conductor profile (outside strict's read set; its directory %s cannot be granted: %s), so its name lookups may differ from the host's"
+            fix = ""
+        lines.append(rec_line("warn", "D17", sec, text % (_target_text(t), s["dir"], s["why"]), fix))
+    for t in tg:
+        if not t["exists"]:
+            lines.append(rec_line("warn" if t["kind"] == "dns" else "info", "D17", sec, "%s points at %s, which does not exist%s" % (
+                t["path"], t["real"] or "a link loop", ": no host name resolves here" if t["kind"] == "dns" else "")))
+    if a.sandbox and plan["dirs"] and os.path.exists(a.sandbox):
+        for name, paths in sorted(_sandbox_profiles(a.sandbox).items()):
+            lack = [d for d in plan["dirs"] if paths is None or not grok_reads(root, d, paths)]
+            if not lack:
+                continue
+            who = ("the next cx-wsl grok call (the skill's commit-message step) rewrites it" if name == GROK_STRICT_PROFILE else
+                   "that repository's next grok run rewrites it (cx-run does before every grok run; cx-init --user-grants in it does now)")
+            lines.append(rec_line("warn", "D17", sec, "%s: conductor's profile %s lacks read_only %s (grok's resolver and TLS files "
+                                  "there): grok runs under it cannot read them until %s" % (a.sandbox, name, ", ".join(lack), who)))
+    prof = (a.profile or "auto").strip()
+    if plan["dirs"] and prof not in ("", "auto", "cx-workspace") and prof not in ("off", "devbox", "workspace", "read-only"):
+        if prof == "strict":
+            lines.append(rec_line("warn", "D17", sec, "option grok_sandbox_profile names grok's built-in strict, which cannot read %s "
+                                  "(grok's resolver and TLS files there)" % ", ".join(plan["dirs"]),
+                                  "set grok_sandbox_profile back to auto (conductor's profiles add them)"))
+        else:
+            parsed, p = _toml_profile(read_text(_ug_target(a.sandbox)), prof) if a.sandbox and os.path.exists(a.sandbox) else (None, None)
+            paths = []
+            for k in ("read_only", "read_write"):
+                v = p.get(k) if isinstance(p, dict) else None
+                paths += [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+            lack = [d for d in plan["dirs"] if not grok_reads(root, d, paths)]
+            if lack:
+                lines.append(rec_line("warn", "D17", sec, "option grok_sandbox_profile names your own profile %s, to which conductor "
+                                      "adds nothing: its read_only%s lacks %s (grok's resolver and TLS files there)" % (
+                                          prof, "" if parsed else " (unread: no tomllib, or it does not parse)", ", ".join(lack)),
+                                      "add %s to its read_only, or set grok_sandbox_profile back to auto" % ", ".join(lack)))
+    out("".join(lines))
+    return 0
 
 
 def agy_global_grants(path):
@@ -2568,16 +2937,21 @@ def cmd_user_grants(a):
     tpl = read_text(a.template)
     if prof not in ("", "auto", "cx-workspace"):
         notes.append("option grok_sandbox_profile names your own profile %s: every conductor grok run (write, read and review) "
-                     "uses it as it is (it must let grok read the repository's git directory and %s, and must not let grok write "
+                     "uses it as it is (it must let grok read the repository's git directory, %s and the resolver directories "
+                     "cx-doctor D17 lists, and must not let grok write "
                      "its home ~/.grok, but ~/.grok/sessions: each run checks that and is refused otherwise); nothing written for "
                      "it" % (prof, a.routes_root or "~/.conductor/routes"))
     if a.gcd and prof in ("", "auto", "cx-workspace"):
         gcd = os.path.realpath(a.gcd)
-        act, new, n2 = grok_profile_plan(sf, tpl, grok_profile_name(gcd), gcd, a.routes_root)
-        notes.extend(n2)
+        a.home, a.grok_home = home, grok_home
+        plan = grok_plan_for(a, gcd)
+        act, new, n2 = grok_profile_plan(sf, grok_profile_name(gcd), grok_profile_block(tpl, grok_profile_name(gcd), gcd, a.routes_root, plan["dirs"]))
+        notes.extend(n2 + grok_plan_notes(plan, act))
         if act in ("create", "update"):
             writes.append((sf, new, os.path.exists(_ug_target(sf))))
-            results.append({"path": sf, "action": act, "reason": "profile %s (extends strict; read_only %s and %s)" % (grok_profile_name(gcd), gcd, a.routes_root)})
+            ro = [gcd, a.routes_root] + plan["dirs"]
+            results.append({"path": sf, "action": act, "reason": "profile %s (extends strict; read_only %s)" % (
+                grok_profile_name(gcd), ", ".join(ro[:-1]) + " and " + ro[-1])})
         elif act == "conflict":
             results.append({"path": sf, "action": "conflict", "reason": n2[-1] if n2 else "would not parse"})
         else:
@@ -2794,20 +3168,37 @@ def main(argv):
     s.add_argument("--template", required=True)
     s.add_argument("--gcd", default="", help="the repository's git common directory (its grok profile)")
     s.add_argument("--routes-root", default="", help="$CX_HOME/routes (read_only in the grok profile: each run's cx-route)")
+    s.add_argument("--cx-home", default="")
+    s.add_argument("--resolver-root", default=None, help="default $CX_DETECT_ROOT")
     s.add_argument("--repo", default="")
     s.add_argument("--cmd", action="append")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_user_grants)
     s = sub.add_parser("grok-profile")
-    s.add_argument("--gcd", required=True)
+    s.add_argument("--gcd", default="")
+    s.add_argument("--strict", action="store_true", help="conductor's cx-strict profile instead of the repository's")
     s.add_argument("--name-only", action="store_true")
     s.add_argument("--sandbox", default="")
     s.add_argument("--template", default="")
     s.add_argument("--routes-root", default="")
     s.add_argument("--lock", default="")
     s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--workspace", default="", help="the run's checkout (never granted)")
+    s.add_argument("--home", default="")
+    s.add_argument("--grok-home", default="")
+    s.add_argument("--cx-home", default="")
+    s.add_argument("--resolver-root", default=None, help="default $CX_DETECT_ROOT (a test tree; empty in production)")
     s.set_defaults(fn=cmd_grok_profile)
+    s = sub.add_parser("grok-resolver")
+    s.add_argument("--section", required=True)
+    s.add_argument("--home", default="")
+    s.add_argument("--grok-home", default="")
+    s.add_argument("--cx-home", default="")
+    s.add_argument("--resolver-root", default=None, help="default $CX_DETECT_ROOT")
+    s.add_argument("--sandbox", default="")
+    s.add_argument("--profile", default="auto", help="option grok_sandbox_profile")
+    s.set_defaults(fn=cmd_grok_resolver)
     s = sub.add_parser("agy-grants")
     s.add_argument("file")
     s.set_defaults(fn=cmd_agy_grants)

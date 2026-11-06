@@ -99,11 +99,13 @@ cx-run --finish t4 --pr 42                                             # ... who
 
 Every conductor grok run (write, read and review) runs under its repository's own sandbox
 profile `cx-<repo>-<hash>` in `~/.grok/sandbox.toml` (extends grok's `strict`; read-only access
-to the repository's git directory and `~/.conductor/routes`, never the out directories), which
-the first grok run of a repository writes; option `grok_sandbox_profile` can name a profile of
-your own instead, used for every mode. The skill's commit-message call uses the built-in
-`strict` in a directory that holds only its prompt (`cx-wsl` refuses a grok run without
-`--sandbox strict` or an absolute `--cwd`, and runs grok from that directory). Measured on grok
+to the repository's git directory, `~/.conductor/routes` and this host's resolver directories,
+below; never the out directories), which the first grok run of a repository writes; option
+`grok_sandbox_profile` can name a profile of your own instead, used for every mode. The skill's
+commit-message call uses conductor's `cx-strict` (`strict` plus the resolver directories only)
+in a directory that holds only its prompt (`cx-wsl` refuses a grok run without `--sandbox
+cx-strict` or an absolute `--cwd`, writes and checks `cx-strict` first, and runs grok from that
+directory). Measured on grok
 1.0.70: `strict` grants write to its working directory, `~/.grok/sessions`, `/tmp` and
 `/var/tmp` only (grok's sandbox log, `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`),
 and inside `~/.grok` it write-denies everything but `sessions/` (the write probe,
@@ -135,6 +137,27 @@ run can write `/tmp` and `/var/tmp`, so the conductor keeps its scratch files in
 will run or re-read belongs in `/tmp` while grok runs go on. Every grok run approves every tool inside its sandbox,
 so its preflight also checks that grok can apply one here (`grok --sandbox strict models`, free;
 on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17).
+
+grok's name lookups and TLS under those profiles (measured on WSL, grok 1.0.70): `strict` reads
+only its system directories (`/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/dev`, `/proc`,
+`/sys`, `/tmp`, `/run`, `/var`), the working directory and `~/.grok`, and the sandbox checks a
+file's resolved path. On WSL `/etc/resolv.conf` links to `/mnt/wsl/resolv.conf`, so under plain
+`strict` grok resolved no host name: a write run retried its API for 28 minutes, then failed
+(`error sending request for url`, no model call), while every `cx-doctor` check passed. Every
+conductor profile therefore adds, read-only, the directory of each resolver and TLS file
+(`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf`, the
+usual CA bundles, `SSL_CERT_FILE`, `SSL_CERT_DIR`) whose resolved path lies outside that list:
+`/mnt/wsl` on WSL (a directory WSL shares between distributions), nothing on most other hosts.
+It never grants `/`, a directory that is or contains your home, `~/.grok`, `~/.conductor` or a
+checkout, nor one inside `~/.conductor`; `cx-doctor` D17 lists the files, the grants and
+anything it could not grant (then grok cannot resolve names under any conductor profile: make
+`/etc/resolv.conf` resolve elsewhere), and warns about a profile in `sandbox.toml` written
+before this release (the repository's next grok run rewrites it). A grok run that fails this
+way says so: "grok could not reach its API (a connection or DNS failure; cx-doctor D17)", or
+"could not resolve its API's host name (DNS …)" when grok's own log (`~/.grok/logs/unified.jsonl`,
+the lines the run added) says so; the exit stays 2 (12 when the timeout ended grok's retries).
+That grok then works end to end on WSL is not yet measured. D17 retries a failed `grok models`
+login probe once, 2 s later, before it warns.
 `cx-init --user-grants` (optional, from inside the repository) writes the
 repository's profile ahead of time and removes the invalid `cx-workspace` profile 0.2.0 wrote,
 with a `.cx-bak` backup (`--dry-run` shows what it would change). agy needs no global grant any more: remove the `write_file(...)` and
@@ -226,7 +249,7 @@ Every option is a string; an empty value means the default.
 | `copilot_xhigh_ok` | `false` | Allow `--reasoning-effort xhigh` on Copilot Opus (`max` is never sent) |
 | `grok_bulk_model` | `grok-4.7` | Grok model for mechanical lanes |
 | `grok_bulk_effort` | `high` | Grok effort for mechanical lanes |
-| `grok_sandbox_profile` | `auto` | grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile (refused when its logged grants let grok write `~/.grok`); grok's built-ins that write `~/.grok` are refused, and `strict` cannot read a worktree's git directory or the routes (`cx-doctor` D17 warns) |
+| `grok_sandbox_profile` | `auto` | grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`, plus this host's resolver directories); `cx-workspace` counts as `auto`; any other name is your own profile (refused when its logged grants let grok write `~/.grok`); grok's built-ins that write `~/.grok` are refused, and `strict` cannot read a worktree's git directory or the routes (`cx-doctor` D17 warns) |
 | `review_model_gemini` | `Gemini 4 Argon (High)` | Gemini-family reviewer |
 | `review_model_gpt` | `gpt-6.1-sol` | GPT-family reviewer |
 | `cap_agy` / `cap_copilot` / `cap_grok` | `2` / `3` / `5` | Concurrency limits (throughput, not spend): pool slots shared by every session, thread and forwarded call on the computer (`~/.conductor/locks`); `0` turns a pool off |

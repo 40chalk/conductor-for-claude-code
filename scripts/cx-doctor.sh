@@ -1176,26 +1176,44 @@ d15_d19() {
   fi
   # D17 grok
   if [ -n "$B_grok" ]; then
-    probe grok-models 30 "${GROK_ENV[@]}" GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false \
-      GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false "$B_grok" models
-    rc=$?
-    cat "$T/grok-models.out" "$T/grok-models.err" > "$T/grok-models.all" 2>/dev/null
-    local n=0
-    if [ "$PY" = 1 ]; then
-      cx_py parse-models --cli grok "$T/grok-models.all" > "$T/grok-ids.json" 2>/dev/null && GROK_IDS="$T/grok-ids.json"
-      n="$(grep -o '"ids": \[[^]]*\]' "$T/grok-ids.json" 2>/dev/null | grep -o '"[^"]*"' | grep -vc '"ids"')"
-    fi
+    # grok models, retried once after 2 s when it neither listed models nor said "You are not
+    # authenticated", or said it (a one-off "not logged in" was seen once, 2026-11-06, and did not
+    # recur); never after a hang (the 30 s bound already ran out). The record says so.
+    local n=0 try first=""
+    for try in 1 2; do
+      probe grok-models 30 "${GROK_ENV[@]}" GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false \
+        GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false "$B_grok" models
+      rc=$?
+      cat "$T/grok-models.out" "$T/grok-models.err" > "$T/grok-models.all" 2>/dev/null
+      n=0 GROK_IDS=""
+      if [ "$PY" = 1 ]; then
+        cx_py parse-models --cli grok "$T/grok-models.all" > "$T/grok-ids.json" 2>/dev/null && GROK_IDS="$T/grok-ids.json"
+        n="$(grep -o '"ids": \[[^]]*\]' "$T/grok-ids.json" 2>/dev/null | grep -o '"[^"]*"' | grep -vc '"ids"')"
+      fi
+      if killed "$rc" || { [ "$rc" -eq 0 ] && [ "${n:-0}" -ge 1 ] && ! grep -q 'You are not authenticated' "$T/grok-models.all" 2>/dev/null; }; then
+        break
+      fi
+      [ "$try" = 2 ] && break
+      if grep -q 'You are not authenticated' "$T/grok-models.all" 2>/dev/null; then
+        first="the first grok models said You are not authenticated"
+      else
+        first="the first grok models (rc $rc) listed no models: $(first_line "$T/grok-models.all")"
+      fi
+      sleep 2
+    done
+    local again="${first:+; after one retry 2 s later: $first}" unauth=""
+    case "$first" in *"said You are not authenticated") unauth=" (grok models said so twice, 2 s apart)" ;; ?*) unauth="$again" ;; esac
     if killed "$rc"; then
-      chk warn D17 "$S_LOG" "grok models hung and was killed"
+      chk warn D17 "$S_LOG" "grok models hung and was killed$again"
       GROK_IDS=""
     elif grep -q 'You are not authenticated' "$T/grok-models.all" 2>/dev/null; then
       L_grok=false
-      logged_out grok D17 "grok is not logged in" "grok login --device-auth"
+      logged_out grok D17 "grok is not logged in$unauth" "grok login --device-auth"
     elif [ "$rc" -eq 0 ] && [ "${n:-0}" -ge 1 ]; then
       L_grok=true
-      chk ok D17 "$S_LOG" "grok is logged in ($n models listed)"
+      chk ok D17 "$S_LOG" "grok is logged in ($n models listed$again)"
     else
-      chk warn D17 "$S_LOG" "grok models (rc $rc): $(first_line "$T/grok-models.all")"
+      chk warn D17 "$S_LOG" "grok models (rc $rc): $(first_line "$T/grok-models.all")$again"
       [ "${n:-0}" -ge 1 ] || GROK_IDS=""
     fi
     # Every grok run approves every tool inside its sandbox, so the sandbox must apply here
@@ -1272,6 +1290,16 @@ d15_d19() {
       esac
       if [ -f "$sbx" ] && grep -q '^# conductor: the grok sandbox profile every conductor grok writer runs under' "$sbx" 2>/dev/null; then
         chk warn D17 "$S_LOG" "$sbx still holds the cx-workspace profile conductor 0.2.0 wrote (its deny globs are not valid grok paths)" "cx-init --user-grants (it removes exactly that block)"
+      fi
+      # grok's resolver and TLS files under conductor's strict-based profiles (cxlib.py
+      # grok-resolver, DESIGN section 15.7; Linux and WSL): on WSL /etc/resolv.conf links to
+      # /mnt/wsl/resolv.conf, outside strict's read set (measured: grok then resolved no host
+      # name and retried its API for 28 minutes). The free probes above make no API call, so only
+      # this static check sees it: the targets, the directories conductor's profiles add, the
+      # ones it cannot grant, and conductor profiles in sandbox.toml that still lack one.
+      if [ "$PY" = 1 ]; then
+        cx_py grok-resolver --section "$S_LOG" --home "$HOME" --grok-home "${GROK_HOME:-$HOME/.grok}" --cx-home "$CXH" \
+          --sandbox "$sbx" --profile "$prof" >> "${CHK_OUT:-$CHECKS}" 2>/dev/null
       fi
       # grok sandboxes its process with Landlock, and a profile with deny lists needs bubblewrap
       # on Linux (grok refuses to start without it, measured 2026-11-06).

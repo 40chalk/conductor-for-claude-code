@@ -29,7 +29,9 @@
 # --user-grants (DESIGN section 15.7) writes the user-level settings a repository's executor runs
 # need, idempotently: the grok sandbox profile of the repository at --dir (default: the current
 # directory, when it is one), cx-<repo>-<8 hex>, from templates/grok-sandbox.toml (extends
-# grok's strict profile; read_only the repository's git directory and ~/.conductor/routes), added
+# grok's strict profile; read_only the repository's git directory, ~/.conductor/routes and the
+# directories that hold this host's resolver and TLS files outside strict's read set, which
+# cx-doctor D17 lists: /mnt/wsl on WSL, none on most hosts), added
 # to ~/.grok/sandbox.toml or rewritten when it differs (cx-run's grok lane writes the same
 # profile on the repository's first grok run, so this is optional), and it removes the invalid
 # cx-workspace profile conductor 0.2.0 wrote there. agy needs no user-level grant (each raw agy

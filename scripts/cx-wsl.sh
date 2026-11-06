@@ -33,12 +33,23 @@
 # step on stdin (not a terminal), a CR before each LF is stripped, with a cx-wsl: note; the step
 # is buffered in $CX_HOME/tmp (0700), never in /tmp, which every strict-based grok run may write.
 #
-# grok runs (every form that takes a slot, below): only under grok's built-in strict profile and
-# with an absolute --cwd DIR (DESIGN section 12.2): every --sandbox must name strict (grok's other
-# built-ins write ~/.grok: off and devbox everywhere, workspace and read-only its own binary,
-# ripgrep and plugins, measured on 1.0.70; no --sandbox means no sandbox at all; a profile of
-# yours is not checked here), else exit 1 before the slot. cx-wsl runs grok from DIR, so the
-# process's working directory, which strict lets grok write, is --cwd too.
+# grok runs (every form that takes a slot, below): only under conductor's cx-strict profile and
+# with an absolute --cwd DIR (DESIGN section 12.2): every --sandbox must name cx-strict, else exit
+# 1 before the slot (grok's built-ins other than strict write ~/.grok: off and devbox everywhere,
+# workspace and read-only its own binary, ripgrep and plugins, measured on 1.0.70; no --sandbox
+# means no sandbox at all; the built-in strict cannot read the resolver file on WSL, where
+# /etc/resolv.conf links to /mnt/wsl/resolv.conf, so grok resolves no host name there). cx-strict
+# extends strict with read-only access to the directories that hold this host's resolver and TLS
+# files outside strict's read set, and nothing else (none on most hosts; cx-doctor D17 lists
+# them). Once the slot is held, cx-wsl writes it into ${GROK_HOME:-~/.grok}/sandbox.toml when it
+# is missing or differs (cxlib.py grok-profile --strict, under $CX_HOME/locks/grok-sandbox.lock,
+# as the grok lane writes a repository's profile: any other definition of the name is replaced),
+# then runs the grok lane's per-run check (free; a .grok/sandbox.toml in DIR refuses the call, 2):
+# grok --sandbox cx-strict models in DIR and the
+# bytes it appended to grok's sandbox log (normalize.py grok-check): a sandbox not applied, an
+# unenforced start or a write grant into grok's home refuses the call (2), and a resolver file the
+# logged profile cannot read gives a note. cx-wsl runs grok from DIR, so the process's working
+# directory, which strict lets grok write, is --cwd too.
 #
 # Pool slots (DESIGN section 15.3): an executor call first takes a slot of its pool, shared by
 # every session, Work locally thread and forwarded call on this computer, and holds it until
@@ -55,8 +66,9 @@
 #
 # Exit codes: the tool's own status (0-255), its stdout and stderr unchanged, no CX_* line
 # added. cx-wsl's own failures: 1 usage error (no TOOL, a tool outside the list, a grok run
-# without --sandbox strict or without an absolute --cwd directory); 2 FAILED (the
-# bash -s step could not be buffered, or the lock directory is unusable); 13 CLI_MISSING (no
+# without --sandbox cx-strict or without an absolute --cwd directory); 2 FAILED (the
+# bash -s step could not be buffered, the lock directory is unusable, or a grok run's cx-strict
+# profile could not be written or its check refused it); 13 CLI_MISSING (no
 # host record, or the tool is not recorded or not executable: run cx-doctor first, see the
 # note); 28 NO_CAPACITY (no slot of the tool's pool within CX_SLOT_WAIT_SECS, or its cap is 0:
 # use the next pool; agy paused); and from Git Bash forwarding 40 FORWARD_FAILED, 41 RUNTIME_MISSING, 42
@@ -138,28 +150,29 @@ slot_pool() {
 }
 POOL="$(slot_pool "$TOOL" "$@")"
 
-# grok_run_args ARG...: a grok run (header) names --sandbox strict, every time it names --sandbox,
-# and an absolute --cwd directory (GROK_CWD); exit 1 otherwise, before the slot.
+# grok_run_args ARG...: a grok run (header) names --sandbox cx-strict, every time it names
+# --sandbox, and an absolute --cwd directory (GROK_CWD); exit 1 otherwise, before the slot.
 GROK_CWD=""
+GROK_SB_WHY="grok's built-ins but strict let it write ~/.grok (its own binary, ripgrep and plugins), and strict cannot read the resolver file on WSL (/etc/resolv.conf links to /mnt/wsl/resolv.conf there): cx-strict is strict plus this host's resolver directories"
 grok_run_args() {
   local a prev="" n=0
   for a in "$@"; do
     case "$prev" in
       --sandbox)
-        [ "$a" = strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox strict, not --sandbox '$a' (grok's other built-ins let it write ~/.grok: its own binary, ripgrep and plugins)"
+        [ "$a" = cx-strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox cx-strict, not --sandbox '$a' ($GROK_SB_WHY)"
         n=$((n + 1)) prev=""; continue ;;
       --cwd) GROK_CWD="$a" prev=""; continue ;;
     esac
     case "$a" in
       --sandbox=*)
-        [ "${a#--sandbox=}" = strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox strict, not $a (grok's other built-ins let it write ~/.grok: its own binary, ripgrep and plugins)"
+        [ "${a#--sandbox=}" = cx-strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox cx-strict, not $a ($GROK_SB_WHY)"
         n=$((n + 1)) ;;
       --cwd=*) GROK_CWD="${a#--cwd=}" ;;
     esac
     prev="$a"
   done
   [ "$prev" != --sandbox ] && [ "$n" -gt 0 ] \
-    || cx_usage_error "cx-wsl grok runs only under --sandbox strict (without --sandbox grok runs with no sandbox at all)"
+    || cx_usage_error "cx-wsl grok runs only under --sandbox cx-strict (without --sandbox grok runs with no sandbox at all)"
   case "$GROK_CWD" in
     /*) [ -d "$GROK_CWD" ] || cx_usage_error "--cwd $GROK_CWD is not a directory" ;;
     *) cx_usage_error "cx-wsl grok runs need an absolute --cwd DIR (a directory of their own, such as \$OUT/msg): grok's strict profile lets it write its working directory" ;;
@@ -178,6 +191,53 @@ if [ -n "$POOL" ]; then
     cx_signal NO_CAPACITY 28 "agy dispatch is paused"
   fi
 fi
+
+# grok_strict_ready: a grok run's cx-strict profile written (when missing or different) and
+# checked (header); exit 2 FAILED when it cannot be written or the check refuses it.
+GROK_ENVV=(env -u XAI_API_KEY -u GROK_SANDBOX PATH="$NEWPATH" CX_WORKER=1 GROK_DISABLE_AUTOUPDATER=1
+  GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false
+  GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false)
+grok_log_size() {
+  local n=""
+  if [ -f "$1" ] && [ ! -L "$1" ]; then n="$(stat -c %s -- "$1" 2>/dev/null)"; fi
+  [[ $n =~ ^[0-9]+$ ]] || n=0
+  printf '%s\n' "$n"
+}
+grok_strict_ready() {
+  local gh="${GROK_HOME:-$HOME/.grok}" cxh="${CX_HOME:-$HOME/.conductor}" out chk sev ev0 ev1 crc v l
+  # As in the grok lane: a per-project .grok/sandbox.toml in grok's cwd could redefine the profile.
+  if [ -e "$GROK_CWD/.grok/sandbox.toml" ] || [ -L "$GROK_CWD/.grok/sandbox.toml" ]; then
+    cx_note "--cwd $GROK_CWD holds .grok/sandbox.toml (a per-project grok sandbox file that could redefine cx-strict): empty that directory first (the commit-message lines of the skill do)"
+    cx_signal FAILED 2 "--cwd $GROK_CWD holds .grok/sandbox.toml: grok never started there"
+  fi
+  mkdir -p -- "$cxh/locks" 2>/dev/null || cx_signal FAILED 2 "cannot create $cxh/locks"
+  out="$(cx_py grok-profile --strict --sandbox "$gh/sandbox.toml" --lock "$cxh/locks/grok-sandbox.lock" \
+           --workspace "$GROK_CWD" --home "$HOME" --grok-home "$gh" --cx-home "$cxh" 2>&1)" \
+    || { cx_note "cannot write the grok sandbox profile cx-strict into $gh/sandbox.toml: ${out:-no output}"
+         cx_signal FAILED 2 "cannot write the grok sandbox profile cx-strict into $gh/sandbox.toml"; }
+  case "$out" in ""|"same cx-strict") ;; *) cx_note "$out" ;; esac
+  chk="$(cx_mktemp cx-wsl-grok-check)" || cx_signal FAILED 2 "cannot create a temporary file in $cxh/tmp"
+  sev="$gh/sessions/sandbox-events.jsonl"
+  ev0="$(grok_log_size "$sev")"
+  (cd -- "$GROK_CWD" && cx_timeout 30 "${GROK_ENVV[@]}" "$ABS" --sandbox cx-strict models) < /dev/null > "$chk" 2>&1
+  crc=$?
+  ev1="$(grok_log_size "$sev")"
+  v="$(python3 -I "$CX_LIB/normalize.py" grok-check --profile cx-strict --workspace "$GROK_CWD" --grok-home "$gh" \
+         --probe-out "$chk" --probe-rc "$crc" --events "$sev" --from "$ev0" --to "$ev1")" \
+    || { rm -f -- "$chk"; cx_signal FAILED 2 "the check of grok's sandbox profile cx-strict failed (normalize.py grok-check)"; }
+  rm -f -- "$chk"
+  while IFS= read -r l; do
+    case "$l" in "note "*) cx_note "${l#note }" ;; esac
+  done <<< "$v"
+  v="${v%%$'\n'*}"
+  case "$v" in
+    ok) ;;
+    "refuse "*) cx_note "${v#refuse }: refused before grok started"
+                cx_signal FAILED 2 "${v#refuse }: refused before grok started" ;;
+    *) cx_signal FAILED 2 "the check of grok's sandbox profile cx-strict gave no verdict" ;;
+  esac
+}
+[ "$TOOL" != grok ] || [ -z "$POOL" ] || grok_strict_ready
 
 case "$TOOL" in
   ghcp-*)
@@ -206,9 +266,7 @@ case "$TOOL" in
   grok)
     # From its --cwd (header): the process's working directory and --cwd are the same.
     [ -z "$GROK_CWD" ] || cd -- "$GROK_CWD" || cx_usage_error "cannot change to --cwd $GROK_CWD"
-    exec env -u XAI_API_KEY -u GROK_SANDBOX PATH="$NEWPATH" CX_WORKER=1 GROK_DISABLE_AUTOUPDATER=1 \
-      GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false \
-      GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false "$ABS" "$@" ;;
+    exec "${GROK_ENVV[@]}" "$ABS" "$@" ;;
   bash)
     # A shell step (cx-wsl bash -s < FILE) written on the Windows side may come out CRLF: a CR
     # would end up in every word (`. "$HOME/.conductor/out/t1/vars.sh"\r` fails, WT stays

@@ -2,7 +2,8 @@
 
 ## 0.2.2 — 2026-11-06
 
-A security fix: no conductor grok run uses grok's built-in `read-only` sandbox any more.
+A security fix: no conductor grok run uses grok's built-in `read-only` sandbox any more. And on
+WSL grok can resolve host names again under conductor's strict-based profiles.
 
 - **Security: grok read, review and commit-message runs could plant code that runs unsandboxed
   later.** 0.2.1 ran every grok read and review (`--sandbox read-only --always-approve`) and the
@@ -50,13 +51,14 @@ A security fix: no conductor grok run uses grok's built-in `read-only` sandbox a
   before its executor now leaves its reason in `$OUT/adapter.why`, and `cx-run` puts it into
   the result's reason (before: only "the grok lane stopped before its executor ran").
 - **The skill's Step 3 commit-message call** (SKILL section 4 and DESIGN §12.2, identically):
-  `cx-wsl grok … --cwd "$OUT/msg" --sandbox strict`, with the prompt at `$OUT/msg/prompt.txt` in
-  a directory the step empties first, which holds nothing the conductor later reads, sources or
-  runs. `cx-wsl`'s grok arm now refuses (exit 1, before the slot) a grok run that names a
-  `--sandbox` other than `strict`, or none (grok's default is no sandbox), or no absolute
-  `--cwd` directory, and runs grok from that directory, so grok's working directory and `--cwd`
-  are the same (DESIGN §20 item 80). The D25 rule `Bash(cx-wsl grok:*)` and the Windows path
-  rules are unchanged.
+  `cx-wsl grok … --cwd "$OUT/msg" --sandbox cx-strict` (conductor's `strict` plus the resolver
+  directories, below), with the prompt at `$OUT/msg/prompt.txt` in a directory the step empties
+  first, which holds nothing the conductor later reads, sources or runs. `cx-wsl`'s grok arm
+  now refuses (exit 1, before the slot) a grok run that names a `--sandbox` other than
+  `cx-strict` (plain `strict` included), or none (grok's default is no sandbox), or no
+  absolute `--cwd` directory, and runs grok from that directory, so grok's working directory
+  and `--cwd` are the same (DESIGN §20 item 80). The D25 rule `Bash(cx-wsl grok:*)` and the
+  Windows path rules are unchanged.
 - **Security: a `.conductor` symlink could redirect the conductor's own writes.** The conductor
   writes the diff, the task and grok's prompt file into `<checkout>/.conductor/` unsandboxed. A
   reviewed branch (or a read's base) that tracked `.conductor` as a symlink, or a symlink below
@@ -96,6 +98,50 @@ A security fix: no conductor grok run uses grok's built-in `read-only` sandbox a
   is outside conductor's runs (your own grok sessions, which run without a sandbox by default,
   other tools, code planted by an earlier read-only run). The profile template's comment
   changed, so each repository's profile is rewritten once, with a note, on its next grok run.
+- **grok could resolve no host name on WSL under conductor's strict-based profiles** (a real-use
+  breakage, measured live 2026-11-06 with 0.2.1 on a Windows 11 machine, Git Bash forwarding to
+  WSL Ubuntu, grok 1.0.70, Landlock enforced). `strict` reads only its system directories
+  (`/usr /lib /lib64 /bin /sbin /etc /dev /proc /sys /tmp /run /var`), the working directory
+  and `~/.grok`, and on WSL `/etc/resolv.conf` links to `/mnt/wsl/resolv.conf`: a throwaway
+  Landlock child with that read list got EACCES on it and `getaddrinfo` failed (with `/mnt/wsl`
+  added it resolved). A grok write run under the repository's profile failed after 1657 s of
+  grok's own retries (rc 1, `error sending request for url`, no model call; `dns error: failed
+  to lookup address information` in `~/.grok/logs/unified.jsonl`); its retry hit the 180 s
+  timeout. Every D17 check had passed: the free probes make no API call. 0.2.2's move of read,
+  review and commit-message runs to strict-based profiles would have spread this to every grok
+  call on WSL. Now every conductor profile (each repository's `cx-<repo>-<hash>`, written by the
+  lane and `cx-init --user-grants`) adds, read-only, the directory that holds each resolver or
+  TLS file (`/etc/resolv.conf`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/host.conf`,
+  `/etc/gai.conf`, the usual CA bundles, `SSL_CERT_FILE`, `SSL_CERT_DIR`) whose resolved path
+  lies outside that read set: `/mnt/wsl` on WSL, nothing on most hosts (directories only;
+  never `/`, a directory that is or contains your home, `~/.grok`, `~/.conductor` or a checkout,
+  nor one inside `~/.conductor`: a note and D17 say so). The commit-message call and a grok
+  lane run outside a git checkout use conductor's new `cx-strict` (strict plus those
+  directories only), which `cx-wsl` writes, under the same lock and rewrite rules, and checks
+  (`grok --sandbox cx-strict models` and its sandbox-log line: the per-run check) before each
+  call. The per-run check also notes each resolver file the logged profile cannot read
+  (`sandbox_check.resolver_unreadable` in `grok.run.json`; never a refusal). Files are read
+  under `CX_DETECT_ROOT` (a test tree, empty in production), as `detect.sh` reads its own.
+  Not yet measured: that grok works end to end on WSL after the fix (DESIGN §20 item 81).
+- **D17 checks grok's resolver and TLS files**: it lists them, the directories conductor's
+  profiles add and any that cannot be granted (! grok cannot resolve any host name under any
+  conductor profile, with the fix), a dangling `/etc/resolv.conf`, conductor profiles in
+  `~/.grok/sandbox.toml` that still lack a directory (written before this release: the
+  repository's next grok run, or the next `cx-wsl grok` call for `cx-strict`, rewrites them), and
+  `grok_sandbox_profile=strict` or a profile of yours that lacks one.
+- **A grok run that cannot reach its API says so**: rc not 0 with no model call and `error
+  sending request for url` (or another connect or DNS phrase) on stderr is 2 `FAILED` with the
+  reason "grok could not reach its API (a connection or DNS failure; cx-doctor D17): …", or
+  "could not resolve its API's host name (DNS; …)" when grok's own log, only the bytes the run
+  appended to `~/.grok/logs/unified.jsonl` (searched as text, kept in `grok.netlog.txt`), says
+  DNS; 12 when the timeout ended grok's retries first. A note says grok's own retries can hold
+  a run for about 28 minutes (the run's timeout bounds it).
+- **D17 retries the grok login probe once**, 2 s after a `grok models` that listed no models or
+  said "You are not authenticated" (a one-off "not logged in" was seen once and did not recur),
+  never after a hang; the line says when it retried.
+- **D24 and D25 no longer name a Claude Code version** in their notes ("the Task(...) rule
+  syntax is unverified", "how Claude Code matches env -u prefixes and multi-line steps is
+  unverified"); D13's measured-with note stays.
 - **Fixtures**: `tests/fixtures/real/grok/write-probe.sh` and its verbatim results
   `write-probe-read-only-1.0.70.txt` and `write-probe-strict-1.0.70.txt` (live, 2026-11-06,
   $0.032164 and $0.021666).
@@ -116,7 +162,16 @@ A security fix: no conductor grok run uses grok's built-in `read-only` sandbox a
   grok`'s refused forms and its cwd, `cx-wsl bash -s` with a missing `TMPDIR`; the grok stub
   records the review diff it found (`STUB_GROK_SEEN`); static checks for the commit-message
   lines of the SKILL and DESIGN §12.2, the home-writer list in `normalize.py` and D17, and
-  scratch files outside `$TMPDIR`.
+  scratch files outside `$TMPDIR`. For the resolver work: the repository's profile on a
+  simulated WSL tree gains `/mnt/wsl` and loses it again off WSL; `cx-wsl grok` writes `cx-strict`
+  (empty `read_only` here, `/mnt/wsl` and an `SSL_CERT_FILE` directory on the WSL tree, `/`
+  never), replaces a widened definition, runs the per-run check first and refuses on it; the
+  per-run check's note for an event that lacks `/mnt/wsl`; `root_realpath` against
+  `os.path.realpath`; D17's resolver records (grants, the stale profile, the option, home and
+  `~/.conductor` refusals, a dangling link) and its login retry; grok's connect, DNS and
+  timeout reasons, and an earlier run's log line not counted. The grok stub takes
+  `STUB_GROK_RUN=connect|dns|dnstimeout`, `STUB_GROK_MODELS_ONCE` and `STUB_GROK_EVENT_RO`, and its
+  sandbox-log lines list the profile's `read_only`.
 
 ## 0.2.1 — 2026-11-06
 
