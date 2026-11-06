@@ -69,7 +69,8 @@
 # run checks only as cx-route <name>; it runs nothing else (in a clean bash: no BASH_ENV or
 # exported functions of its caller), and an edit of the worktree's .cx/routes.json never reaches
 # it. Copilot may approve only cx-route and git status; agy gets those and ls as per-run
-# --settings grants; grok runs in its repository's sandbox profile (extends strict).
+# --settings grants; grok runs in its repository's sandbox profile (extends strict) in every
+# mode, read and review included (never grok's built-in read-only, which writes ~/.grok).
 #
 # Output: stdout = the digest, then "VERIFY THIS: <what to check>" and the diffstat (the claude
 # dispatch: its JSON). stderr = notes, CX_DENIED, CX_NOTE, CX_RESULT, then CX_SIGNAL (any exit
@@ -934,7 +935,7 @@ prepare_argv() {
   rc=$?
   [ "$rc" = 0 ] || { [ "$rc" = 1 ] && exit 1; cx_signal FAILED 2 "the $ADAPTER adapter could not prepare the run (exit $rc)"; }
 }
-rm -f -- "$OUT/$ADAPTER.argv" "$OUT/$ADAPTER.env" "$OUT/$ADAPTER.meta.json"
+rm -f -- "$OUT/$ADAPTER.argv" "$OUT/$ADAPTER.env" "$OUT/$ADAPTER.meta.json" "$OUT/adapter.why"
 save_state
 [ "$MODE" != write ] || [ -z "$WT" ] || write_vars
 
@@ -965,7 +966,11 @@ if [ "$ARC" != 0 ] && [ ! -f "$OUT/rc" ]; then
   [ -z "$CANCELLED" ] || st=cancelled
   [ "$MODE" = write ] && [ -n "$WT" ] && rm -f -- "$OUT/running"
   prepare_argv
-  stop_result "$st" "the $ADAPTER lane stopped before its executor ran (exit $ARC)"
+  # The adapter's own reason (adapter.why: grok's per-run profile check, a sandbox file it
+  # refused, a missing CLI, ...) goes into the result.
+  WHY="$(head -c 400 "$OUT/adapter.why" 2>/dev/null | tr '\n' ' ')"
+  WHY="${WHY% }"
+  stop_result "$st" "the $ADAPTER lane stopped before its executor ran (exit $ARC)${WHY:+: $WHY}"
 fi
 if [ "$MODE" = write ] && [ -n "$WT" ] && { [ "$ADAPTER" != claude ] || [ -n "$HEADLESS" ]; }; then
   # finish_result keeps the running mark only for an ok change that waits for Step 3.

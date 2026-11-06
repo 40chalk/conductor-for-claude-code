@@ -14,20 +14,28 @@
 #                  (--subagents: no --no-subagents, GROK_MAX_CONCURRENT_SUBAGENTS=4). The profile
 #                  is the repository's own, cx-<repo>-<8 hex of its git directory> (option
 #                  grok_sandbox_profile auto, the default; the 0.2.0 value cx-workspace counts as
-#                  auto; any other value names a profile of your own): extends grok's strict
-#                  profile (reads the worktree and system paths only; writes the worktree,
-#                  ~/.grok/sessions, /tmp and /var/tmp, ~/.grok itself read-only, as measured on
-#                  1.0.70; no child network) plus read_only access to the git directory (git
-#                  status in a worktree) and $CX_HOME/routes (each run's cx-route; never the out
+#                  auto; any other value names a profile of your own, used in every mode): extends
+#                  grok's strict profile (reads the checkout, system paths and ~/.grok; writes the
+#                  checkout, ~/.grok/sessions, /tmp and /var/tmp, nothing else of ~/.grok, as
+#                  measured on 1.0.70: tests/fixtures/real/grok/write-probe-strict-1.0.70.txt; no
+#                  child network) plus read_only access to the git directory (git status in a
+#                  worktree) and $CX_HOME/routes (each run's cx-route; never the out
 #                  directories, which hold other runs' tasks, diffs and digests; grok's own
 #                  ~/.grok/sessions, which every grok run reads and writes, holds every grok
 #                  session's transcript, other runs' tasks and answers included). The
 #                  sandbox is the boundary, so every tool is approved inside it (a headless run
 #                  cannot ask: acceptEdits denied the first edit, measured 2026-11-02).
-#   read/review:   --sandbox read-only --always-approve --no-subagents --json-schema <schema>
-#                  (default: [{file, line, why}] for read, [{file, line, severity, issue}] for review);
-#                  grok's built-in read-only profile writes all of ~/.grok, /tmp and /var/tmp
-#                  (measured on 1.0.70), sandbox.toml included.
+#   read/review:   the same --prompt-file, --cwd <the gate checkout> and the same profile:
+#                  --sandbox <profile> --always-approve --no-subagents --json-schema <schema>
+#                  (the schema text itself, default [{file, line, why}] for read, [{file, line,
+#                  severity, issue}] for review). Never grok's built-in read-only: measured on
+#                  1.0.70 (tests/fixtures/real/grok/write-probe-read-only-1.0.70.txt) it lets grok
+#                  write ~/.grok but its protected set (config.toml, sandbox.toml, hooks/, ...):
+#                  grok's own binary (~/.grok/bin), its ripgrep (~/.grok/vendor) and
+#                  ~/.grok/installed-plugins, code that later runs outside any sandbox, so a run
+#                  steered by the executor-written code it reads could replace them. Every file a
+#                  run reads is inside its checkout: the prompt file, .conductor/task.md and a
+#                  review's .conductor/change.diff (cx-run copies them there).
 #   effort: low|medium|high|xhigh (never max).
 #   environment:   the worker environment, GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false,
 #                  GIT_CONFIG_GLOBAL=/dev/null (the strict profile cannot read ~/.gitconfig),
@@ -39,15 +47,28 @@
 #                  false that grok appended to ~/.grok/sessions/sandbox-events.jsonl during the
 #                  probe for its cwd; enforced true records the platform; no event changes
 #                  nothing), grok --help (the flag contract: 26 when it lacks a flag of the argv).
-#   run:           writes the profile into ~/.grok/sandbox.toml when it is missing or differs
-#                  (under $CX_HOME/locks/grok-sandbox.lock), before the slot and again once the
-#                  slot is held. The name is conductor's own: any other definition of it (one
-#                  left there without the cx:begin/cx:end lines, e.g. by a read or review run,
-#                  whose read-only profile writes ~/.grok; a strict-based writer cannot, measured
-#                  on 1.0.70, although grok's README says strict writes ~/.grok) is replaced, and
-#                  a file that would then not parse or still define it another way refuses the
-#                  run (2), as does a per-project .grok/sandbox.toml in the worktree. Then it
-#                  writes the prompt file, runs grok, then grok usage <uuid> (free).
+#   run:           in every mode, before the slot: a per-project .grok/sandbox.toml in the run's
+#                  checkout refuses the run (2: it could redefine the run's profile, and a review's
+#                  gate checkout is a checkout of an executor-written branch, which can carry one);
+#                  the repository's profile is written into ~/.grok/sandbox.toml when it is missing
+#                  or differs (under $CX_HOME/locks/grok-sandbox.lock). The name is conductor's
+#                  own: any other definition of it (one left there without the cx:begin/cx:end
+#                  lines) is replaced, and a file that would then not parse or still define it
+#                  another way refuses the run (2). No conductor grok run can write sandbox.toml
+#                  (grok write-denies it under read-only and strict, measured), so the rewrite
+#                  guards against everything else: your own grok sessions without a sandbox,
+#                  other tools. Then the per-run profile check (free): grok --sandbox <the run's
+#                  profile> models in the run's checkout, with the preflight's probe machinery and
+#                  worker environment, and only the bytes that call appended to grok's sandbox
+#                  log: a ProfileApplied event for the checkout with enforced false, or with a
+#                  read_write path that grants write to grok's home (${GROK_HOME:-~/.grok} itself,
+#                  a directory above it or one inside it, but ~/.grok/sessions and below), refuses
+#                  the run (2) before any prompt, as do a line saying the sandbox was not applied
+#                  and a built-in profile that writes grok's home (off, devbox, workspace,
+#                  read-only); no log or no event changes nothing; the facts (platform included)
+#                  go into grok.run.json as sandbox_check. Once the slot is held the profile is
+#                  written again (the run may have waited for it), then the prompt file, grok,
+#                  then grok usage <uuid> (free).
 #   parse:         JSON text / sessionId / modelUsage / usage / stopReason (verified on 1.0.70;
 #                  text joins every turn's message with no separator, so with --json-schema the
 #                  answer is structuredOutput as JSON; without one, text stays the answer, with
@@ -85,8 +106,8 @@ lane_setup() {
   [ -z "$A_SUBAGENTS" ] || cxa_set GROK_MAX_CONCURRENT_SUBAGENTS 4
 }
 
-# grok_profile: the sandbox profile of a write run (GROK_PROFILE), with GROK_GCD (the git common
-# directory it grants) when it is the repository's own (GROK_PROFILE_AUTO=1).
+# grok_profile: the sandbox profile of a run in any mode (GROK_PROFILE), with GROK_GCD (the git
+# common directory it grants) when it is the repository's own (GROK_PROFILE_AUTO=1).
 GROK_PROFILE="" GROK_GCD="" GROK_PROFILE_AUTO=0
 grok_profile() {
   local opt="${CXA_OPT[grok_sandbox_profile]:-auto}" d gcd=""
@@ -111,10 +132,12 @@ grok_profile() {
     || cxa_fail 2 FAILED "cannot name the grok sandbox profile of $GROK_GCD"
   GROK_PROFILE_AUTO=1
 }
-grok_sandbox_file() { printf '%s\n' "${GROK_HOME:-${HOME:-}/.grok}/sandbox.toml"; }
-# grok's sandbox log (one ProfileApplied JSON line per sandboxed start, measured on 1.0.70) and
-# its size in bytes (0 when it is absent, a symlink or not a regular file).
-grok_events_file() { printf '%s\n' "${GROK_HOME:-${HOME:-}/.grok}/sessions/sandbox-events.jsonl"; }
+# grok's home (${GROK_HOME:-~/.grok}), its sandbox.toml, its sandbox log (one ProfileApplied JSON
+# line per sandboxed start, measured on 1.0.70) and the log's size in bytes (0 when it is absent,
+# a symlink or not a regular file).
+grok_home() { printf '%s\n' "${GROK_HOME:-${HOME:-}/.grok}"; }
+grok_sandbox_file() { printf '%s\n' "$(grok_home)/sandbox.toml"; }
+grok_events_file() { printf '%s\n' "$(grok_home)/sessions/sandbox-events.jsonl"; }
 grok_events_size() {
   local n=""
   if [ -f "$1" ] && [ ! -L "$1" ]; then n="$(stat -c %s -- "$1" 2>/dev/null)"; fi
@@ -129,22 +152,25 @@ lane_argv() {
   [[ $CXA_SESSION_HINT =~ ^[0-9a-f-]{36}$ ]] || cxa_fail 2 FAILED "cannot generate a session uuid"
   CXA_ARGV=("$CXA_BIN" --prompt-file "$wt/.conductor/prompt.txt" -m "$CXA_MODEL" --effort "$CXA_EFFORT"
             --cwd "$wt" -s "$CXA_SESSION_HINT" --output-format json)
+  # Every mode runs under the run's own profile (the repository's, or the one option
+  # grok_sandbox_profile names), never grok's built-in read-only (it writes ~/.grok/bin,
+  # ~/.grok/vendor and ~/.grok/installed-plugins, measured on 1.0.70).
+  grok_profile
+  CXA_ARGV+=(--sandbox "$GROK_PROFILE" --always-approve)
   if [ "$A_MODE" = write ]; then
-    grok_profile
-    CXA_ARGV+=(--sandbox "$GROK_PROFILE" --always-approve)
     [ -n "$A_SUBAGENTS" ] || CXA_ARGV+=(--no-subagents)
   else
     if [ -z "$schema" ]; then
       if [ "$A_MODE" = review ]; then schema="$GROK_REVIEW_SCHEMA"; else schema="$GROK_READ_SCHEMA"; fi
     fi
     A_SCHEMA="$schema"
-    CXA_ARGV+=(--sandbox read-only --always-approve --no-subagents --json-schema "$schema")
+    # --json-schema takes the schema text itself (no file to read).
+    CXA_ARGV+=(--no-subagents --json-schema "$schema")
   fi
   CXA_ARGV+=(--max-turns 60)
 }
 
 lane_dry_extra() {
-  [ "$A_MODE" = write ] || return 0
   [ -n "$GROK_PROFILE" ] || grok_profile
   if [ "$GROK_PROFILE_AUTO" = 1 ]; then
     printf 'sandbox profile: %s (extends strict; read_only %s and %s/routes; added to %s before the run when missing)\n' \
@@ -167,32 +193,64 @@ grok_apply_profile() {
   case "$out" in same*|"") ;; *) cx_note "${1:+$1: }$out" ;; esac
 }
 
-# lane_prepare (run, after the preflight, before the slot): the repository's profile in
-# ~/.grok/sandbox.toml (grok_apply_profile). GROK_APPLY=1 when lane_exec applies it again.
+# grok_check_run PROFILE: the per-run profile check (free; DESIGN section 15.2): grok --sandbox
+# PROFILE models in the run's checkout (cxa_probe_cmd_in: the preflight's probe machinery, the
+# lane's worker environment, the 30 s bound), then normalize.py grok-check on its output and on
+# only the bytes it appended to grok's sandbox log. A refusal (2 FAILED) names the profile, the
+# path and the log; the facts go into grok.run.json (sandbox_check).
+grok_check_run() {
+  local sb="$1" wt="${A_WT:-$PWD}" ev ev0 ev1 rc f v
+  f="$A_OUT/grok.sandbox-check.txt"
+  ev="$(grok_events_file)"
+  ev0="$(grok_events_size "$ev")"
+  cxa_probe_cmd_in "$wt" "$f" "$CXA_BIN" --sandbox "$sb" models
+  rc=$?
+  ev1="$(grok_events_size "$ev")"
+  v="$(cxa_py grok-check --profile "$sb" --workspace "$wt" --grok-home "$(grok_home)" --probe-out "$f" --probe-rc "$rc" \
+         --events "$ev" --from "$ev0" --to "$ev1" --json-out "$A_OUT/grok.sandbox-check.json")" \
+    || cxa_fail 2 FAILED "the per-run check of grok's sandbox profile $sb failed (normalize.py grok-check)"
+  case "$v" in
+    ok) ;;
+    "refuse "*) cxa_fail 2 FAILED "${v#refuse }: refused before the run's prompt" ;;
+    *) cxa_fail 2 FAILED "the per-run check of grok's sandbox profile $sb gave no verdict" ;;
+  esac
+  [ ! -s "$A_OUT/grok.sandbox-check.json" ] || CXA_RUNJSON+=(sandbox_check:json "$(cat "$A_OUT/grok.sandbox-check.json")")
+}
+
+# lane_prepare (run, after the preflight, before the slot; every mode): no per-project
+# .grok/sandbox.toml in the run's checkout, the repository's profile in ~/.grok/sandbox.toml
+# (grok_apply_profile; GROK_APPLY=1 when lane_exec applies it again), then the per-run check.
 GROK_APPLY=""
 lane_prepare() {
   local i sb="" wt="${A_WT:-$PWD}"
-  [ "$A_MODE" = write ] || return 0
-  # grok also reads a per-project .grok/sandbox.toml, which a writer may leave in its worktree:
-  # it could redefine the run's profile (which definition wins is unverified), so none may exist.
+  # grok also reads a per-project .grok/sandbox.toml in its cwd, which could redefine the run's
+  # profile (which definition wins is unverified), so none may exist: a writer may leave one in
+  # its worktree, and a review's gate checkout is a checkout of an executor-written branch, which
+  # can carry one (a read's checks out --base, which may carry one too).
   if [ -e "$wt/.grok/sandbox.toml" ] || [ -L "$wt/.grok/sandbox.toml" ]; then
-    cxa_fail 2 FAILED "the worktree holds .grok/sandbox.toml (a per-project grok sandbox file that could redefine the run's profile): remove it, or use another lane"
+    if [ "$A_MODE" = write ]; then
+      cxa_fail 2 FAILED "the worktree holds .grok/sandbox.toml (a per-project grok sandbox file that could redefine the run's profile): remove it, or use another lane"
+    fi
+    cxa_fail 2 FAILED "the gate checkout holds .grok/sandbox.toml (a per-project grok sandbox file, committed in the commit it checks out, that could redefine the run's profile): a $A_MODE run never starts grok there; use another lane"
   fi
   for ((i = 1; i < ${#CXA_ARGV[@]} - 1; i++)); do
     [ "${CXA_ARGV[i]}" = --sandbox ] && sb="${CXA_ARGV[i + 1]}"
   done
+  [ -n "$sb" ] || cxa_fail 2 FAILED "the grok argv names no --sandbox profile"
   [ -n "$GROK_PROFILE" ] || grok_profile
-  # Only the profile the argv names, and only when it is the repository's own.
-  [ "$GROK_PROFILE_AUTO" = 1 ] && [ "$sb" = "$GROK_PROFILE" ] || return 0
-  grok_apply_profile
-  GROK_APPLY=1
+  # Written only for the profile the argv names, and only when it is the repository's own.
+  if [ "$GROK_PROFILE_AUTO" = 1 ] && [ "$sb" = "$GROK_PROFILE" ]; then
+    grok_apply_profile
+    GROK_APPLY=1
+  fi
+  grok_check_run "$sb"
 }
 
 lane_exec() {
   local wt="${A_WT:-$PWD}"
-  # Again once the slot is held: the run may have waited for it while another grok run (a read
-  # or review under the built-in read-only profile, which writes all of ~/.grok) changed
-  # sandbox.toml. Only the moment before grok reads it at startup stays open.
+  # Again once the slot is held: the run may have waited for it while something other than a
+  # conductor grok run (none can write sandbox.toml: grok write-denies it under its sandbox
+  # profiles) changed the file. Only the moment before grok reads it at startup stays open.
   [ -z "$GROK_APPLY" ] || grok_apply_profile "while this run waited for its slot"
   if ! { mkdir -p -- "$wt/.conductor" && printf '%s\n' "$A_PROMPT" > "$wt/.conductor/prompt.txt"; }; then
     CXA_RC=2

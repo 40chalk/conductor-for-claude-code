@@ -27,12 +27,19 @@
 # nobwrap (its bubblewrap refusal, rc 1) or warn (the warning only, then the listing, rc 0: the
 # fail-open grok's README describes). A prompt run with STUB_GROK_SANDBOX_RUN=warn prints the
 # warning on stderr and goes on; refuse prints both lines and exits 1 before doing anything.
-# STUB_GROK_SANDBOX_EVENT makes that sandbox probe append one ProfileApplied line to grok's
-# sandbox log ${GROK_HOME:-$HOME/.grok}/sessions/sandbox-events.jsonl, in the shape grok 1.0.70
-# logs (fixtures/real/grok/sandbox-events-1.0.70.jsonl): enforced (enforced true, platform
-# linux/landlock, workspace = its cwd), unenforced (enforced false, platform linux/unsupported:
-# SYNTHETIC, no real unenforced event has been seen) or other (that unenforced line for another
-# workspace, /elsewhere); unset: no line, as on a host whose grok logs nothing.
+# STUB_GROK_SANDBOX_EVENT makes every such probe (the preflight's --sandbox strict models and
+# the grok lane's per-run --sandbox <the run's profile> models in the run's checkout) append one
+# ProfileApplied line to grok's sandbox log ${GROK_HOME:-$HOME/.grok}/sessions/sandbox-events.jsonl,
+# in the shape grok 1.0.70 logs (fixtures/real/grok/sandbox-events-1.0.70.jsonl): enforced
+# (enforced true, platform linux/landlock, workspace = its cwd, read_write_paths the workspace,
+# $GROK_HOME/sessions, /tmp and /var/tmp, as the real strict-based lines), homewrite (enforced
+# true, read_write_paths $GROK_HOME, /tmp and /var/tmp and no read_only_paths, as the real
+# read-only line), unenforced (enforced false, platform linux/unsupported: SYNTHETIC, no real
+# unenforced event has been seen) or other (that unenforced line for another workspace,
+# /elsewhere); unset: no line, as on a host whose grok logs nothing. STUB_GROK_EVENT_RW, when
+# set, replaces the line's read_write_paths: its space-separated words, the word WS standing for
+# the workspace (the suite's HOME lies under /tmp, so /tmp in a line is a directory above
+# $GROK_HOME there).
 # shellcheck source=/dev/null  # the shared stub helpers
 . "$(dirname -- "$0")/.stublib"
 stub_env_dump grok
@@ -43,17 +50,27 @@ nosb_refuse() {
   printf "error: could not apply the '%s' sandbox profile; see the warning above for the cause. Refusing to start with its protections missing.\n" "$1" >&2
 }
 sbx_event() {
-  local ws enf=true plat=linux/landlock d="${GROK_HOME:-$HOME/.grok}/sessions"
+  local ws enf=true plat=linux/landlock gh="${GROK_HOME:-$HOME/.grok}" d rw ro p
+  d="$gh/sessions"
   ws="$(pwd -P)"
   case "${STUB_GROK_SANDBOX_EVENT:-}" in
-    enforced) ;;
+    enforced|homewrite) ;;
     unenforced) enf=false plat=linux/unsupported ;;
     other) enf=false plat=linux/unsupported ws=/elsewhere ;;
     *) return 0 ;;
   esac
+  rw="\"$ws\",\"$d\",\"/tmp\",\"/var/tmp\"" ro=",\"read_only_paths\":[\"/usr\",\"/etc\",\"$ws\",\"$gh\"]"
+  [ "$STUB_GROK_SANDBOX_EVENT" != homewrite ] || rw="\"$gh\",\"/tmp\",\"/var/tmp\"" ro=""
+  if [ -n "${STUB_GROK_EVENT_RW+x}" ]; then
+    rw=""
+    for p in $STUB_GROK_EVENT_RW; do
+      [ "$p" != WS ] || p="$ws"
+      rw="${rw:+$rw,}\"$p\""
+    done
+  fi
   mkdir -p -- "$d"
-  printf '{"timestamp":"%s","event_type":"ProfileApplied","profile":"%s","workspace":"%s","platform":"%s","enforced":%s,"restrict_network":true,"read_write_paths":["%s","%s","/tmp","/var/tmp"],"read_only_paths":["/usr","/etc","%s"]}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$ws" "$plat" "$enf" "$ws" "$d" "$ws" >> "$d/sandbox-events.jsonl"
+  printf '{"timestamp":"%s","event_type":"ProfileApplied","profile":"%s","workspace":"%s","platform":"%s","enforced":%s,"restrict_network":true,"read_write_paths":[%s]%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$ws" "$plat" "$enf" "$rw" "$ro" >> "$d/sandbox-events.jsonl"
 }
 if [ "${1-}" = --sandbox ] && [ $# -eq 3 ] && [ "$3" = models ]; then
   sbx_event "$2"

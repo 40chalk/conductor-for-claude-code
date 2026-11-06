@@ -1,4 +1,4 @@
-# conductor — Claude Code conducts Copilot, Grok Build and Antigravity (design spec, v0.2.1)
+# conductor — Claude Code conducts Copilot, Grok Build and Antigravity (design spec, v0.2.2)
 
 Claude Code is the conductor. This plugin routes each piece of work to the subscription best
 suited to it: GitHub Copilot CLI (through the user's own `ghcp` plugin), Grok Build (the raw
@@ -78,9 +78,11 @@ Deviations from the plan that this spec makes on its own authority, each for a s
   and every parallel run, while `cx-init` is a per-repo bootstrapper. Phase 1 relies on the
   one-time manual agy merge of §12.2 and grok's built-in `--sandbox workspace`.
 - The plan's grok `--agent explore` for exploration and first-pass review is dropped: the
-  read-only sandbox plus `--always-approve` already fence those runs, and a per-type model pin
-  for `explore` in the user's grok config could override `-m`/`--effort` [assumption]. It
-  returns only after a Phase 0 check shows `-m` and `--effort` still apply under it.
+  sandbox plus `--always-approve` already fence those runs (since 0.2.2 the repository's
+  strict-based profile; 0.2.1's built-in `read-only` let grok write `~/.grok`, §1.3), and a
+  per-type model pin for `explore` in the user's grok config could override `-m`/`--effort`
+  [assumption]. It returns only after a Phase 0 check shows `-m` and `--effort` still apply
+  under it.
 - The plan's `--caller` flag is the environment variable `CX_CALLER` instead: the caller is a
   property of the transport (set by `wsl-entry.sh`, §7.4, or by the Docker forwarder, §18), not
   something a user types, and one variable serves every `cx-*` command.
@@ -220,33 +222,56 @@ From the captured `grok --help` (GH) unless tagged:
 - Hidden flags: `--yolo` parses on 1.0.70 [verified]; `--trust` and `--no-auto-update` were
   parse-verified only on 1.0.73.
 - Sandbox [verified 2026-11-06 on 1.0.70 in the build container, `~/.grok/README.md` section
-  Sandbox and live probes]: the profile is applied to the whole grok process at startup (Landlock
-  on Linux; irreversible), so every tool and child inherits it. Built-ins, as grok's README
-  describes them: `workspace` (read everywhere; write CWD, `/tmp`, `~/.grok`; child network
-  allowed), `read-only` (write `~/.grok` only; no child network), `strict` (read CWD and system
-  paths only; write CWD, `/tmp`, `~/.grok`; child network blocked). Measured (grok's sandbox
-  log, next item): `strict`, and a profile that extends it, write only the workspace,
-  `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` itself read-only, so a grok writer
-  cannot rewrite `~/.grok/sandbox.toml`; the built-in `read-only` writes all of `~/.grok`,
-  `/tmp` and `/var/tmp` (its line names no `read_only_paths`). So the read and review runs, and
-  the skill's Step 3 commit-message call, which read executor-written code, can rewrite
-  `sandbox.toml`: the lane's tamper-safe rewrite of the repository's profile before every write
-  run, and again once the run holds its slot (§15.7), is the guard against that (§20 item 76).
-  `~/.grok/sessions` holds every grok session's transcript (the prompt, the files read, tool
-  output, the answer) for every repository, and every grok run can read and write it (§20 item
-  75). Custom profiles in `~/.grok/sandbox.toml` (or a project's
-  `.grok/sandbox.toml`): `extends`, `restrict_network`, `read_only` and `read_write` (literal
-  DIRECTORIES; a file path makes grok refuse to start), `deny` (literal paths, no globs: the 0.2.0
-  `cx-workspace` template's `**/.env` globs were invalid). `~/.ssh`, `~/.aws`, `~/.gnupg` and
-  `~/.grok/auth` are always write-protected. A profile with deny lists needs bubblewrap on Linux
-  (grok refuses to start: "Install bubblewrap with `apt install -y bubblewrap`"). A profile grok
-  cannot apply makes it refuse to start (`warning: sandbox could not be applied: Expected a
-  directory but got a file: /etc/hostname`, then `error: could not apply the 'cxtest' sandbox
-  profile; see the warning above for the cause. Refusing to start with its protections
-  missing.`, rc 1; free `grok --sandbox <p> models` probes, 2026-11-06). A `[profiles.strict]`
-  in `sandbox.toml` (with a file in `read_only`) did not change `--sandbox strict`: built-in
-  names are not redefined there. Where Landlock is missing (kernel < 5.13, or disabled) the
-  README says grok "logs a warning and continues without enforcement" [docs-only, §20 item 72].
+  Sandbox, `~/.grok/docs/user-guide/18-sandbox.md` and live probes]: the profile is applied to
+  the whole grok process at startup (Landlock on Linux; irreversible), so every tool and child
+  inherits it. Built-ins, as grok's docs describe them: `workspace` (read everywhere; write CWD,
+  `~/.grok`, `/tmp`, `/var/tmp`; child network allowed), `devbox` (write every top-level
+  directory but `/data`), `read-only` (read everywhere; write `~/.grok`, `/tmp`, `/var/tmp`; no
+  child network), `strict` (read CWD, system paths and `~/.grok`; write CWD, `~/.grok/sessions`,
+  `/tmp`, `/var/tmp`, and `~/.grok/daemon/run/strict` when grok's daemon backend runs the
+  session; child network blocked). Under `workspace`, `read-only`, `strict` and the profiles
+  extending them grok's docs ("Direct global write protection") say the kernel write-denies a
+  protected set even where the profile grants write: `~/.grok/hooks/`, `~/.grok/hooks-paths` and
+  its absolute targets, `config.toml`, `trusted_folders.toml`, `managed_config.toml`,
+  `requirements.toml`, `sandbox.toml`, `bundled/` and `bundles/`; `devbox` and `off` do not.
+- Measured write sets [verified 2026-11-06, grok 1.0.70, linux/landlock plus bubblewrap,
+  enforced: grok's agent ran `tests/fixtures/real/grok/write-probe.sh` through its shell tool
+  (an append-open that writes nothing per file, a dotfile created and removed per directory)
+  under `--sandbox read-only` and under `--sandbox strict`; results verbatim in
+  `write-probe-read-only-1.0.70.txt` and `write-probe-strict-1.0.70.txt`, tests/fixtures/README.md]:
+  under the built-in `read-only` the protected set is DENIED (`config.toml`, `sandbox.toml`,
+  `trusted_folders.toml`, `managed_config.toml`, `requirements.toml`, `hooks-paths`, `hooks/`,
+  `bundled/`, `bundles/`) and the rest of `~/.grok` is WRITABLE: `auth.json`,
+  `models_cache.json`, `settings_cache.json`, `worktrees.db`, `bin/grok-1.0.70` (grok's own
+  binary: its installer puts grok in `~/.grok/bin`), `vendor/rg-15.0.0-override` (the ripgrep
+  grok runs) and the directories `~/.grok` itself, `bin/`, `vendor/`, `installed-plugins/`,
+  `logs/`, `sessions/` and `docs/`. Under `strict` every one of those is DENIED but `sessions/`.
+  So a run under the built-in `read-only` cannot change `sandbox.toml` or `config.toml` (0.2.1's
+  docs said it could), but it can replace grok's binary or ripgrep or plant a grok plugin: code
+  that later runs outside any sandbox. Conductor 0.2.1 ran the read and review runs and the
+  skill's Step 3 commit-message call under `read-only`, and all three read executor-written or
+  repository content that could steer them there; since 0.2.2 no conductor grok run uses it
+  (§12.2, §15.2 grok, §20 item 76). The profiles extending `strict` (the repository's profile,
+  §15.7) log the same write grants as `strict` (next item); the probe script ran under the
+  built-ins only. `~/.grok/sessions` holds every grok session's transcript (the prompt, the
+  files read, tool output, the answer) for every repository, and every grok run can read and
+  write it (§20 item 75).
+- Custom profiles in `~/.grok/sandbox.toml` (or a project's `.grok/sandbox.toml`): `extends`,
+  `restrict_network`, `read_only` and `read_write` (literal DIRECTORIES; a file path makes grok
+  refuse to start), `deny` (literal paths, no globs: the 0.2.0 `cx-workspace` template's
+  `**/.env` globs were invalid). A custom profile cannot reuse a built-in name: a
+  `[profiles.strict]` in `sandbox.toml` (with a file in `read_only`) did not change `--sandbox
+  strict`. When the user's file and a project's define the same custom profile differently,
+  grok's docs say it uses the user's and warns [docs-only, §20 item 73]; project hooks are gated
+  by folder trust [docs-only]. `~/.ssh`, `~/.aws`, `~/.gnupg` and `~/.grok/auth` are always
+  write-protected [README]; `~/.grok/auth.json` is not (WRITABLE under `read-only`, above). A profile with deny lists needs bubblewrap on Linux (grok refuses to start:
+  "Install bubblewrap with `apt install -y bubblewrap`"). A profile grok cannot apply makes it
+  refuse to start (`warning: sandbox could not be applied: Expected a directory but got a file:
+  /etc/hostname`, then `error: could not apply the 'cxtest' sandbox profile; see the warning
+  above for the cause. Refusing to start with its protections missing.`, rc 1; free `grok
+  --sandbox <p> models` probes, 2026-11-06). Where Landlock is missing (kernel < 5.13, or
+  disabled) the README says grok "logs a warning and continues without enforcement" [docs-only,
+  §20 item 72].
 - Sandbox log [verified 2026-11-06 on 1.0.70, `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`]:
   every sandboxed start appends one JSON line to `${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl`:
   `{"timestamp", "event_type": "ProfileApplied", "profile", "workspace" (the cwd), "platform":
@@ -254,13 +279,17 @@ From the captured `grok --help` (GH) unless tagged:
   `read_only_paths` for `strict` and the profiles extending it (the write run's
   `cx-textutil-78d1f9c2`: `read_write_paths` the worktree, `~/.grok/sessions`, `/tmp`,
   `/var/tmp`; `read_only_paths` the system directories, the worktree, `~/.grok`, the git common
-  directory and `$CX_HOME/routes`). The built-in `read-only` logs no `read_only_paths` (the read
-  run in its gate checkout: `read_write_paths` `~/.grok`, `/tmp`, `/var/tmp`). The preflight and
-  D17 read only the bytes their `grok --sandbox strict models` appended, for its cwd: `enforced`
-  false refuses the lane (§15.2); an absent log or event changes nothing. The sizes come from GNU
-  `stat -c %s` (Linux, WSL), and D17 reads the log only when python3 runs: elsewhere (macOS,
-  untested) the log is not read and nothing changes. What an unenforced start logs is unseen
-  (§20 item 72).
+  directory and `$CX_HOME/routes`). The built-in `read-only` logs no `read_only_paths` (0.2.1's
+  read run in its gate checkout: `read_write_paths` `~/.grok`, `/tmp`, `/var/tmp`). Neither
+  shape lists the protected set: the log shows the grants, not grok's write-deny. The preflight
+  and D17 read only the bytes their `grok --sandbox strict models` appended, for its cwd:
+  `enforced` false refuses the lane (§15.2); an absent log or event changes nothing. Since 0.2.2
+  every grok run also checks its own profile the same way, in its checkout, before its slot and
+  its prompt (§15.2 grok): `enforced` false, or a `read_write_paths` entry that grants write to
+  grok's home (the home itself, a directory above it or one inside it, but `~/.grok/sessions`),
+  refuses the run. The sizes come from GNU `stat -c %s` (Linux, WSL), and D17 reads the log only
+  when python3 runs: elsewhere (macOS, untested) the log is not read and nothing changes. What
+  an unenforced start logs is unseen (§20 item 72).
 - Result JSON (`--output-format json`) [verified on 1.0.70: the real runs sbx-grok-1, -2, -3]: one
   object with `text`, `stopReason`, `sessionId`, `requestId`, `cwd`, `thought`, `usage`
   {`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `output_tokens`,
@@ -734,7 +763,7 @@ them, `CX_SIGNAL` last.
 
 | Function | Contract |
 |---|---|
-| `CX_VERSION`, `CX_VERIFIED_COPILOT`, `CX_VERIFIED_GROK`, `CX_VERIFIED_AGY`, `CX_VERIFIED_CLAUDE`, `CX_MIN_CLAUDE`, `CX_MIN_AGY`, `CX_MIN_GH_COPILOT_REVIEW` | Constants `0.2.1`; the versions last verified `1.0.105`, `1.0.70`, `1.5.1`, `2.1.316` (doctor info only, never a refusal: §5.4); the doctor minimums `2.1.316`, `1.1.12`, `2.89.0` (oldest gh measured to accept `--add-reviewer @copilot`; §20 item 29) |
+| `CX_VERSION`, `CX_VERIFIED_COPILOT`, `CX_VERIFIED_GROK`, `CX_VERIFIED_AGY`, `CX_VERIFIED_CLAUDE`, `CX_MIN_CLAUDE`, `CX_MIN_AGY`, `CX_MIN_GH_COPILOT_REVIEW` | Constants `0.2.2`; the versions last verified `1.0.105`, `1.0.70`, `1.5.1`, `2.1.316` (doctor info only, never a refusal: §5.4); the doctor minimums `2.1.316`, `1.1.12`, `2.89.0` (oldest gh measured to accept `--add-reviewer @copilot`; §20 item 29) |
 | `cx_py_ok` | rc 0 when python3 may be used: rc 1 whenever `uname -s` matches `MINGW*\|MSYS*\|CYGWIN*` (whatever PATH holds), else rc 0 iff `python3 -I -V` succeeds (cached in `CX_PY_OK`) |
 | `cx_root` | Prints the plugin root (the directory holding `scripts/`), computed from `BASH_SOURCE` |
 | `cx_prog` | Program name for notes (`cx-doctor`, …) set by each script |
@@ -792,7 +821,7 @@ pins them equal (P2). An empty value means "use the default" for every option.
 | `copilot_xhigh_ok` | `false` | Allow `--reasoning-effort xhigh` on Copilot Opus. Set true only after the #5149 check passes; `max` is never sent. | boolean words | `adapters/copilot.sh`, `cx-run` |
 | `grok_bulk_model` | `grok-4.7` | Grok model for mechanical lanes (always passed with `-m`). | model id | `adapters/grok.sh`, `cx-doctor` D17 |
 | `grok_bulk_effort` | `high` | Grok effort for mechanical lanes. | `low\|medium\|high\|xhigh` | `adapters/grok.sh` |
-| `grok_sandbox_profile` | `auto` | Grok sandbox profile every grok writer runs under: `auto` = each repository's own `cx-<repo>-<hash>` in `~/.grok/sandbox.toml` (extends `strict`, §15.7); `cx-workspace` (the 0.2.0 default) counts as `auto`; any other name is a profile of the user's own, used as it is. | profile name | `adapters/grok.sh`, `cx-init --user-grants`, `cx-doctor` D17 |
+| `grok_sandbox_profile` | `auto` | Grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` in `~/.grok/sandbox.toml` (extends `strict`, §15.7); `cx-workspace` (the 0.2.0 default) counts as `auto`; any other name is a profile of the user's own, used as it is in every mode (a run is refused when it lets grok write `~/.grok`, §15.2). | profile name | `adapters/grok.sh`, `cx-init --user-grants`, `cx-doctor` D17 |
 | `review_model_gemini` | `Gemini 4 Argon (High)` | agy-delegate model label for the Gemini-family reviewer (reviews Opus-written code by default). | exact agy label | `cx-run --mode review --family gemini`, skill |
 | `review_model_gpt` | `gpt-6.1-sol` | Copilot model id for the GPT-family reviewer (joins on high-risk paths). | Copilot model id | `cx-run --mode review --family gpt`, skill |
 | `cap_agy` | `2` | Max concurrent agy Opus processes (launches are also serialized). | integer 0–16 (0 disables the lane) | `locks.sh` via `cx-run` / `cx-fanout` |
@@ -909,7 +938,7 @@ conductor's commit, then the integrated gate at merge.
 | Task type | Primary (lane · model · effort) | Fallback | Verification |
 |---|---|---|---|
 | Architecture / hard reasoning | `claude` · xhigh (max for one-way doors) | `copilot-opus` high | Claude writes the ADR; optional read-only alternatives from `agy-opus`, critique from `copilot-gpt` (`gpt-6-astra`) are input only |
-| Exploration / "where is X" | `grok` · `grok-4.7` medium, read-only, `--json-schema` returning `[{file,line,why}]` | `agy-gemini` flash, read-only (register the dir) | Claude spot-checks cited lines |
+| Exploration / "where is X" | `grok` · `grok-4.7` medium, read mode (the repository's strict-based profile, §15.2), `--json-schema` returning `[{file,line,why}]` | `agy-gemini` flash, read-only (register the dir) | Claude spot-checks cited lines |
 | Small (<~200 lines) or judgement-heavy change | `claude` | — | Normal tests (delegating below break-even is a measured loss) |
 | Debugging / root cause | `claude` owns hypotheses; `grok` high writes repro scripts, `git bisect run`, log digests | `agy-gemini` flash for logs >200k tokens | Claude sees the test fail before and pass after |
 | Spec'd feature, design-sensitive | Opus lanes in `opus_lane_order` (§6.3), high, only with strong acceptance tests until the A/B | next Opus lane; Fusion Max (`ghcp-handoff --tier pro`) when both pools are drained; then `claude` | Clean-checkout tests, tamper check, diff budget, cross-family review, integrated gate |
@@ -918,13 +947,13 @@ conductor's commit, then the integrated gate at merge.
 | Dependency upgrades | `grok` mechanical (lockfiles exempt; only this task type may run `setup`) | `copilot-fusion` standard | Integrated gate; Claude reads the upstream changelog; `audit` when routes defines it |
 | Exhaustive tests | `grok` high against a contract Claude wrote | `agy-gemini` flash high; `copilot-gpt` medium | Tests pass on current code, zero source changes, opt-in mutation threshold, Claude samples for tautologies |
 | Performance | `claude` profiles and picks the hotspot; Opus lane (design) or `grok` (mechanical) implements | `claude` | `bench` before/after on the same host; tests still pass |
-| First-pass review, local diff | `grok` high, read-only, `--json-schema review.schema.json`, on a read-only gate checkout + diff file | `agy-gemini` flash read-only | Claude confirms every accepted finding at file:line |
+| First-pass review, local diff | `grok` high, review mode (the repository's strict-based profile), `--json-schema` review schema, on a gate checkout + diff file | `agy-gemini` flash read-only | Claude confirms every accepted finding at file:line |
 | First-pass review, GitHub PR | `copilot-github` code review | `grok` review of `gh pr diff N` | Claude adjudicates; Copilot approvals count only after explicit opt-in |
 | Security review | `claude` + `copilot-gpt` (`gpt-6.1-sol` high) + CodeQL/secret scanning; never Grok alone | `agy-gemini` Argon | Claude adjudicates every finding at file:line |
 | Second opinion on Opus-written code | `agy-gemini` Argon High; `copilot-gpt` also on `high_risk` paths | `grok` xhigh | Never count Opus reviewing Opus as independent (`same_family_as_conductor`) |
 | Second opinion on Grok/Gemini-written code | `claude`, depth scaled by risk | — | — |
 | PR / issue / CI triage | `copilot-github` (`ghcp-ci-debug`); issues and PRs fetched with `gh` first, then a read-only `copilot-gpt` digest (never `--github` for triage: it acts as the user) | `grok` digest of `gh run view <id> --log-failed` | Fixes go through the same gates |
-| Commit messages, PR text, changelogs | `grok` low/medium, read-only, diff in a prompt file | `copilot-gpt` (`gpt-6-luna`) | Claude edits; nothing not in the diff |
+| Commit messages, PR text, changelogs | `grok` low/medium, `--sandbox strict` in a directory that holds only the prompt file with the diff (§12.2) | `copilot-gpt` (`gpt-6-luna`) | Claude edits; nothing not in the diff |
 | Merge conflicts / integration fixes | `claude` | — | Integrated gate |
 | UI / frontend code | `claude` designs; Opus lanes make 2–3 parallel variants (one worktree each) | `claude` subagent | Screenshots (setup [unverified]), a11y lint; Claude picks and says why |
 | Media understanding | v1.1 Docker lane (`agy-media` always passes `--yolo`); Phase 1: Claude reads what it can (images, transcripts) | — | Claude checks timestamps it relies on |
@@ -1746,7 +1775,7 @@ and D16 explains exit 16.
 | D14 | Auto-update (information only, §5.4) | env `COPILOT_AUTO_UPDATE`, `GROK_DISABLE_AUTOUPDATER`, `AGY_CLI_DISABLE_AUTO_UPDATE`; `cxlib.py toml-get ~/.grok/config.toml cli auto_update` | one info line with the four values: auto-update is the user's choice, every conductor run turns it off for its own run (the worker environment, §15.6) and each lane checks the live `--help` for its flags first. Never a warning, never a fix |
 | D15 | claude login | `timeout -k 5 15 claude auth status --json </dev/null` | `"loggedIn": true` ✓; `false` or missing → ! (`claude auth login`; only `claude -p` workers need it, so it never turns the doctor red); unparseable ! |
 | D16 | copilot login | Through `ghcp-models --json --refresh` (ghcp's own free probe) on any Copilot version; the raw invalid-model probe only without ghcp-models and only when D9 reports `CX_VERIFIED_COPILOT` (measured free there); see "D16 details" below | rc 0 ✓ (catalog kept for `--pools`); 11 ✗ (`copilot login`, unless a rule below applies); 16 ✗ (re-run this Bash call outside Claude Code's sandbox); 12 ! (timed out); 13 ✗; 2 ! (catalog unparseable); other ✗. Raw probe: stderr `from --model flag is not available` ✓; `AUTH_RE` ✗; `SANDBOX_RE` ✗; else !. No ghcp-models and D9 not exactly 1.0.105 → ! "copilot login not probed" (install the ghcp plugin), and no Copilot process starts |
-| D17 | grok login, model, profile | `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false timeout -k 5 30 grok models </dev/null 2>&1` | contains `You are not authenticated` ✗ (`grok login --device-auth`); rc 0, no such phrase and ≥ 1 id parsed → ✓; killed → ! (hung); anything else (non-zero rc, crash, network error, no ids) → ! with the first output line. `grok_bulk_model` among the ids (`cxlib.py parse-models --cli grok`: `^\s*[*-]\s+(\S+)` lines, else bare-id lines) ✓ else ! (an unlisted `-m` id silently drops `--effort`). `grok_sandbox_profile` `auto` (or the 0.2.0 value `cx-workspace`): info, the number of `cx-<repo>-<hash>` profiles in `~/.grok/sandbox.toml` (each repository's first grok run, or `cx-init --user-grants`, writes its own, §15.7); another name defined there ✓ else !. The invalid 0.2.0 `cx-workspace` block still there → ! (fix `cx-init --user-grants`). Linux and WSL: `bwrap` on PATH ✓ else ! (`sudo apt install -y bubblewrap`: grok refuses to start a profile with deny lists without it); `cxlib.py landlock` (the `landlock_create_ruleset` version query): an ABI ✓, ENOSYS/EOPNOTSUPP ! (grok cannot confine its process here), else info. Always: `grok --sandbox strict models` (free, the same prefix): a line saying the sandbox was not applied (`sandbox could not be applied`, `Refusing to start with its protections missing` or `… denied paths unprotected`, `without enforcement`) ✗ (every grok run is refused: Landlock, kernel 5.13 or newer, and bubblewrap); rc 0 ✓; killed or another rc !. Then the bytes grok appended to its sandbox log (`${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl`, §1.3) during that probe (`cxlib.py grok-sandbox-event`; never when the log file itself is a symlink; the sizes from GNU `stat -c %s` and only with python3, so not on macOS): a `ProfileApplied` event for the probe's cwd with `enforced` false ✗ in place of that ✓ (every grok run is refused); with `enforced` true one more ✓ naming the platform (`linux/landlock`); no log or no such event: nothing more |
+| D17 | grok login, model, profile | `env -u XAI_API_KEY -u GROK_SANDBOX GROK_DISABLE_AUTOUPDATER=1 GROK_CLAUDE_HOOKS_ENABLED=false GROK_CLAUDE_SKILLS_ENABLED=false GROK_CLAUDE_MCPS_ENABLED=false GROK_CLAUDE_RULES_ENABLED=false GROK_CLAUDE_AGENTS_ENABLED=false timeout -k 5 30 grok models </dev/null 2>&1` | contains `You are not authenticated` ✗ (`grok login --device-auth`); rc 0, no such phrase and ≥ 1 id parsed → ✓; killed → ! (hung); anything else (non-zero rc, crash, network error, no ids) → ! with the first output line. `grok_bulk_model` among the ids (`cxlib.py parse-models --cli grok`: `^\s*[*-]\s+(\S+)` lines, else bare-id lines) ✓ else ! (an unlisted `-m` id silently drops `--effort`). `grok_sandbox_profile` `auto` (or the 0.2.0 value `cx-workspace`): info, the number of `cx-<repo>-<hash>` profiles in `~/.grok/sandbox.toml` (each repository's first grok run, or `cx-init --user-grants`, writes its own; every grok run, write, read and review, uses it, §15.7); a built-in that lets grok write `~/.grok` (`off`, `devbox`, `workspace`, `read-only`) ✗ (every grok run is refused, §15.2; fix `grok_sandbox_profile` back to `auto`); another name defined there ✓ else !. The invalid 0.2.0 `cx-workspace` block still there → ! (fix `cx-init --user-grants`). Linux and WSL: `bwrap` on PATH ✓ else ! (`sudo apt install -y bubblewrap`: grok refuses to start a profile with deny lists without it); `cxlib.py landlock` (the `landlock_create_ruleset` version query): an ABI ✓, ENOSYS/EOPNOTSUPP ! (grok cannot confine its process here), else info. Always: `grok --sandbox strict models` (free, the same prefix): a line saying the sandbox was not applied (`sandbox could not be applied`, `Refusing to start with its protections missing` or `… denied paths unprotected`, `without enforcement`) ✗ (every grok run is refused: Landlock, kernel 5.13 or newer, and bubblewrap); rc 0 ✓; killed or another rc !. Then the bytes grok appended to its sandbox log (`${GROK_HOME:-~/.grok}/sessions/sandbox-events.jsonl`, §1.3) during that probe (`cxlib.py grok-sandbox-event`; never when the log file itself is a symlink; the sizes from GNU `stat -c %s` and only with python3, so not on macOS): a `ProfileApplied` event for the probe's cwd with `enforced` false ✗ in place of that ✓ (every grok run is refused); with `enforced` true one more ✓ naming the platform (`linux/landlock`); no log or no such event: nothing more |
 | D18 | agy login, grant | `env -u GEMINI_API_KEY -u GOOGLE_API_KEY AGY_CLI_DISABLE_AUTO_UPDATE=true timeout -k 5 30 agy models --output-format json </dev/null`; if rc ≠ 0 or unparseable, the same prefix with `agy models` | ≥ 1 id that looks like a model slug (one token with a digit; `cxlib.py parse-models --cli agy` reads a `{"<slug>": "<label>"}` map only when every key is such a slug and no `error`/`status`/`message`/`code`/`detail`/`reason` key is present, so an rc-0 status envelope is no model list) ✓; 0 ids, not killed ✗ (run `agy` once in a terminal and sign in); killed ! (hang: not an auth problem, #318 or MCP startup). `~/.gemini/antigravity-cli/settings.json` `permissions.allow` holds `write_file(...)` or `command(...)` rules → info: global grants conductor 0.2.0 wrote, no longer needed (each raw run passes its own `--settings`, §15.2) and applying to every agy session; none → info that the grants are per run |
 | D19 | gh login | `timeout -k 5 15 gh auth status </dev/null` | rc 0 ✓; else ✗ (`gh auth login --web`) |
 | D20 | conductor install | `installed_plugins.json`, `enabledPlugins` | installed → info with version; disabled → ! |
@@ -2578,9 +2607,10 @@ that snapshot in a clean bash (an edit of the worktree's `routes.json` changes n
 caller's `BASH_ENV` or exported functions never run), `cx-route` alone lists the names.
 Executors may run only `cx-route <name>` and `git status` (agy also `ls`): agy gets exactly
 these as per-run `--settings` grants (its first other command ends the run), Copilot as
-`--allow-shell` rules, and grok runs inside its repository's sandbox profile. Never `git diff`,
-`git log` or `git show`: their `--output=<path>` writes any file, and a prefix rule cannot
-forbid an option. Name the checks in the contract as `cx-route <name>`.
+`--allow-shell` rules, and grok runs inside its repository's sandbox profile (in every mode,
+read and review included). Never `git diff`, `git log` or `git show`: their `--output=<path>`
+writes any file, and a prefix rule cannot forbid an option. Name the checks in the contract as
+`cx-route <name>`.
 `cx-init --user-grants` (optional, from inside the repo) writes that repository's grok profile
 ahead of its first grok run and removes the invalid profile conductor 0.2.0 wrote; agy needs no
 user-level grant any more. Never use the yolo / skip-permissions flags (`--yolo`,
@@ -2684,12 +2714,17 @@ cx-run --mode read --exec copilot '<question>'                                  
 Not lanes: `agy-media` and `/antigravity:research` (both always pass `--yolo`); research goes
 to your own WebSearch and Grok, media waits for the v1.1 Docker lane. Commit messages, PR text
 and changelogs go to Grok with the diff inside the prompt file (one call; `vars.sh` is written
-by `cx-run`):
+by `cx-run`). Grok runs under its built-in `strict` profile in a directory of its own that holds
+only the prompt (`$OUT/msg/`, emptied first): it may write only there, in `~/.grok/sessions` and
+the temp directories, and nothing the conductor later sources or runs (`vars.sh`, the routes)
+lives there. Never `--sandbox read-only` (it lets grok write `~/.grok`: its own binary, ripgrep
+and plugins) and never `--cwd "$TOP"`:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
-{ printf '%s\n\n' 'Write a commit message (a subject under 72 characters, a blank line, a short body) for the diff below. Describe only what the diff shows.'; git -C "$TOP" diff "$BASE" "cx/$ID"; } > "$OUT/msg-prompt.txt"
-cx-wsl grok --prompt-file "$OUT/msg-prompt.txt" -m grok-4.7 --effort low --cwd "$TOP" --sandbox read-only --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
+rm -rf -- "${OUT:?}/msg" && mkdir -p -- "$OUT/msg"                                       # holds only the prompt
+{ printf '%s\n\n' 'Write a commit message (a subject under 72 characters, a blank line, a short body) for the diff below. Describe only what the diff shows.'; git -C "$TOP" diff "$BASE" "cx/$ID"; } > "$OUT/msg/prompt.txt"
+cx-wsl grok --prompt-file "$OUT/msg/prompt.txt" -m grok-4.7 --effort low --cwd "$OUT/msg" --sandbox strict --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
 ```
 
 ### Step 3: after every run (the conductor commits; the gate never runs in `$WT`)
@@ -3370,7 +3405,7 @@ writes `$OUT/<lane>.out`, `$OUT/<lane>.err`, `$OUT/rc`; `parse` runs `normalize.
 | Lane | Environment | Argv (write mode) | Parse and checks |
 |---|---|---|---|
 | copilot | unset `COPILOT_ALLOW_ALL COPILOT_AUTO_TIER COPILOT_MODEL COPILOT_PROVIDER_BASE_URL GH_TOKEN GITHUB_TOKEN`, except the one variable the host record names as `copilot_token_env` (§7.6, D16), and `COPILOT_HOME` when it differs from the host record; `COPILOT_AUTO_UPDATE=false`, `GHCP_COPILOT_BIN=<record bin.copilot>`, `GHCP_USAGE_LOG=$CX_HOME/raw-usage.log`, `COPILOT_GITHUB_TOKEN` from `$CX_HOME/secrets/copilot-token` when that file exists | `<ghcp_delegate> --model <copilot_opus_id> --effort <E> --dir "$WT" --write --allow-shell cx-route --allow-shell 'git status' --timeout <T> --digest -- "$P"` (ghcp turns each into `--allow-tool 'shell(<it>)'`; Copilot matches a shell call by its command name, so the routes commands run through `cx-route` and `shell(python3)` / `shell(:*)` are never granted; nor `git diff`, `log` or `show`, approved by first-level subcommand: their `--output=<path>` writes any file); Fusion: `--fusion standard\|max` instead of `--model/--effort`; read/review: no `--write`, `--dir "$GATE" --add-dir "$OUT"`, the same `--allow-shell` list | answer = stdout; `GHCP_SESSION`, `GHCP_USAGE` (`models_used`, `ai_credits`, tokens), `GHCP_DENIED`, `GHCP_FALLBACK`, `GHCP_NOTE`, `GHCP_SIGNAL`. Served: every `models_used[].model` equals the request (Fusion: any `GHCP_FALLBACK` → 21). #5149: effort xhigh, ≥ 30,000 output tokens and an empty answer → 2 with reason `copilot#5149`. ghcp exits pass through |
-| grok | `GROK_DISABLE_AUTOUPDATER=1`, `GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false`, `GIT_CONFIG_GLOBAL=/dev/null` (strict cannot read `~/.gitconfig`); unset `XAI_API_KEY`, `GROK_SANDBOX` | `<grok> --prompt-file "$WT/.conductor/prompt.txt" -m <grok_bulk_model> --effort <E> --cwd "$WT" -s <uuid> --output-format json --sandbox <the repository's profile cx-<repo>-<hash>, §15.7> --always-approve --no-subagents --max-turns 60` (the sandbox is the boundary: `--permission-mode acceptEdits` denied the first edit headless, and no `--allow` rules are needed inside it; the profile is written under `$CX_HOME/locks/grok-sandbox.lock` before the slot when missing or different, and again once the slot is held (a read or review run, whose `read-only` profile writes `~/.grok`, may have changed it meanwhile); a per-project `.grok/sandbox.toml` in the worktree refuses the run, 2; the preflight runs `grok --sandbox strict models`, free, and a line saying the sandbox was not applied refuses the lane, 2, as does a `ProfileApplied` event with `enforced` false that this probe appended to grok's sandbox log for its cwd, §1.3; `enforced` true records the platform in the probe JSON, and no log or event, or a host without GNU `stat` (macOS), changes nothing); read/review: `--sandbox read-only --always-approve --json-schema <schema>` on the gate checkout. `GROK_MAX_CONCURRENT_SUBAGENTS=4` and no `--no-subagents` only when the task JSON says `"subagents": true` | JSON `text`, `sessionId`, `modelUsage`, `usage`, `stopReason` (verified on 1.0.70, §1.3; `text` joins every turn's message, so with `--json-schema` the answer is `structuredOutput` as JSON; when grok gives none, `text` stays the answer, with a note that it is not the structured one); any `permission required:` on stderr → denied; rc 1 with an error object and no `sessionId` → 2; `You are not authenticated` → 11; `rate.?limit\|quota\|\b429\b` → 10; a stderr line saying the sandbox was not applied → 2 (when grok went on anyway, the reason says it ran unconfined). Served: every `modelUsage` key is the model or the model plus a suffix of the explicit alias table (`-build` only: `grok-4.7` serves `grok-4.7-build`; `grok-4.7-build-fast` or another model → 21); `model_served` is the key, with a note when it is the alias. Tokens also from `grok usage <uuid>` (free) |
+| grok | `GROK_DISABLE_AUTOUPDATER=1`, `GROK_CLAUDE_{HOOKS,SKILLS,MCPS,RULES,AGENTS}_ENABLED=false`, `GIT_CONFIG_GLOBAL=/dev/null` (strict cannot read `~/.gitconfig`); unset `XAI_API_KEY`, `GROK_SANDBOX` | `<grok> --prompt-file "$WT/.conductor/prompt.txt" -m <grok_bulk_model> --effort <E> --cwd "$WT" -s <uuid> --output-format json --sandbox <the repository's profile cx-<repo>-<hash>, §15.7> --always-approve --no-subagents --max-turns 60` (the sandbox is the boundary: `--permission-mode acceptEdits` denied the first edit headless, and no `--allow` rules are needed inside it); read/review: the same profile, `--sandbox <it> --always-approve --no-subagents --json-schema <the schema text, inline>` with `--cwd` the gate checkout and the prompt file in its `.conductor/` (never grok's built-in `read-only`: it lets grok write `~/.grok/bin`, `vendor/` and `installed-plugins/`, measured, §1.3; a custom `grok_sandbox_profile` is used in every mode). Every file a run reads lies inside its checkout: `--prompt-file`, `.conductor/task.md` and a review's `.conductor/change.diff` (whether grok reads `--prompt-file` before its sandbox applies or under it is unverified, §20 item 77; under `strict` both work). Before the slot, in every mode: a per-project `.grok/sandbox.toml` in the run's checkout refuses the run, 2 (a writer may leave one, and a review's gate checkout is a checkout of an executor-written branch, which can carry one); the profile is written under `$CX_HOME/locks/grok-sandbox.lock` when missing or different, and again once the slot is held (no conductor grok run can write `sandbox.toml`, which grok write-denies under its profiles, measured: the rewrite guards against everything else); then the per-run profile check, free: `grok --sandbox <the run's profile> models` in the run's checkout (the preflight's probe machinery, worker environment and 30 s bound) and `normalize.py grok-check` on the bytes it appended to grok's sandbox log: a `ProfileApplied` event for the checkout with `enforced` false, or a `read_write_paths` entry that grants write to grok's home (`${GROK_HOME:-~/.grok}` itself, a directory above it or one inside it, compared as given and resolved, but `~/.grok/sessions` and below), refuses the run, 2, before any prompt, as do a line saying the sandbox was not applied and a built-in that writes grok's home (`off`, `devbox`, `workspace`, `read-only`) whatever the log says; the reason names the profile, the path and the log; no log or no event changes nothing; the facts (the event's platform included) go into `grok.run.json` as `sandbox_check`. The preflight runs `grok --sandbox strict models`, free, and a line saying the sandbox was not applied refuses the lane, 2, as does a `ProfileApplied` event with `enforced` false that this probe appended to grok's sandbox log for its cwd, §1.3; `enforced` true records the platform in the probe JSON, and no log or event, or a host without GNU `stat` (macOS), changes nothing. `GROK_MAX_CONCURRENT_SUBAGENTS=4` and no `--no-subagents` only when the task JSON says `"subagents": true` | JSON `text`, `sessionId`, `modelUsage`, `usage`, `stopReason` (verified on 1.0.70, §1.3; `text` joins every turn's message, so with `--json-schema` the answer is `structuredOutput` as JSON; when grok gives none, `text` stays the answer, with a note that it is not the structured one); any `permission required:` on stderr → denied; rc 1 with an error object and no `sessionId` → 2; `You are not authenticated` → 11; `rate.?limit\|quota\|\b429\b` → 10; a stderr line saying the sandbox was not applied → 2 (when grok went on anyway, the reason says it ran unconfined). Served: every `modelUsage` key is the model or the model plus a suffix of the explicit alias table (`-build` only: `grok-4.7` serves `grok-4.7-build`; `grok-4.7-build-fast` or another model → 21); `model_served` is the key, with a note when it is the alias. Tokens also from `grok usage <uuid>` (free) |
 | agy (raw, default) | `AGY_CLI_DISABLE_AUTO_UPDATE=true`; unset `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `/usage` before (free); `flock` on `$CX_HOME/locks/agy-launch`; registration `(cd "$WT" && <agy> --new-project --output-format json -p /model </dev/null)`; tree snapshot (`git status --porcelain=v1` of the main checkout and every other worktree, through each worktree's git directory as the repository's admin files name it, never a worktree's own `.git`, with no fsmonitor, hooks, textconv or submodules; plus each worktree's `.git` link hash); `(cd "$WT" && exec setsid timeout --kill-after=15s <T+5m> <agy> --model <slug> --add-dir "$WT" --settings "$OUT/agy-settings.json" --print-timeout <T> --output-format stream-json --disable-slash-commands -p "$P" </dev/null) > agy.ndjson 2> agy.err &`, where `agy-settings.json` (written before the slot, session-only) is `{"permissions": {"allow": ["write_file(<WT>)", "command(cx-route)", "command(git status)", "command(ls)"]}}` (never `--dangerously-skip-permissions`, never a global grant; never `command(git diff|log|show)`: a token-prefix rule would also allow their `--output=<path>` and `diff --no-index`, a write and a read anywhere, and agy has no filesystem sandbox) and `$P` is the agy prompt (read with agy's own file tools; any other command ends the run); the new session id is appended to `$CX_JOB_DIR/sids` | Wait ≤ 120 s for the `init` event: `init.model` ≠ slug → kill, 21; release the launch lock after `init`; SIGKILL the process group 5 s after the `result` event (#1313); snapshot again: any change outside `$WT` → 22 and `touch $CX_HOME/state/agy-paused` (agy dispatch stops until a human runs `cx-job unpause agy`; the main checkout is never auto-reset); `subagent_info` or a non-Opus model in events → 2 (`subagent`); `denied_actions` (each named after the tool step it stopped: `run_command`'s `tool_info.parameters.CommandLine` in `denied[].command` and `CX_DENIED.commands`) / permission `finished_reason` → 15; expired print timeout → 27; `/usage` after → `cost.quota_delta`. `agy_claude_floor_pct` > 0 and the bucket below it → lane ineligible |
 | agy (wrapper) | as above plus `AGY_USAGE_LOG=$CX_HOME/raw-usage.log`; PATH shim set without `agy` | registration as above, then `<agy_delegate> --model <slug> --dir "$WT" --timeout <T> --digest "$P"` | `model_served: null` plus the note `agy wrapper: AGY_USAGE.model echoes the request; served model unverified` (§1.4); such a run never counts as G6-verified and never yields 21; agy-delegate exits pass through |
 | claude | — | Default: no process; stdout `{"dispatch": "claude-subagent", "id", "worktree", "host_path", "prompt", "effort", "task_file"}`, then `cx-run --finish <id>`. `--headless`: `cd "$WT" && <claude> -p --model claude-opus-5-5 --effort <E> --output-format json --session-id <uuid> --permission-mode acceptEdits --settings "$OUT/cx-worker.json" "$P"` | JSON `result`, `session_id`, `usage`, `modelUsage` [assumption; pin with a capture]. `cx-worker.json` (from `templates/cx-worker.json`) allows `Bash(cx-route:*)`, `Bash(git status)` and `Bash(<cmd>)` per routes command and denies `Bash(claude:*)`, `Bash(copilot:*)`, `Bash(grok:*)`, `Bash(agy:*)`, every `Bash(ghcp-<x>:*)`, `Bash(agy-<x>:*)`, `Bash(cx-<x>:*)`. `--safe-mode` is added only after §20 item 18 passes |
@@ -3412,7 +3447,10 @@ HOST/OWNER/REPO` and `--base-branch B` (copilot-cloud).
 - `run`: builds argv when its files are missing (else they win: the meta's timeout, prompt,
   worktree and model are restored); the preflight from the probe: 13 `CLI_MISSING`, 26
   `VERSION_MISMATCH` (the flag contract, before any executor call, A9), 28 for a paused agy, 11,
-  14; `lane_prepare` (grok: the repository's sandbox profile; agy raw: `agy-settings.json`); the
+  14; `lane_prepare` (grok, every mode: no per-project `.grok/sandbox.toml`, the repository's
+  sandbox profile, the per-run profile check; agy raw: `agy-settings.json`), whose refusal, like
+  any stop before the executor, leaves its reason in `$OUT/adapter.why` (cx-run appends it to
+  the result's reason); the
   `running` mark `$OUT/running` (write mode; kept for the claude dispatch until `--finish`);
   the pool slot (`cx_lock_acquire`, an inherited one reused; 28 at cap); then the lane's
   executor under `setsid timeout --kill-after=30s <limit>` in the worker environment, with a
@@ -3629,33 +3667,44 @@ succeeds for copilot, grok and agy (a CLI that re-execs itself by name would hit
 0.2.1 (the 2026-11-06 probes, decisions 3 and 4): agy needs no user-level grant (each raw run
 passes its own `--settings`, §15.2), and grok writers run under their repository's own sandbox
 profile, so `--user-grants` only writes that profile ahead of the repository's first grok run.
+0.2.2: every conductor grok run, read and review included, runs under that profile (0.2.1 ran
+those under the built-in `read-only`, which lets grok write `~/.grok/bin`, `vendor/` and
+`installed-plugins/`, §1.3).
 
 - **The profile.** `cx-<repo>-<8 hex>`: `<repo>` the main checkout's directory name (lower-case,
   `[a-z0-9-]`, at most 24 characters), the hex the start of the sha256 of the repository's git
   common directory (resolved). Its block in `~/.grok/sandbox.toml` (`${GROK_HOME:-~/.grok}`),
   rendered from `templates/grok-sandbox.toml` between `# cx:begin <name>` and `# cx:end <name>`:
   `extends = "strict"`, `read_only = ["<git common dir>", "<$CX_HOME/routes>"]` (git status in a
-  worktree; each run's `cx-route`, never the out directories). Written by the grok lane before the slot
-  (`cxlib.py grok-profile`, under `flock` on `$CX_HOME/locks/grok-sandbox.lock`) when missing or
-  different, again once the run holds its slot (a read or review run may have changed it while
-  the run waited; only the moment before grok reads it at startup stays open), and by
-  `cx-init --user-grants`; the block is rewritten between its markers, and,
-  since the name is conductor's own (no person writes it, and a grok run may rewrite
-  `sandbox.toml`: measured on 1.0.70, §1.3, the built-in `read-only` of the read and review runs
-  and of the skill's Step 3 commit-message call writes all of `~/.grok`, while `strict` and the
-  profiles extending it keep `~/.grok` read-only, although grok's README says strict writes it),
-  any other `[profiles.<name>]` table (or
-  sub-table) is replaced too; a definition left another way (dotted keys, an inline table) is a
-  conflict (the parsed profile must equal the rendered one), which refuses the run; the file is first copied to
-  `sandbox.toml.cx-bak`, written atomically (through a symlinked dotfile to its target) with its
-  own mode, and a result that would not parse (tomllib, Python 3.11 and newer) is a conflict:
-  nothing is written. Both writers remove the exact block conductor 0.2.0 appended (the
-  `cx-workspace` profile with glob deny paths, which grok's literal `deny` cannot take).
+  worktree or a gate checkout; each run's `cx-route`, never the out directories). It writes only
+  the run's checkout, `~/.grok/sessions`, `/tmp` and `/var/tmp` (the sandbox log of every start,
+  §1.3). Written by the grok lane before the slot in every mode (`cxlib.py grok-profile`, under
+  `flock` on `$CX_HOME/locks/grok-sandbox.lock`) when missing or different, again once the run
+  holds its slot (only the moment before grok reads it at startup stays open), and by `cx-init
+  --user-grants`; the block is rewritten between its markers, and, since the name is
+  conductor's own (no person writes it), any other `[profiles.<name>]` table (or sub-table) is
+  replaced too; a definition left another way (dotted keys, an inline table) is a conflict (the
+  parsed profile must equal the rendered one), which refuses the run; the file is first copied
+  to `sandbox.toml.cx-bak`, written atomically (through a symlinked dotfile to its target) with
+  its own mode, and a result that would not parse (tomllib, Python 3.11 and newer) is a
+  conflict: nothing is written. Both writers remove the exact block conductor 0.2.0 appended
+  (the `cx-workspace` profile with glob deny paths, which grok's literal `deny` cannot take).
+  What the rewrite guards: no conductor grok run can change `sandbox.toml` (grok write-denies it
+  under `read-only` and `strict`, measured, §1.3; 0.2.1 said the built-in `read-only` could),
+  so it guards against everything else that can: the user's own grok sessions without a sandbox
+  (grok's default) or under `devbox`, other tools, and code planted where 0.2.1's `read-only`
+  runs could write (grok's binary, its ripgrep, its plugins), which runs outside any sandbox.
+- **The per-run check** (§15.2 grok) confirms, from grok's own sandbox log, that the profile a
+  run is about to use is enforced and grants no write into grok's home but `~/.grok/sessions`;
+  it runs for the repository's profile and for a profile of the user's own alike.
 - **Option `grok_sandbox_profile`**: `auto` (default; the 0.2.0 default `cx-workspace` counts as
   `auto`) uses the repository's profile; any other value names a profile of the user's own,
-  used as it is (it must let grok read the git common directory and `$CX_HOME/routes`). Outside a
-  git checkout the lane uses the built-in `strict`. Read-only and review runs use the built-in
-  `read-only` with `--always-approve`.
+  used as it is for every mode, write, read and review (one boundary per repository; a read or
+  review reads executor-written code, so it gets no weaker profile than the writers). It must
+  let grok read the git common directory and `$CX_HOME/routes`, and must not let grok write its
+  home: the per-run check refuses a run whose profile's logged grants do, and a built-in that
+  writes `~/.grok` (`off`, `devbox`, `workspace`, `read-only`) is always refused. Outside a git
+  checkout the lane uses the built-in `strict`.
 - **`cx-init --user-grants [--dir D] [--dry-run] [--json]`** (`cxlib.py user-grants`): the
   profile of the repository at `--dir` (default the cwd); `update`/`create`/`same`/`CONFLICT`
   lines or `--json`, notes on stderr and one `CX_INIT` line with `detected: {user_grants,
@@ -4123,11 +4172,13 @@ update the § it affects and drop its tag.
 | 69 | grok's `strict` profile plus `read_only = [<git common dir>, $CX_HOME/routes]` lets a worktree run `cx-route <name>` (bash, the check's own toolchain) and `git status`; a check whose toolchain lives under `$HOME` (`~/.nvm`, `~/.cargo`) cannot run in it | **settled 2026-11-06** for `cx-route`: the real run sbx-grok-2 (`--sandbox cx-textutil-78d1f9c2 --always-approve`, grok 1.0.70, build container) ran `cx-route test` (`python3 -m unittest`, 3 tests OK, in grok's own session log) and exited 0; its sandbox log line shows the profile enforced with `~/.grok` read-only (§1.3). A toolchain under `$HOME` is still unreadable by construction | — | §15.2 grok, §15.7 |
 | 70 | Copilot approves `shell(cx-route)` for a PATH-resolved script named `cx-route`, and `shell(git status)` for `git status --short` | docs (`copilot help permissions`: command name; git first-level subcommand) | One `cx-run --exec copilot` on the user's machine (Copilot cannot sign in from the build container) | §15.2 copilot |
 | 71 | agy's `command(cx-route)` grant covers `cx-route test` (a token-prefix rule, as measured for multi-word rules) | **settled 2026-11-06**: the real run sbx-agy-2 (agy 1.5.1, build container, per-run `--settings` with `write_file(<worktree>)`, `command(cx-route)`, `command(git status)`, `command(ls)`) ran `ls -R`, `cx-route test` (3 tests OK) and `git status` as `run_command` steps, none denied, exit 0 | — | §15.2 agy |
-| 72 | grok on a kernel without Landlock: whether 1.0.70 refuses to start (as for a profile it cannot apply) or warns and goes on unconfined (its README), and what its sandbox log says then | a profile it cannot apply refuses (measured 2026-11-06); a start where Landlock applies logs `ProfileApplied` with `enforced` true (§1.3). No Landlock is unverified, and so is whether grok then logs `enforced` false. Now checked: the preflight and D17 refuse on a line saying the sandbox was not applied and on a `ProfileApplied` event with `enforced` false that their own strict probe appended for its cwd; with neither (no log, no event, or no GNU `stat`: macOS) nothing changes, and D17 still reports the Landlock ABI | `grok --sandbox strict models` on such a kernel (WSL with an old kernel), reading its stderr and the new line of `~/.grok/sessions/sandbox-events.jsonl` | §1.3, §15.2 grok, D17 |
-| 73 | Which definition grok uses when the worktree's `.grok/sandbox.toml` and `~/.grok/sandbox.toml` both define the run's profile | unverified | `grok --sandbox <p> models` with both files and an invalid grant in one | §15.2 grok (the lane refuses a worktree that holds one), §15.7 |
+| 72 | grok on a kernel without Landlock: whether 1.0.70 refuses to start (as for a profile it cannot apply) or warns and goes on unconfined (its README), and what its sandbox log says then | a profile it cannot apply refuses (measured 2026-11-06); a start where Landlock applies logs `ProfileApplied` with `enforced` true (§1.3). No Landlock is unverified, and so is whether grok then logs `enforced` false. Now checked: the preflight and D17 refuse on a line saying the sandbox was not applied and on a `ProfileApplied` event with `enforced` false that their own strict probe appended for its cwd, and so does every grok run's per-run check of its own profile in its checkout (0.2.2, §15.2); with neither (no log, no event, or no GNU `stat`: macOS) nothing changes, and D17 still reports the Landlock ABI | `grok --sandbox strict models` on such a kernel (WSL with an old kernel), reading its stderr and the new line of `~/.grok/sessions/sandbox-events.jsonl` | §1.3, §15.2 grok, D17 |
+| 73 | Which definition grok uses when the run's checkout's `.grok/sandbox.toml` and `~/.grok/sandbox.toml` both define the run's profile | docs-only (`~/.grok/docs/user-guide/18-sandbox.md`: the user's file wins, with a startup warning, when the two differ); not measured | `grok --sandbox <p> models` with both files and an invalid grant in one | §15.2 grok (the lane refuses a checkout that holds one, in every mode since 0.2.2), §15.7 |
 | 74 | The agy and Copilot lanes have no OS sandbox: `cx-route` runs the repository's own checks, whose code is in the worktree, so their grants keep an executor to the routes but do not contain a hostile one (grok's sandbox does) | by construction | — | §15.2, §15.6 |
-| 75 | grok's session store `~/.grok/sessions` (every grok session's transcript: the prompt, the files read, tool output and the answer, for every repository) is readable and writable by every grok run, writers included, so a grok writer can read and change other grok runs' tasks and answers there; R6 keeps `$CX_HOME/out` from grok writers, not grok's own store | measured 2026-11-06: `~/.grok/sessions` is in the `read_write_paths` of every logged strict-based start (§1.3), and it held the live runs' `chat_history.jsonl` with their task text | — (a known limit of grok's profiles) | §1.3, §15.6, §15.7 |
-| 76 | grok's built-in `read-only` profile (read and review runs, the skill's Step 3 commit-message call) writes all of `~/.grok` (its log line names no `read_only_paths`), so such a run, which reads executor-written code, can change `sandbox.toml` and `config.toml` for later grok runs | measured 2026-11-06 (§1.3). The lane rewrites the repository's profile before every write run and again once the run holds its slot, so only the moment before grok reads `sandbox.toml` at startup stays open; nothing checks the rest of `~/.grok` | — (a known limit) | §1.3, §15.2 grok, §15.7 |
+| 75 | grok's session store `~/.grok/sessions` (every grok session's transcript: the prompt, the files read, tool output and the answer, for every repository) is readable and writable by every grok run, under every profile, so a grok run can read and change other grok runs' tasks and answers there; R6 keeps `$CX_HOME/out` from grok runs, not grok's own store | measured 2026-11-06: `~/.grok/sessions` is in the `read_write_paths` of every logged strict-based start (§1.3), it was WRITABLE under `strict` as under `read-only` (`tests/fixtures/real/grok/write-probe-*`), and it held the live runs' `chat_history.jsonl` with their task text. The per-run check exempts it on purpose (every grok run must write its session) | — (a known limit of grok's profiles) | §1.3, §15.2 grok, §15.6, §15.7 |
+| 76 | What a conductor grok run can write in grok's home `~/.grok`: 0.2.1 ran read and review runs and the skill's Step 3 commit-message call under the built-in `read-only`, and its docs said that profile writes all of `~/.grok`, `sandbox.toml` and `config.toml` included | **settled 2026-11-06** (grok 1.0.70, linux/landlock plus bubblewrap, enforced; `tests/fixtures/real/grok/write-probe.sh` run by grok's agent, results `write-probe-read-only-1.0.70.txt` and `write-probe-strict-1.0.70.txt`): under `read-only` grok's protected set (`config.toml`, `sandbox.toml`, `trusted_folders.toml`, `managed_config.toml`, `requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`) is write-denied (0.2.1 was wrong there), while grok's binary `bin/grok-1.0.70`, its ripgrep `vendor/rg-15.0.0-override`, `installed-plugins/`, `auth.json` and `~/.grok` itself are writable: code that later runs outside any sandbox (0.2.1 missed that exposure); under `strict` all of it is denied but `sessions/`. Resolved for every conductor-launched grok run (0.2.2): read, review and write runs use the repository's strict-based profile, the commit-message call the built-in `strict` in a directory that holds only its prompt, and each lane run first checks its own profile's logged grants (§15.2). The tamper-safe profile rewrite stays: it now guards `sandbox.toml` against what is outside conductor's runs. What remains: the user's own grok sessions (grok's default is no sandbox; `workspace` writes `~/.grok` too) and anything they run can still change `~/.grok`, and a 0.2.1 read or review may have planted code there already | — (the user's own sessions are theirs; check `~/.grok/bin`, `vendor/` and `installed-plugins/` after 0.2.1 read or review runs on untrusted code) | §1.3, §12.2, §15.2 grok, §15.7 |
+| 77 | Whether grok reads `--prompt-file` (and loads its configuration) in its own process before the sandbox applies, or under it | unverified (grok's `--json-schema` takes the schema text itself, so only the prompt file matters). Moot for conductor's runs: every prompt file lies inside the run's cwd (`<checkout>/.conductor/prompt.txt`, `$OUT/msg/prompt.txt`), which every strict-based profile reads | One `grok --sandbox strict --prompt-file <a file outside the cwd>` run (the parent's live verification) | §12.2, §15.2 grok |
+| 78 | Whether grok's daemon backend ever runs a conductor grok run (headless `--prompt-file` or `models`): its docs say `strict` then also writes `~/.grok/daemon/run/strict`, a custom profile `~/.grok/daemon/run/<name>`, which the per-run check would refuse as a write into grok's home | unseen: no logged start of a conductor run (write, read, probe) listed such a path (§1.3, 2026-11-06) | A per-run check refusal naming `~/.grok/daemon/run/...` (it says so), then a decision whether that directory may be exempted | §15.2 grok |
 
 ## Appendix A. Spec revision log
 
@@ -4298,6 +4349,20 @@ hand (GATE_OK on both write runs), and changed (with the review of those changes
 | # | Finding | Change | Where |
 |---|---|---|---|
 | L1 | grok's `text` joins every turn's message with no separator: a read with `--json-schema` answered `[ ][{…}]`, not valid JSON, while `structuredOutput` held the answer | With `--json-schema` the answer is `structuredOutput` as JSON (without one, `text` with a note); the stub answers the same way | §1.3, §15.2 grok |
-| L2 | grok logs a `ProfileApplied` event per sandboxed start (`platform`, `enforced`); strict keeps `~/.grok` read-only but `~/.grok/sessions` (its README says it writes `~/.grok`), while the built-in `read-only` of the read and review runs writes all of `~/.grok` | The preflight and D17 read the event their strict probe appended: `enforced` false refuses the lane; the lane writes the repository's profile again once a run holds its slot; the docs say what was measured, with the session store and `read-only`'s writes as known limits | §1.3, §8.3 D17, §15.2, §15.7, §20 items 69, 72, 75, 76 |
+| L2 | grok logs a `ProfileApplied` event per sandboxed start (`platform`, `enforced`); strict keeps `~/.grok` read-only but `~/.grok/sessions` (its README says it writes `~/.grok`), while the built-in `read-only` of the read and review runs writes `~/.grok` (all of it, this row said; corrected by A.6 item G1: all but grok's write-denied protected set, `bin/`, `vendor/` and `installed-plugins/` included) | The preflight and D17 read the event their strict probe appended: `enforced` false refuses the lane; the lane writes the repository's profile again once a run holds its slot; the docs say what was measured, with the session store and `read-only`'s writes as known limits | §1.3, §8.3 D17, §15.2, §15.7, §20 items 69, 72, 75, 76 |
 | L3 | `cx-job wait <task id>` said only "no job" | A task id (`--id`) of exactly one job names that JOB_ID in the note (exit 1 still; nothing acts on it); a prefix of one JOB_ID that is another job's task id is ambiguous (exit 1) | §15.5 |
 | L4 | agy's `command(cx-route)` covers `cx-route test`; grok's profile runs it | §20 items 69 and 71 settled; item 70 (Copilot) stays open for the user's machine | §20 |
+
+### A.6 Revision 2026-11-06b (0.2.2: no conductor grok run under the built-in `read-only`)
+
+A live write probe in the build container (grok 1.0.70, linux/landlock plus bubblewrap,
+enforced; `tests/fixtures/real/grok/write-probe*`) measured what grok's agent can write in
+`~/.grok` under the built-in `read-only` and `strict`, and changed:
+
+| # | Finding | Change | Where |
+|---|---|---|---|
+| G1 | Under the built-in `read-only` (0.2.1's read and review runs and the skill's commit-message call) grok write-denies its protected set (`config.toml`, `sandbox.toml`, `hooks/`, …), against 0.2.1's docs, but writes the rest of `~/.grok`: its own binary in `bin/`, its ripgrep in `vendor/`, `installed-plugins/`, `auth.json`. A run steered by the executor-written or repository content it reads could plant code that later runs outside any sandbox | Read and review runs use the repository's strict-based profile (the same as writers; a custom `grok_sandbox_profile` in every mode); every file they read lies in their checkout; a built-in that writes `~/.grok` is refused | §1.3, §15.2 grok, §15.7, §20 item 76 |
+| G2 | The preflight checked only the built-in `strict`, never the profile a run actually uses | A free per-run check before the slot: `grok --sandbox <the run's profile> models` in the run's checkout and the bytes it appended to grok's sandbox log; `enforced` false or a `read_write_paths` entry that grants write to grok's home (but `~/.grok/sessions`) refuses the run (2); the facts go into `grok.run.json` | §1.3, §15.2 grok, §20 items 77, 78 |
+| G3 | The skill's commit-message call ran `--sandbox read-only --cwd "$TOP"` | `--sandbox strict` with `--cwd "$OUT/msg"`, a directory emptied first that holds only the prompt (nothing the conductor later sources or runs lives there) | §12.2 |
+| G4 | A review's gate checkout (an executor-written branch) could carry a `.grok/sandbox.toml`; only write runs refused one | Every mode refuses it | §15.2 grok |
+| G5 | A refusal before the executor reached the result only as "stopped before its executor ran" | The adapter leaves its reason in `$OUT/adapter.why`; cx-run appends it to the result's reason | §15.2 |

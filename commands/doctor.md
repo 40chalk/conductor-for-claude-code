@@ -36,8 +36,9 @@ a few lines per section:
   ones: a CLI below its minimum (Claude Code 2.1.316, agy 1.1.12; nothing else is pinned, and
   the versions last verified are info lines: each run checks the live `--help` for its flags);
   missing bubblewrap for grok's sandbox, or grok unable to apply its sandbox at all, or its
-  sandbox log saying the profile was not enforced (D17 ✗: every grok run is refused; Landlock
-  needs Linux 5.13 or newer, `wsl --update` for WSL); a CLI
+  sandbox log saying the profile was not enforced, or option `grok_sandbox_profile` naming a
+  built-in that lets grok write `~/.grok` (D17 ✗: every grok run is refused; Landlock needs
+  Linux 5.13 or newer, `wsl --update` for WSL; the option goes back to `auto`); a CLI
   not logged in (point to `cx-doctor --login-help <cli>`; logins are interactive, so the user
   runs them in a WSL terminal); the ghcp and antigravity policies and nudges still on next to
   the conductor's policy, and antigravity's `timeout` below 30m; the grok-build plugin's

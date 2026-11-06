@@ -25,7 +25,7 @@ The full build spec is `docs/DESIGN.md`; this README condenses it.
 | Task | Primary | Fallback | Verification |
 |---|---|---|---|
 | Architecture, hard reasoning | Claude (xhigh, max for one-way doors) | Copilot Opus high | Claude writes the ADR |
-| Exploration, "where is X" | grok `grok-4.7` medium, read-only | Gemini flash, read-only | Claude spot-checks cited lines |
+| Exploration, "where is X" | grok `grok-4.7` medium, read mode | Gemini flash, read-only | Claude spot-checks cited lines |
 | Small or judgement-heavy change | Claude | — | normal tests |
 | Spec'd feature, design-sensitive | Opus lanes in `opus_lane_order`, high | next Opus lane, Fusion Max, Claude | clean-checkout tests, tamper check, cross-family review |
 | Spec'd feature, mechanical; bulk edits | grok `grok-4.7` high | Copilot Fusion standard | the same gate plus the `permission required:` scan |
@@ -97,23 +97,34 @@ cx-run --finish t4 --pr 42                                             # ... who
   the lane with exit 26 before anything runs. `cx-doctor` shows the versions the lanes were last
   verified against as information; auto-update is your choice.
 
-Grok writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
-`~/.grok/sandbox.toml` (extends grok's `strict`; read-only access to the repository's git
-directory and `~/.conductor/routes`, never the out directories), which the first grok run of a
-repository writes. Measured on grok 1.0.70, `strict` lets grok write only the worktree,
-`~/.grok/sessions`, `/tmp` and `/var/tmp` (`~/.grok` itself stays read-only, although grok's
-README says strict writes it), while the built-in `read-only` profile of grok's read and review
-runs writes all of `~/.grok`. So such a run could rewrite `sandbox.toml`: the name is
-conductor's own, and before each write run, and again once it holds its slot, any other
-definition of it is replaced, and a file that would still define it another way (or a
-`.grok/sandbox.toml` in the worktree) refuses the run. Known limits: `~/.grok/sessions` holds
-every grok session's transcript and every grok run can read and write it, so a grok writer can
-see other grok runs' tasks and answers there; nothing checks the rest of `~/.grok`. Every grok
-run approves every tool inside its sandbox, so its preflight first checks that grok can apply one
-here (`grok --sandbox strict models`, free; on Linux and WSL it needs Landlock and bubblewrap,
-`cx-doctor` D17), and refuses the lane when the line that probe adds to grok's sandbox log
-(`~/.grok/sessions/sandbox-events.jsonl`, read where GNU `stat` is available) says the profile
-was not enforced. `cx-init --user-grants` (optional, from inside the repository) writes the
+Every conductor grok run (write, read and review) runs under its repository's own sandbox
+profile `cx-<repo>-<hash>` in `~/.grok/sandbox.toml` (extends grok's `strict`; read-only access
+to the repository's git directory and `~/.conductor/routes`, never the out directories), which
+the first grok run of a repository writes; option `grok_sandbox_profile` can name a profile of
+your own instead, used for every mode. The skill's commit-message call uses the built-in
+`strict` in a directory that holds only its prompt. Measured on grok 1.0.70
+(`tests/fixtures/real/grok/write-probe-*`): `strict` lets grok write only its working
+directory, `~/.grok/sessions`, `/tmp` and `/var/tmp`; grok's built-in `read-only`, which 0.2.1
+used for read and review runs and the commit-message call, write-denies only grok's protected
+set (`config.toml`, `sandbox.toml`, `trusted_folders.toml`, `managed_config.toml`,
+`requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`) and lets grok write the
+rest of `~/.grok`: its own binary in `~/.grok/bin`, its ripgrep in `~/.grok/vendor`,
+`~/.grok/installed-plugins` and `auth.json`, code and credentials used later outside any
+sandbox. Before each grok run (and before its pool slot) the lane checks the run's own profile
+for free: `grok --sandbox <profile> models` in the run's checkout, then the line it adds to
+grok's sandbox log (`~/.grok/sessions/sandbox-events.jsonl`, read where GNU `stat` is
+available). The run is refused (exit 2, before any prompt) when that line says the profile was
+not enforced or grants write to `~/.grok` itself, a directory above it or one inside it (all
+but `~/.grok/sessions`), and always for a built-in profile that writes `~/.grok` (`off`,
+`devbox`, `workspace`, `read-only`); with no log the check changes nothing. The profile's name
+is conductor's own: before each run, and again once it holds its slot, any other definition of
+it is replaced, and a file that would still define it another way (or a `.grok/sandbox.toml` in
+the run's checkout, a review's included) refuses the run. Known limit: `~/.grok/sessions` holds
+every grok session's transcript and every grok run can read and write it, so a grok run can see
+other grok runs' tasks and answers there. Every grok run approves every tool inside its sandbox,
+so its preflight also checks that grok can apply one here (`grok --sandbox strict models`, free;
+on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17).
+`cx-init --user-grants` (optional, from inside the repository) writes the
 repository's profile ahead of time and removes the invalid `cx-workspace` profile 0.2.0 wrote,
 with a `.cx-bak` backup (`--dry-run` shows what it would change). agy needs no global grant any more: remove the `write_file(...)` and
 `command(...)` rules 0.2.0 put into `~/.gemini/antigravity-cli/settings.json` if you do not
@@ -204,7 +215,7 @@ Every option is a string; an empty value means the default.
 | `copilot_xhigh_ok` | `false` | Allow `--reasoning-effort xhigh` on Copilot Opus (`max` is never sent) |
 | `grok_bulk_model` | `grok-4.7` | Grok model for mechanical lanes |
 | `grok_bulk_effort` | `high` | Grok effort for mechanical lanes |
-| `grok_sandbox_profile` | `auto` | grok sandbox profile every grok writer runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile |
+| `grok_sandbox_profile` | `auto` | grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile (refused when it lets grok write `~/.grok`) |
 | `review_model_gemini` | `Gemini 4 Argon (High)` | Gemini-family reviewer |
 | `review_model_gpt` | `gpt-6.1-sol` | GPT-family reviewer |
 | `cap_agy` / `cap_copilot` / `cap_grok` | `2` / `3` / `5` | Concurrency limits (throughput, not spend): pool slots shared by every session, thread and forwarded call on the computer (`~/.conductor/locks`); `0` turns a pool off |

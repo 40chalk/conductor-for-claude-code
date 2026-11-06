@@ -16,7 +16,7 @@ if [ "${CX_COMMON_SH:-}" = "${BASH_SOURCE[0]}" ] && declare -F cx_note >/dev/nul
 fi
 CX_COMMON_SH="${BASH_SOURCE[0]}"
 
-CX_VERSION=0.2.1
+CX_VERSION=0.2.2
 # The CLI versions the lanes were last verified against (doctor info lines only, never a
 # refusal: each adapter checks the live --help for every flag it emits before each run, the
 # flag contract of DESIGN section 5.4). The minimums are doctor warnings only.

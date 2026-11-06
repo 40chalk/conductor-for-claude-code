@@ -52,7 +52,7 @@ integrated gate at merge.
 | Task type | Primary (lane · model · effort) | Fallback | Verification |
 |---|---|---|---|
 | Architecture / hard reasoning | `claude` · xhigh (max for one-way doors) | `copilot-opus` high | You write the ADR; read-only alternatives from `agy-opus` and a critique from `copilot-gpt` (`gpt-6-astra`) are input only |
-| Exploration / "where is X" | `grok` · `grok-4.7` medium, read-only, JSON schema `[{file,line,why}]` (Step 2) | `agy-gemini` flash, read-only (register the dir) | Spot-check the cited lines |
+| Exploration / "where is X" | `grok` · `grok-4.7` medium, read mode (its repository's strict-based profile), JSON schema `[{file,line,why}]` (Step 2) | `agy-gemini` flash, read-only (register the dir) | Spot-check the cited lines |
 | Small (under ~200 lines) or judgement-heavy change | `claude` | — | Normal tests (delegating below the break-even is a measured loss) |
 | Debugging / root cause | `claude` owns the hypotheses; `grok` high writes repro scripts, `git bisect run`, log digests | `agy-gemini` flash for logs over 200k tokens | See the test fail before and pass after |
 | Spec'd feature, design-sensitive | Opus lanes in the pool order (section 3), high, only with strong acceptance tests until the A/B (`cx-run --exec auto`) | Next Opus lane; Fusion Max (`--fusion max`) when both pools are drained; then `claude` | Clean-checkout tests, tamper check, diff budget, cross-family review, integrated gate |
@@ -61,13 +61,13 @@ integrated gate at merge.
 | Dependency upgrades | `grok` mechanical (lockfiles exempt; only this task type may run `setup`) | `copilot-fusion` standard | Integrated gate; read the upstream changelog; `audit` when routes defines it |
 | Exhaustive tests | `grok` high against a contract you wrote | `agy-gemini` flash high; `copilot-gpt` medium | Tests pass on current code, zero source changes, opt-in mutation threshold, sample for tautologies |
 | Performance | `claude` profiles and picks the hotspot; an Opus lane (design) or `grok` (mechanical) implements | `claude` | `bench` before and after on the same host; tests still pass |
-| First-pass review, local diff | `grok` high, read-only, review JSON schema, on a read-only gate checkout plus a diff file | `agy-gemini` flash read-only | Confirm every accepted finding at file:line |
+| First-pass review, local diff | `grok` high, review mode (its repository's strict-based profile), review JSON schema, on a gate checkout plus a diff file | `agy-gemini` flash read-only | Confirm every accepted finding at file:line |
 | First-pass review, GitHub PR | `copilot-github` code review | `grok` review of `gh pr diff N` | You adjudicate; Copilot approvals count only after explicit opt-in |
 | Security review | `claude` + `copilot-gpt` (`gpt-6.1-sol` high) + CodeQL / secret scanning; never Grok alone | `agy-gemini` Argon | Adjudicate every finding at file:line |
 | Second opinion on Opus-written code | `agy-gemini` Argon High; `copilot-gpt` too on `high_risk` paths | `grok` xhigh | Opus reviewing Opus is never independent (`same_family_as_conductor`) |
 | Second opinion on Grok/Gemini-written code | `claude`, depth scaled by risk | — | — |
 | PR / issue / CI triage | `copilot-github` (`ghcp-ci-debug`); issues and PRs: fetch with `gh`, then a read-only `copilot-gpt` digest (Step 5; never `--github` for triage) | `grok` digest of `gh run view <id> --log-failed` | Fixes go through the same gates |
-| Commit messages, PR text, changelogs | `grok` low/medium, read-only, the diff in a prompt file (Step 2) | `copilot-gpt` (`gpt-6-luna`) | You edit; nothing that is not in the diff |
+| Commit messages, PR text, changelogs | `grok` low/medium, `--sandbox strict` in a directory that holds only the prompt file with the diff (Step 2) | `copilot-gpt` (`gpt-6-luna`) | You edit; nothing that is not in the diff |
 | Merge conflicts / integration fixes | `claude` | — | Integrated gate |
 | UI / frontend code | `claude` designs; Opus lanes make 2–3 parallel variants (one worktree each) | `claude` subagent | Screenshots, a11y lint; you pick and say why |
 | Media understanding | v1.1 Docker lane (`agy-media` always passes `--yolo`); until then you read what you can (images, transcripts) | — | Check the timestamps you rely on |
@@ -169,9 +169,10 @@ that snapshot in a clean bash (an edit of the worktree's `routes.json` changes n
 caller's `BASH_ENV` or exported functions never run), `cx-route` alone lists the names.
 Executors may run only `cx-route <name>` and `git status` (agy also `ls`): agy gets exactly
 these as per-run `--settings` grants (its first other command ends the run), Copilot as
-`--allow-shell` rules, and grok runs inside its repository's sandbox profile. Never `git diff`,
-`git log` or `git show`: their `--output=<path>` writes any file, and a prefix rule cannot
-forbid an option. Name the checks in the contract as `cx-route <name>`.
+`--allow-shell` rules, and grok runs inside its repository's sandbox profile (in every mode,
+read and review included). Never `git diff`, `git log` or `git show`: their `--output=<path>`
+writes any file, and a prefix rule cannot forbid an option. Name the checks in the contract as
+`cx-route <name>`.
 `cx-init --user-grants` (optional, from inside the repo) writes that repository's grok profile
 ahead of its first grok run and removes the invalid profile conductor 0.2.0 wrote; agy needs no
 user-level grant any more. Never use the yolo / skip-permissions flags (`--yolo`,
@@ -275,12 +276,17 @@ cx-run --mode read --exec copilot '<question>'                                  
 Not lanes: `agy-media` and `/antigravity:research` (both always pass `--yolo`); research goes
 to your own WebSearch and Grok, media waits for the v1.1 Docker lane. Commit messages, PR text
 and changelogs go to Grok with the diff inside the prompt file (one call; `vars.sh` is written
-by `cx-run`):
+by `cx-run`). Grok runs under its built-in `strict` profile in a directory of its own that holds
+only the prompt (`$OUT/msg/`, emptied first): it may write only there, in `~/.grok/sessions` and
+the temp directories, and nothing the conductor later sources or runs (`vars.sh`, the routes)
+lives there. Never `--sandbox read-only` (it lets grok write `~/.grok`: its own binary, ripgrep
+and plugins) and never `--cwd "$TOP"`:
 
 ```bash
 . "$HOME/.conductor/out/t1/vars.sh"
-{ printf '%s\n\n' 'Write a commit message (a subject under 72 characters, a blank line, a short body) for the diff below. Describe only what the diff shows.'; git -C "$TOP" diff "$BASE" "cx/$ID"; } > "$OUT/msg-prompt.txt"
-cx-wsl grok --prompt-file "$OUT/msg-prompt.txt" -m grok-4.7 --effort low --cwd "$TOP" --sandbox read-only --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
+rm -rf -- "${OUT:?}/msg" && mkdir -p -- "$OUT/msg"                                       # holds only the prompt
+{ printf '%s\n\n' 'Write a commit message (a subject under 72 characters, a blank line, a short body) for the diff below. Describe only what the diff shows.'; git -C "$TOP" diff "$BASE" "cx/$ID"; } > "$OUT/msg/prompt.txt"
+cx-wsl grok --prompt-file "$OUT/msg/prompt.txt" -m grok-4.7 --effort low --cwd "$OUT/msg" --sandbox strict --always-approve --no-subagents --output-format plain </dev/null   # a grok slot
 ```
 
 ### Step 3: after every run (the conductor commits; the gate never runs in `$WT`)
@@ -705,10 +711,15 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
   run commands): report it, remove the worktree with `rm -rf`, then `git worktree prune` in the
   repository, and dispatch again with a new id.
 - **grok refused with exit 2** ("cannot apply its sandbox", including "its sandbox log says
-  … ran unenforced", "holds .grok/sandbox.toml", "cannot write the grok sandbox profile"):
-  grok approves every tool inside its sandbox, so the lane never runs without it. `cx-doctor`
-  D17 names the cause (Landlock and bubblewrap on Linux and WSL; a second definition of the
-  repository's profile in `~/.grok/sandbox.toml`); use another lane meanwhile.
+  … ran unenforced", "holds .grok/sandbox.toml", "cannot write the grok sandbox profile",
+  and the per-run check's "grants write to grok's home" or "is grok's built-in … profile"):
+  grok approves every tool inside its sandbox, so the lane never runs without it, nor under a
+  profile that lets grok write `~/.grok` (its binary, ripgrep and plugins run outside any
+  sandbox later). `cx-doctor` D17 names the cause (Landlock and bubblewrap on Linux and WSL; a
+  second definition of the repository's profile in `~/.grok/sandbox.toml`; option
+  `grok_sandbox_profile` naming a built-in that writes `~/.grok`: set it back to `auto`; for a
+  profile of the user's that does, the refusal itself names the path); a `.grok/sandbox.toml`
+  in a branch to review means another lane reviews it; use another lane meanwhile.
 - **Exit 1 from `cx-run`** with "is one of Claude Code's own worktrees": run it from the main
   checkout or pass `--repo`.
 - **`BRANCH_TAMPERED`** (Step 3, exit 24): the executor created or switched branches. Nothing

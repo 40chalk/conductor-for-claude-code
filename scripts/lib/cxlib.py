@@ -55,7 +55,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 CURSOR_WORKER_MSG = "a grok worker process registers this machine with Cursor as a private worker; stop it"
 CURSOR_POOL_MSG = "interactive Cursor IDE use on Grok/Composer drains the same weekly pool"
@@ -413,7 +413,7 @@ def cmd_landlock(a):
 GROK_EVENTS_MAX = 1 << 20
 
 
-def grok_sandbox_event(path, start, end, workspace):
+def grok_sandbox_events(path, start, end, workspace):
     """grok's sandbox log (1.0.70, measured 2026-11-06: ~/.grok/sessions/sandbox-events.jsonl
     gets one JSON line per sandboxed start, {"timestamp", "event_type": "ProfileApplied",
     "profile", "workspace", "platform", "enforced", "restrict_network", "read_write_paths"},
@@ -422,23 +422,25 @@ def grok_sandbox_event(path, start, end, workspace):
     [START, END) of PATH, what grok appended while one probe ran ([0, END) when the file shrank
     meanwhile; at most 1 MiB), never when PATH itself is a symlink (O_NOFOLLOW: its last path
     component only; a symlinked directory above it is followed) and never blocking on a FIFO;
-    lines are split on "\n" only. Returns {"profile", "platform", "enforced"} of the ProfileApplied event
-    whose workspace is WORKSPACE (an event with enforced false wins), else None: the event can
-    only add a refusal, never lift one (an absent log or event changes nothing)."""
+    lines are split on "\n" only. Returns every ProfileApplied event whose workspace is
+    WORKSPACE (as given or resolved) and whose "enforced" is a boolean, in log order, each as
+    {"profile", "platform", "enforced", "read_write_paths"} (the strings of its list, None when
+    the event has none). Neither the read-only nor the strict-based events list grok's
+    write-denied protected set (config.toml, sandbox.toml, hooks/, ...): only the grants."""
     import stat
     if not path or not workspace or end is None or end <= 0:
-        return None
+        return []
     start = start if isinstance(start, int) and 0 <= start <= end else 0
     if end <= start:
-        return None
+        return []
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError:
-        return None
+        return []
     data = b""
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
+            return []
         os.lseek(fd, start, os.SEEK_SET)
         n = min(end - start, GROK_EVENTS_MAX)
         while len(data) < n:
@@ -447,11 +449,11 @@ def grok_sandbox_event(path, start, end, workspace):
                 break
             data += chunk
     except OSError:
-        return None
+        return []
     finally:
         os.close(fd)
     want = {os.path.abspath(workspace), os.path.realpath(workspace)}
-    found = None
+    found = []
     for line in data.decode("utf-8", "replace").split("\n"):
         line = line.strip()
         if not line.startswith("{"):
@@ -468,12 +470,52 @@ def grok_sandbox_event(path, start, end, workspace):
         enf = ev.get("enforced")
         if not isinstance(enf, bool):
             continue
-        rec = {"profile": sanitize(ev.get("profile") or "?", 80), "platform": sanitize(ev.get("platform") or "unknown", 80),
-               "enforced": enf}
-        if enf is False:
-            return rec
-        found = found or rec
+        rw = ev.get("read_write_paths")
+        rw = [x for x in rw if isinstance(x, str)] if isinstance(rw, list) else None
+        found.append({"profile": sanitize(ev.get("profile") or "?", 80), "platform": sanitize(ev.get("platform") or "unknown", 80),
+                      "enforced": enf, "read_write_paths": rw})
     return found
+
+
+def grok_sandbox_event(path, start, end, workspace):
+    """The ProfileApplied event of grok_sandbox_events for WORKSPACE (an event with enforced false
+    wins, else the first), else None: the event can only add a refusal, never lift one (an
+    absent log or event changes nothing)."""
+    evs = grok_sandbox_events(path, start, end, workspace)
+    for ev in evs:
+        if ev["enforced"] is False:
+            return ev
+    return evs[0] if evs else None
+
+
+def _path_under(child, parent):
+    return child == parent or child.startswith(parent.rstrip("/") + "/")
+
+
+def grok_home_write(paths, grok_home):
+    """The first of PATHS (a ProfileApplied event's read_write_paths) that grants write to grok's
+    home GROK_HOME (${GROK_HOME:-~/.grok}): GROK_HOME itself, a directory above it (/, $HOME, or
+    /tmp when the home lies there) or one inside it (bin/, vendor/, installed-plugins/), except
+    GROK_HOME/sessions and below, the session store every grok run writes. Each path and the home
+    are compared as given (abspath) and resolved (realpath), both: a path is exempt only when both
+    of its forms lie in the session store of the home's own form, so a sessions link back to the
+    home is no exemption. Measured on 1.0.70 (tests/fixtures/real/grok/write-probe-*): the
+    built-in read-only grants ~/.grok, where grok's own binary (bin/), its ripgrep (vendor/) and
+    installed-plugins/ stay writable (only its protected set is write-denied), so a run steered by
+    what it reads could plant code that later runs outside any sandbox. None when no path does."""
+    if not grok_home:
+        return None
+    homes = [os.path.abspath(grok_home), os.path.realpath(grok_home)]
+    for p in paths or []:
+        if not isinstance(p, str) or not p:
+            continue
+        pa, pr = os.path.abspath(p), os.path.realpath(p)
+        if _path_under(pa, homes[0] + "/sessions") and _path_under(pr, homes[1] + "/sessions"):
+            continue
+        for h in homes:
+            if any(_path_under(h, x) or _path_under(x, h) for x in (pa, pr)):
+                return p
+    return None
 
 
 def cmd_grok_sandbox_event(a):
@@ -2356,12 +2398,18 @@ def _grok_unmarked_re(name):
 def grok_profile_plan(path, template, name, gcd, routes_root):
     """(action, new_text, notes) for the repository's profile in sandbox.toml PATH: create,
     update, same or conflict (the result would not parse, or would not hold exactly the
-    rendered profile). The name cx-<repo>-<hash> is conductor's own: no person writes it, and a
-    grok run may rewrite sandbox.toml (grok 1.0.70's built-in read-only profile, used by read and
-    review runs, writes all of ~/.grok; strict and the profiles extending it keep ~/.grok
-    read-only but ~/.grok/sessions, measured, although grok's README says strict writes ~/.grok),
-    so every definition of NAME is replaced by the rendered block, between the cx:begin/cx:end
-    lines or not (markers a run stripped never make a widened profile "the user's")."""
+    rendered profile). Every conductor grok run (write, read and review, and the skill's
+    commit-message call under the built-in strict) runs under a strict-based profile, and grok
+    write-denies sandbox.toml under its sandbox profiles (devbox and off aside; its protected set:
+    config.toml, sandbox.toml, trusted_folders.toml, managed_config.toml, requirements.toml,
+    hooks-paths, hooks/, bundled/, bundles/; measured on 1.0.70 under read-only and strict,
+    tests/fixtures/real/grok/write-probe-*), so no conductor grok run can change this file. What
+    can: your own grok sessions without a sandbox (grok's default) or with devbox, other tools,
+    and code planted earlier where 0.2.1's read-only runs could write (grok's binary in
+    ~/.grok/bin, its ripgrep in ~/.grok/vendor, ~/.grok/installed-plugins), which runs outside
+    any sandbox. The name cx-<repo>-<hash> is conductor's own (no person writes it), so every
+    definition of NAME is replaced by the rendered block, between the cx:begin/cx:end lines or
+    not (markers something stripped never make a widened profile "the user's")."""
     notes = []
     tgt = _ug_target(path)
     old = read_text(tgt) if os.path.exists(tgt) else ""
@@ -2377,8 +2425,9 @@ def grok_profile_plan(path, template, name, gcd, routes_root):
         new = new[:m.start()] + hole + marked.sub("", new[m.end():])
     unmarked = _grok_unmarked_re(name)
     if unmarked.search(new.replace(hole, "")):
-        notes.append("%s defined [profiles.%s] outside conductor's cx:begin/cx:end lines (a grok writer may have rewritten "
-                     "the file): replaced it with conductor's own profile of that name" % (path, name))
+        notes.append("%s defined [profiles.%s] outside conductor's cx:begin/cx:end lines: replaced it with conductor's own "
+                     "profile of that name (something other than a conductor grok run rewrote the file, which grok "
+                     "write-denies under its sandbox profiles)" % (path, name))
         parts = new.split(hole)
         new = hole.join(unmarked.sub("", x) for x in parts)
     if hole in new:
@@ -2500,8 +2549,10 @@ def cmd_user_grants(a):
     prof = (a.profile or "auto").strip()
     tpl = read_text(a.template)
     if prof not in ("", "auto", "cx-workspace"):
-        notes.append("option grok_sandbox_profile names your own profile %s: it is used as it is (it must let grok read the "
-                     "repository's git directory and %s); nothing written for it" % (prof, a.routes_root or "~/.conductor/routes"))
+        notes.append("option grok_sandbox_profile names your own profile %s: every conductor grok run (write, read and review) "
+                     "uses it as it is (it must let grok read the repository's git directory and %s, and must not let grok write "
+                     "its home ~/.grok, but ~/.grok/sessions: each run checks that and is refused otherwise); nothing written for "
+                     "it" % (prof, a.routes_root or "~/.conductor/routes"))
     if a.gcd and prof in ("", "auto", "cx-workspace"):
         gcd = os.path.realpath(a.gcd)
         act, new, n2 = grok_profile_plan(sf, tpl, grok_profile_name(gcd), gcd, a.routes_root)

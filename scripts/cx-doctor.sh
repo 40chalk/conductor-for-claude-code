@@ -1247,12 +1247,14 @@ d15_d19() {
       case "$prof" in
         auto|cx-workspace)
           [ -f "$sbx" ] && n_cx="$(grep -c '^# cx:begin cx-' "$sbx" 2>/dev/null)"
-          chk info D17 "$S_LOG" "grok writers run under their repository's own sandbox profile (cx-<repo>-<hash>, extends strict; ${n_cx:-0} in $sbx), written by a repository's first grok run or cx-init --user-grants" ;;
+          chk info D17 "$S_LOG" "grok runs (write, read and review) use their repository's own sandbox profile (cx-<repo>-<hash>, extends strict; ${n_cx:-0} in $sbx), written by a repository's first grok run or cx-init --user-grants" ;;
+        off|devbox|workspace|read-only)
+          chk fail D17 "$S_LOG" "option grok_sandbox_profile names grok's built-in $prof, which lets grok write its home ~/.grok (its own binary, ripgrep and plugins): every grok run is refused" "set grok_sandbox_profile back to auto" ;;
         *)
           if [ "$PY" = 1 ] && cx_py toml-table "$sbx" "$prof" 2>/dev/null; then
             chk ok D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is defined in $sbx"
           else
-            chk warn D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is not defined in $sbx: grok write runs fail to start" "define it, or set grok_sandbox_profile back to auto"
+            chk warn D17 "$S_LOG" "grok sandbox profile $prof (option grok_sandbox_profile) is not defined in $sbx: grok runs fail to start" "define it, or set grok_sandbox_profile back to auto"
           fi ;;
       esac
       if [ -f "$sbx" ] && grep -q '^# conductor: the grok sandbox profile every conductor grok writer runs under' "$sbx" 2>/dev/null; then

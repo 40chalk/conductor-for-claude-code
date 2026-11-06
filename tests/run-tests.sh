@@ -1152,6 +1152,7 @@ printf '{"timestamp":"2026-11-01T00:00:00Z","event_type":"ProfileApplied","profi
 : > "$DOCS/grok-sbev-link/sev.real"; ln -s "$DOCS/grok-sbev-link/sev.real" "$DOCS/grok-sbev-link/grok/sessions/sandbox-events.jsonl"
 doc_bg grok-sbev-old STUB_GROK_SANDBOX_EVENT=enforced GROK_HOME="$DOCS/grok-sbev-old/grok" -- --no-record
 doc_bg grok-sbev-link STUB_GROK_SANDBOX_EVENT=unenforced GROK_HOME="$DOCS/grok-sbev-link/grok" -- --no-record
+doc_bg grok-prof-ro CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=read-only -- --no-record
 doc_bg ghcp-auth STUB_GHCP_MODELS=auth -- --no-record
 doc_bg ghcp-sandbox STUB_GHCP_MODELS=sandbox -- --no-record
 doc_bg ghcp-timeout STUB_GHCP_MODELS=timeout -- --no-record
@@ -1465,6 +1466,9 @@ check "[X]   ... the log already holds an unenforced line for the doctor's own p
 doc_use grok-sbev-link
 check "[X]   ... a sandbox log that is a symlink is never read by D17 (the probe appended its unenforced line through the link): no sandbox-log line, the probe's ok as before" \
   eval 'd_ok D17 "grok applies its sandbox here" && ! out_has "sandbox log" && ! d_fail D17 && grep -q "\"enforced\":false" "$DOCS/grok-sbev-link/sev.real"'
+doc_use grok-prof-ro
+check "[X]   option grok_sandbox_profile=read-only (0.2.1's profile of grok reads and reviews): cross D17, every grok run refused (the built-in lets grok write ~/.grok: its binary, ripgrep and plugins), the fix sets it back to auto; the green doctor's info line says every grok run (write, read and review) uses the repository's profile" \
+  eval 'rc_is 4 && d_fail D17 "option grok_sandbox_profile names grok'"'"'s built-in read-only, which lets grok write its home ~/.grok (its own binary, ripgrep and plugins): every grok run is refused" && out_has "set grok_sandbox_profile back to auto" && doc_use green && d_info D17 "grok runs (write, read and review) use their repository'"'"'s own sandbox profile"'
 doc_use ghcp-auth
 check "[P26] ghcp-models rc 11: cross D16 with the copilot login fix" eval 'rc_is 4 && d_fail D16 "copilot is not logged in" && out_has "fix: copilot login"'
 doc_use ghcp-sandbox
@@ -2588,7 +2592,11 @@ ad -- grok argv --out "$AD/a1/grok" --wt "$AD/wt-t1" --allow 'npm test'
 b="$(flags_in "$AD/a1/grok/grok.argv" "$FIX/real/grok/help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [grok write: $b]"
 ad -- grok argv --out "$AD/a1/grokr" --wt "$AD/wt-t1" --mode read
 b="$(flags_in "$AD/a1/grokr/grok.argv" "$FIX/real/grok/help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [grok read: $b]"
-grep -qz -- '^--always-approve$' "$AD/a1/grokr/grok.argv" && grep -qz -- '^read-only$' "$AD/a1/grokr/grok.argv" || A1_BAD="$A1_BAD [grok read: no read-only --always-approve]"
+# 0.2.2: a read runs under the repository's own profile (cx-<repo>-<hash>), never grok's built-in
+# read-only, which writes ~/.grok/bin, vendor/ and installed-plugins (the write-probe fixtures).
+{ grep -qz -- '^--always-approve$' "$AD/a1/grokr/grok.argv" \
+  && grep -qzx -- "$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "$REPO/.git" && pwd -P)")" "$AD/a1/grokr/grok.argv" \
+  && ! grep -qz -- '^read-only$' "$AD/a1/grokr/grok.argv"; } || A1_BAD="$A1_BAD [grok read: not --sandbox <the repository's profile> --always-approve, or read-only]"
 ad -- copilot argv --out "$AD/a1/cop" --wt "$AD/wt-t1" --allow 'npm test'
 b="$(flags_in "$AD/a1/cop/copilot.argv" "$FIX/real/ghcp/ghcp-delegate-help.txt")"; [ -z "$b" ] || A1_BAD="$A1_BAD [ghcp-delegate: $b]"
 ad -- copilot argv --out "$AD/a1/copf" --wt "$AD/wt-t1" --fusion max --mode review --add-dir "$AD"
@@ -2645,9 +2653,10 @@ check "[A2]  emit: one CX_RESULT line (single-line json.dumps, ASCII) with path 
 "$REAL_PY" -I "$NORM" report --out "$O1" > "$AD/report.out"
 check "[A2]  report: the digest, then a VERIFY THIS line naming the commands" \
   eval 'grep -q "^DIGEST: created cx-grok.txt.$" "$AD/report.out" && grep -q "^VERIFY THIS: .*npm test" "$AD/report.out"'
-# A grok run may rewrite ~/.grok/sandbox.toml (measured on 1.0.70: the built-in read-only profile
-# of read and review runs writes all of ~/.grok; strict-based writers cannot): stripping the
-# cx:begin/cx:end lines never turns a widened profile of conductor's name into "the user's".
+# Something other than a conductor grok run may rewrite ~/.grok/sandbox.toml (grok write-denies it
+# under read-only and strict, measured on 1.0.70: tests/fixtures/real/grok/write-probe-*; your own
+# grok sessions run without a sandbox by default): stripping the cx:begin/cx:end lines never turns
+# a widened profile of conductor's name into "the user's".
 "$REAL_PY" -I - "$AD/home/.grok/sandbox.toml" "$GP_NAME" <<'PY'
 import re, sys
 p, n = sys.argv[1], sys.argv[2]
@@ -2714,6 +2723,75 @@ ad STUB_GROK_SANDBOX_EVENT=unenforced -- grok probe --refresh --wt "$AD/wt-t1"
 check "[X]   ... a sandbox log that is a symlink is never read (a sandboxed writer can write ~/.grok/sessions): behaves as without a log" \
   eval 'rc_is 0 && outj_is sandbox.ok true && outj_is sandbox.enforced null'
 rm -f -- "$SEV"; mv "$AD/sev.real" "$SEV"
+# --- 0.2.2: read and review runs run under the repository's own profile, never grok's built-in
+# read-only (measured on 1.0.70: it lets grok write ~/.grok/bin, vendor/ and installed-plugins,
+# tests/fixtures/real/grok/write-probe-read-only-1.0.70.txt), and every grok run checks its own
+# profile first: grok --sandbox <it> models in the run's checkout, then the bytes that call
+# appended to grok's sandbox log (STUB_GROK_SANDBOX_EVENT, STUB_GROK_EVENT_RW).
+local GH="$AD/home/.grok" RD="$AD/home/.conductor/out/rd1" GW="$AD/wt-t2" L0 V22_BAD="" rw
+# grok_args_inside ARGV_FILE: the prompt file and every argument naming an existing path (but the
+# grok binary) lie inside the --cwd checkout, and --json-schema carries the schema text itself.
+grok_args_inside() {
+  "$REAL_PY" -I - "$1" <<'PY2'
+import os, sys
+a = open(sys.argv[1], "rb").read().decode().split("\0")
+a = a[:-1] if a and a[-1] == "" else a
+cwd = os.path.realpath(a[a.index("--cwd") + 1])
+pf = os.path.realpath(a[a.index("--prompt-file") + 1])
+bad = [] if pf.startswith(cwd + "/") else ["prompt-file " + pf]
+if "--json-schema" in a and not a[a.index("--json-schema") + 1].lstrip().startswith("{"):
+    bad.append("json-schema is not inline")
+for x in a[1:]:
+    r = os.path.realpath(x)
+    if x.startswith("/") and os.path.exists(x) and r != cwd and not r.startswith(cwd + "/"):
+        bad.append(x)
+print(" ".join(bad))
+sys.exit(1 if bad else 0)
+PY2
+}
+ad -- grok argv --out "$AD/a1/grokv" --wt "$GW" --repo "$REPO" --mode review
+check "[X]   grok review argv (0.2.2): --sandbox $GP_NAME (the repository's profile, as for writers) --always-approve --no-subagents --json-schema <the review schema text, inline>, never read-only; the prompt file lies inside the checkout (--cwd)" \
+  eval 'grep -qzx -- "$GP_NAME" "$AD/a1/grokv/grok.argv" && ! grep -qzx -- read-only "$AD/a1/grokv/grok.argv" && tr "\0" " " < "$AD/a1/grokv/grok.argv" | grep -Fq -- "--sandbox $GP_NAME --always-approve --no-subagents --json-schema {\"type\":\"array\"" && grep -qz "\"severity\"" "$AD/a1/grokv/grok.argv" && grok_args_inside "$AD/a1/grokv/grok.argv"'
+rm -f -- "$GH/sandbox.toml"
+L0="$(wc -l < "$ADL")"
+adr grok "$RD" STUB_GROK_RUN=ok -- --wt "$GW" --repo "$REPO" --mode read --prompt 'where is the greeting?'
+check "[X]   a grok read run writes the repository's profile $GP_NAME into ~/.grok/sandbox.toml before grok starts and runs under it; first the per-run check, grok --sandbox $GP_NAME models in the checkout, then the prompt; no sandbox log: nothing changes (run.json sandbox_check: ok, 0 events); its prompt file is in the checkout's .conductor/" \
+  eval '[ "$PR" = "0 ok" ] && grep -qx "\[profiles.$GP_NAME\]" "$GH/sandbox.toml" && grep -qx "extends = \"strict\"" "$GH/sandbox.toml" && tail -n +"$((L0 + 1))" "$ADL" | grep -n "^grok	" > "$AD/rd.log" && grep -q "cwd=$GW	argv: --sandbox $GP_NAME models$" "$AD/rd.log" && [ "$(grep -m1 -- "--sandbox $GP_NAME models" "$AD/rd.log" | cut -d: -f1)" -lt "$(grep -m1 -- "--prompt-file" "$AD/rd.log" | cut -d: -f1)" ] && grep -- "--prompt-file" "$AD/rd.log" | grep -Fq -- "--prompt-file $GW/.conductor/prompt.txt" && grep -- "--prompt-file" "$AD/rd.log" | grep -Fq -- "--sandbox $GP_NAME --always-approve" && ! grep -q -- "--sandbox read-only" "$AD/rd.log" && [ -f "$GW/.conductor/prompt.txt" ] && grok_args_inside "$RD/grok.argv" && rj_is mode read && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.ok)" = true ] && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.events)" = 0 ]'
+for md in read review; do
+  mkdir -p "$GW/.grok"; printf '[profiles.%s]\nextends = "workspace"\n' "$GP_NAME" > "$GW/.grok/sandbox.toml"
+  L0="$(wc -l < "$ADL")"
+  adr grok "$RD" STUB_GROK_RUN=ok -- --wt "$GW" --repo "$REPO" --mode "$md" --prompt q
+  { [ "$ADR_RC" = 2 ] && one_signal FAILED && err_has "the gate checkout holds .grok/sandbox.toml" && [ ! -e "$RD/grok.out" ] \
+    && ! tail -n +"$((L0 + 1))" "$ADL" | grep -q -- "--prompt-file" && grep -Fq "the gate checkout holds .grok/sandbox.toml" "$RD/adapter.why"; } || V22_BAD="$V22_BAD [$md: rc $ADR_RC]"
+  rm -rf -- "${GW:?}/.grok"
+done
+check "[X]   a per-project .grok/sandbox.toml in a read's or a review's checkout (a review checks out an executor-written branch, which can carry one) refuses the run before grok starts: 2 FAILED, the reason in adapter.why, no prompt run${V22_BAD:+:$V22_BAD}" test -z "$V22_BAD"
+L0="$(wc -l < "$ADL")"
+adr grok "$RD" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_EVENT=homewrite -- --wt "$GW" --repo "$REPO" --mode read --prompt q
+check "[X]   per-run check: the ProfileApplied event for the checkout grants write to grok's home (read_write $GH, /tmp, /var/tmp: the real read-only line's shape) -> 2 FAILED before the slot and any prompt, naming the profile, the path and the log" \
+  eval '[ "$ADR_RC" = 2 ] && one_signal FAILED && err_has "grok'"'"'s sandbox profile $GP_NAME grants write to grok'"'"'s home $GH (read_write path $GH in its ProfileApplied event for $GW, in $SEV)" && err_has "refused before the run'"'"'s prompt" && [ ! -e "$RD/grok.out" ] && [ ! -e "$RD/grok.run.json" ] && ! tail -n +"$((L0 + 1))" "$ADL" | grep -q -- "--prompt-file"'
+V22_BAD=""
+for rw in "$GH" "$GH/bin" "$GH/installed-plugins" "$AD/home" "/" "$GH/sessions/../vendor"; do
+  L0="$(wc -l < "$ADL")"
+  adr grok "$RD" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_EVENT=enforced STUB_GROK_EVENT_RW="WS $rw /var/tmp" -- --wt "$GW" --repo "$REPO" --mode review --prompt q
+  { [ "$ADR_RC" = 2 ] && err_has "(read_write path $rw in its ProfileApplied event for $GW" && ! tail -n +"$((L0 + 1))" "$ADL" | grep -q -- "--prompt-file"; } || V22_BAD="$V22_BAD [$rw: rc $ADR_RC]"
+done
+check "[X]   ... the same for grok's home itself, a directory inside it (bin/, installed-plugins/, sessions/../vendor) or above it (\$HOME, /): 2, no prompt run${V22_BAD:+:$V22_BAD}" test -z "$V22_BAD"
+adr grok "$RD" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_EVENT=enforced STUB_GROK_EVENT_RW="WS $GH/sessions $GH/sessions/x /var/tmp" -- --wt "$GW" --repo "$REPO" --mode review --prompt q
+check "[X]   ... a granted $GH/sessions (and below: every grok run writes its session store) is fine: the run is ok, and run.json's sandbox_check records the event (enforced true, platform linux/landlock, its read_write paths, home_write null)" \
+  eval '[ "$PR" = "0 ok" ] && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.event.platform)" = linux/landlock ] && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.event.enforced)" = true ] && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.home_write)" = null ] && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.event.read_write_paths.1)" = "$GH/sessions" ]'
+L0="$(wc -l < "$ADL")"
+adr grok "$RD" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_EVENT=unenforced -- --wt "$GW" --repo "$REPO" --mode review --prompt q
+check "[X]   ... enforced false for the checkout refuses too (the preflight's green probe came from the cache: only the per-run check saw it): 2 FAILED naming the log, the profile and the checkout, no prompt run" \
+  eval '[ "$ADR_RC" = 2 ] && one_signal FAILED && err_has "grok'"'"'s sandbox log $SEV says --sandbox $GP_NAME ran unenforced in $GW (ProfileApplied, enforced false, platform linux/unsupported)" && ! tail -n +"$((L0 + 1))" "$ADL" | grep -q -- "--prompt-file" && ! tail -n +"$((L0 + 1))" "$ADL" | grep -q -- "--sandbox strict models"'
+adr grok "$RD" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_EVENT=other STUB_GROK_EVENT_RW="$GH" -- --wt "$GW" --repo "$REPO" --mode read --prompt q
+check "[X]   ... an event for another workspace (unenforced, granting $GH) is ignored: ok" eval '[ "$PR" = "0 ok" ] && [ "$("$REAL_PY" -I "$NORM" field "$RD/grok.run.json" sandbox_check.events)" = 0 ]'
+adr grok "$O1" STUB_GROK_RUN=ok STUB_GROK_SANDBOX_EVENT=homewrite -- --wt "$AD/wt-t1"
+check "[X]   ... and a write run too (every mode): 2 FAILED, no prompt run" eval '[ "$ADR_RC" = 2 ] && err_has "grants write to grok'"'"'s home $GH (read_write path $GH" && [ ! -e "$O1/grok.out" ]'
+L0="$(wc -l < "$ADL")"
+adr grok "$RD" STUB_GROK_RUN=ok CLAUDE_PLUGIN_OPTION_GROK_SANDBOX_PROFILE=read-only -- --wt "$GW" --repo "$REPO" --mode read --prompt q
+check "[X]   option grok_sandbox_profile names the profile of every mode (a custom value, read and review included); grok's built-in read-only (or off, devbox, workspace) is refused whatever the log says: 2 FAILED, no prompt run" \
+  eval '[ "$ADR_RC" = 2 ] && grep -qzx -- read-only "$RD/grok.argv" && err_has "--sandbox read-only is grok'"'"'s built-in read-only profile, which lets grok write its home $GH" && ! tail -n +"$((L0 + 1))" "$ADL" | grep -q -- "--prompt-file"'
 adr copilot "$O1" STUB_GHCP_RUN=ok "${SCRUB_PROBE[@]}" COPILOT_MODEL=gpt-x COPILOT_ALLOW_ALL=1 GH_TOKEN=t STUB_ENV_FILE="$AD/env.cop" -- --wt "$AD/wt-t1" --allow 'npm test'
 check "[A2]  copilot success through ghcp-delegate (never raw copilot): ok, lane copilot-opus, served claude-opus-5.5, ai_credits 1.5; ghcp-delegate got --write --allow-shell cx-route and git status only (never git diff, log or show: their --output=<path> writes any file), never the routes command itself" \
   eval '[ "$PR" = "0 ok" ] && rj_is lane copilot-opus && rj_is model_served claude-opus-5.5 && rj_is cost.ai_credits 1.5 && grep -q "^ghcp-delegate	.*run=ok.*--write --allow-shell cx-route --allow-shell git\\\\ status --timeout 1800s --digest" "$ADL" && ! grep "^ghcp-delegate	.*run=ok" "$ADL" | grep -Eq "npm\\\\ test|git\\\\ (diff|log|show)"'
@@ -2947,9 +3025,9 @@ dpid="$(cat "$AD/dm.pid" 2>/dev/null)"; spid2="$(cat "$AD/dm.pid.setsid" 2>/dev/
 check "[X]   leftovers never hold the pool slot: an executor's same-session child is killed with the run; its setsid child holds no slot or lock descriptor, and grok.1 is free right after the run (cap_grok=1)" \
   eval '[ "$PR" = "0 ok" ] && [ -n "$dpid" ] && ! alive "$dpid" && [ -n "$spid2" ] && ! ls -l "/proc/$spid2/fd" 2>/dev/null | grep -q "/locks/" && flock -n "$AD/home/.conductor/locks/grok.1" true'
 [ -z "$spid2" ] || kill -KILL "$spid2" 2>/dev/null
-# A grok write run writes its repository's profile again once it holds the slot: a read or review
-# run (grok's built-in read-only profile writes all of ~/.grok) may rewrite sandbox.toml while the
-# writer waits. Here sandbox.toml is widened, its cx:begin/cx:end lines stripped, during that wait.
+# A grok write run writes its repository's profile again once it holds the slot: something other
+# than a conductor grok run (none can write sandbox.toml) may rewrite it while the writer waits.
+# Here sandbox.toml is widened, its cx:begin/cx:end lines stripped, during that wait.
 local GP3 gh3 rp_bad=""
 GP3="$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "$REPO/.git" && pwd -P)")"
 rm -rf "$AD/rp" "$AD/job3"; mkdir -p "$AD/rp" "$AD/job3"
@@ -3104,6 +3182,44 @@ local SEVF="$FIX/real/grok/sandbox-events-1.0.70.jsonl" SEV1
 SEV1="$(head -n 1 "$SEVF" | wc -c)"
 check "[X]   cxlib grok-sandbox-event on grok's real sandbox log: the strict probe's line (workspace /root/.conductor/probe), the write run's profile and the read run's read-only start are enforced on linux/landlock; reading only the bytes after the first line finds nothing for the write run's workspace; the read-only line writes ~/.grok and names no read_only_paths, the strict-based ones keep ~/.grok read-only" \
   eval '[ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/probe)" = "enforced	linux/landlock	strict" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "enforced	linux/landlock	cx-textutil-78d1f9c2" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from "$SEV1" --to "$(wc -c < "$SEVF")" --workspace /root/.cx-wt/textutil-live-grok-1)" = "none	-	-" ] && [ "$("$REAL_PY" -I "$CXLIB" grok-sandbox-event --file "$SEVF" --from 0 --to "$(wc -c < "$SEVF")" --workspace /root/.conductor/gate/live-grok-read-1.1)" = "enforced	linux/landlock	read-only" ] && [ "$(grep -c "\"read_only_paths\":\[[^]]*\"/root/.grok\"" "$SEVF")" = 2 ] && grep "\"profile\":\"read-only\"" "$SEVF" | grep -Fq "\"read_write_paths\":[\"/root/.grok\",\"/tmp\",\"/var/tmp\"]}" && ! grep "\"profile\":\"read-only\"" "$SEVF" | grep -q read_only_paths'
+# The write probes (0.2.2; live, the build container, 2026-11-06, grok 1.0.70, linux/landlock
+# plus bubblewrap): what grok's agent could write in ~/.grok under the built-in read-only and
+# under strict. The docs rely on these facts (DESIGN section 1.3, section 20 item 76).
+local WPF="$FIX/real/grok/write-probe.sh" WPR="$FIX/real/grok/write-probe-read-only-1.0.70.txt" WPS="$FIX/real/grok/write-probe-strict-1.0.70.txt" WP_BAD=""
+WP_BAD="$("$REAL_PY" -I - "$WPF" "$WPR" "$WPS" <<'PY2'
+import re, sys
+script = open(sys.argv[1], encoding="utf-8").read()
+files = re.search(r"for p in (.*?); do", script).group(1).split()
+dirs = re.search(r"for d in (.*?); do", script).group(1).split()
+want = ["%s" % f for f in files] + ["%s" % d for d in dirs]
+bad = []
+for path, writable in ((sys.argv[2], {"auth.json", "models_cache.json", "settings_cache.json", "worktrees.db", "bin/grok-1.0.70",
+                                      "vendor/rg-15.0.0-override", "DIR .", "DIR bin", "DIR vendor", "DIR installed-plugins",
+                                      "DIR logs", "DIR sessions", "DIR docs"}),
+                       (sys.argv[3], {"DIR sessions"})):
+    got = {}
+    for ln in open(path, encoding="utf-8").read().split("\n"):
+        if not ln:
+            continue
+        m = re.fullmatch(r"(WRITABLE|DENIED)(-DIR)? (\S+)", ln)
+        if not m:
+            bad.append("%s: %r" % (path.rsplit("/", 1)[-1], ln)); continue
+        got[("DIR " if m.group(2) else "") + m.group(3)] = m.group(1)
+    names = [f for f in files] + ["DIR " + d for d in dirs]
+    if list(got) != names:
+        bad.append("%s: not the script's 22 entries in order" % path.rsplit("/", 1)[-1])
+    for n in names:
+        if got.get(n) != ("WRITABLE" if n in writable else "DENIED"):
+            bad.append("%s: %s %s" % (path.rsplit("/", 1)[-1], n, got.get(n)))
+protected = {"config.toml", "sandbox.toml", "trusted_folders.toml", "managed_config.toml", "requirements.toml", "hooks-paths"}
+if not protected <= set(files) or not {"hooks", "bundled", "bundles", "bin", "vendor", "installed-plugins"} <= set(dirs):
+    bad.append("the script no longer probes the protected set, bin/, vendor/ and installed-plugins/")
+print(" | ".join(bad[:4]))
+PY2
+)" || WP_BAD="the checker failed"
+check "[X]   grok's write probes (real, 1.0.70): under the built-in read-only grok could write ~/.grok itself, bin/ (its binary grok-1.0.70), vendor/ (its ripgrep), installed-plugins/, auth.json, logs/, sessions/ and docs/, while the protected set (config.toml, sandbox.toml, trusted_folders.toml, managed_config.toml, requirements.toml, hooks-paths, hooks/, bundled/, bundles/) stayed DENIED; under strict every entry was DENIED but sessions/${WP_BAD:+: $WP_BAD}" test -z "$WP_BAD"
+check "[X]   normalize.py grok-check on grok's real sandbox log: the read run's built-in read-only start (read_write ~/.grok, /tmp, /var/tmp) is refused as a write into grok's home /root/.grok, the strict-based write run's profile and the strict probe pass (their read_write ~/.grok/sessions is the session store)" \
+  eval '[ "$("$REAL_PY" -I "$NORM" grok-check --profile cx-x --workspace /root/.conductor/gate/live-grok-read-1.1 --grok-home /root/.grok --events "$SEVF" --from 0 --to "$(wc -c < "$SEVF")")" = "refuse grok'"'"'s sandbox profile read-only grants write to grok'"'"'s home /root/.grok (read_write path /root/.grok in its ProfileApplied event for /root/.conductor/gate/live-grok-read-1.1, in $SEVF): a run steered by what it reads could replace grok'"'"'s own binary, ripgrep or plugins there, which later run outside any sandbox" ] && [ "$("$REAL_PY" -I "$NORM" grok-check --profile cx-textutil-78d1f9c2 --workspace /root/.cx-wt/textutil-live-grok-1 --grok-home /root/.grok --events "$SEVF" --from 0 --to "$(wc -c < "$SEVF")")" = ok ] && [ "$("$REAL_PY" -I "$NORM" grok-check --profile strict --workspace /root/.conductor/probe --grok-home /root/.grok --events "$SEVF" --from 0 --to "$(wc -c < "$SEVF")")" = ok ]'
 # grok-sandbox-event's own guards, called directly (the adapter's size check alone would hide
 # them): a log file that is a symlink (to an unenforced line) and a FIFO are never read, the
 # FIFO without blocking; an enforced and an unenforced line for one workspace: enforced false wins.
@@ -3579,9 +3695,21 @@ check "[A28] ... with --repo the run proceeds (dry run)" eval 'rc_is 0 && out_ha
 
 # --- read and review modes
 cr STUB_GROK_RUN=ok -- "$CXRUN" --mode read 'where is the greeting?'
-check "[X]   --mode read (default lane grok): the answer on a detached gate checkout of HEAD, removed afterwards; read-only flags" \
-  eval 'rc_is 0 && out_has "\"file\": \"README.md\"" && line_is CX_RESULT mode read && [ -z "$(ls "$AD/home/.conductor/gate" 2>/dev/null)" ] && grep "^grok	" "$ADL" | grep -- "--json-schema" | tail -n 1 | grep -q -- "--sandbox read-only --always-approve"'
+local GPR
+GPR="$("$REAL_PY" -I "$CXLIB" grok-profile --name-only --gcd "$(cd -- "$REPO/.git" && pwd -P)")"
+check "[X]   --mode read (default lane grok): the answer on a detached gate checkout of HEAD, removed afterwards; grok ran under the repository's profile $GPR (--sandbox $GPR --always-approve --json-schema), never grok's built-in read-only, after the per-run check in the checkout" \
+  eval 'rc_is 0 && out_has "\"file\": \"README.md\"" && line_is CX_RESULT mode read && [ -z "$(ls "$AD/home/.conductor/gate" 2>/dev/null)" ] && grep "^grok	" "$ADL" | grep -- "--json-schema" | tail -n 1 | grep -q -- "--sandbox $GPR --always-approve" && ! grep "^grok	" "$ADL" | grep -q -- "--sandbox read-only" && grep -q "^grok	cwd=$AD/home/.conductor/gate/[^	]*	argv: --sandbox $GPR models$" "$ADL" && grep -qx "\[profiles.$GPR\]" "$AD/home/.grok/sandbox.toml"'
 git -C "$REPO" checkout -q -b feat; printf 'f\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -qm feat; git -C "$REPO" checkout -q -
+cr STUB_GROK_RUN=ok -- "$CXRUN" --mode review --exec grok --branch feat --id rvg1
+check "[X]   --mode review --exec grok --branch feat: under $GPR on a gate checkout of feat, the diff in its .conductor/change.diff; every file grok reads (the prompt file, the diff) lies inside that checkout; the checkout removed" \
+  eval 'rc_is 0 && line_is CX_RESULT mode review && tr "\0" "\n" < "$AD/home/.conductor/out/rvg1/grok.argv" > "$AD/rvg1.argv" && grep -qx -- "$GPR" "$AD/rvg1.argv" && ! grep -qx -- read-only "$AD/rvg1.argv" && grep -qx -- "$AD/home/.conductor/gate/rvg1.1/.conductor/prompt.txt" "$AD/rvg1.argv" && grep -A1 -x -- --cwd "$AD/rvg1.argv" | tail -n 1 | grep -qx -- "$AD/home/.conductor/gate/rvg1.1" && grep -q "f.txt" "$AD/home/.conductor/out/rvg1/change.diff" && [ ! -e "$AD/home/.conductor/gate/rvg1.1" ]'
+git -C "$REPO" checkout -q -b evil; mkdir -p "$REPO/.grok"; printf '[profiles.%s]\nextends = "workspace"\n' "$GPR" > "$REPO/.grok/sandbox.toml"
+printf 'e\n' > "$REPO/e.txt"; git -C "$REPO" add .grok/sandbox.toml e.txt; git -C "$REPO" commit -qm evil; git -C "$REPO" checkout -q -
+CR_MARK="$(wc -l < "$ADL")"
+cr STUB_GROK_RUN=ok -- "$CXRUN" --mode review --exec grok --branch evil --id rvg2
+check "[X]   --mode review --exec grok of a branch that commits .grok/sandbox.toml (an executor-written branch can): 2 FAILED before grok starts, CX_RESULT's reason names the file (the adapter's adapter.why), no prompt run, the gate checkout removed" \
+  eval 'rc_is 2 && one_signal FAILED && line_is CX_RESULT status failed && tj line "$E" CX_RESULT reason | grep -Fq "the grok lane stopped before its executor ran (exit 2): the gate checkout holds .grok/sandbox.toml" && ! tail -n +"$((CR_MARK + 1))" "$ADL" | grep -q -- "--prompt-file" && [ ! -e "$AD/home/.conductor/gate/rvg2.1" ]'
+
 cr STUB_AGY_DELEGATE_RUN=ok -- "$CXRUN" --mode review --family gemini --branch feat --id rv1
 check "[X]   --mode review --family gemini --branch feat: agy-delegate with review_model_gemini on a gate checkout of feat, the diff in .conductor/change.diff, the checkout removed" \
   eval 'rc_is 0 && line_is CX_RESULT lane agy-gemini && line_is CX_RESULT model_requested "Gemini 4 Argon (High)" && grep -q "f.txt" "$AD/home/.conductor/out/rv1/change.diff" && [ ! -e "$AD/home/.conductor/gate/rv1.1" ] && grep "^agy-delegate	" "$ADL" | tail -n 1 | grep -q "cwd=$AD/home/.conductor/gate/rv1.1"'
@@ -3802,8 +3930,8 @@ cr STUB_GROK_RUN=sleep STUB_GROK_SLEEP=120 STUB_GROK_HOLD="$Q1_HOLD" CLAUDE_PLUG
 J3="$(sed -n 's/^JOB_ID //p' "$O")"
 for ((i = 0; i < 100; i++)); do [ -s "$AD/home/.conductor/jobs/$J3/sids" ] && break; sleep 0.1; done
 cr STUB_GROK_RUN=ok CLAUDE_PLUGIN_OPTION_CAP_GROK=1 -- "$CXRUN" --exec grok --no-wait --id q2 'x'
-check "[A13] cap_grok=1 with one grok job running: cx-run --no-wait -> 28 at once (CX_RESULT no_capacity, one CX_SIGNAL NO_CAPACITY) and grok never ran for it" \
-  eval 'rc_is 28 && line_is CX_RESULT status no_capacity && one_signal NO_CAPACITY && ! grep -q "^grok	cwd=$AD/home/.cx-wt/repo-q2" "$ADL"'
+check "[A13] cap_grok=1 with one grok job running: cx-run --no-wait -> 28 at once (CX_RESULT no_capacity, one CX_SIGNAL NO_CAPACITY) and grok ran nothing for it but the free per-run profile check (grok --sandbox <profile> models)" \
+  eval 'rc_is 28 && line_is CX_RESULT status no_capacity && one_signal NO_CAPACITY && ! grep "^grok	cwd=$AD/home/.cx-wt/repo-q2" "$ADL" | grep -vq -- " models$"'
 cr STUB_GROK_RUN=ok CLAUDE_PLUGIN_OPTION_CAP_GROK=1 CX_SLOT_WAIT_SECS=30 -- "$CXJOB" start --exec grok --id q3 'x'
 J="$(sed -n 's/^JOB_ID //p' "$O")"
 lc=""

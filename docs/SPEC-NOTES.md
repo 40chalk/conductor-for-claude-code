@@ -595,11 +595,11 @@ spec left open.
     is not read and nothing changes. `enforced` false refuses like a line saying the sandbox was
     not applied (2 `FAILED`, the same reason text with the event first); `enforced` true records
     the platform; no log, no event, or a non-boolean `enforced` changes nothing. Every grok run
-    can write `~/.grok/sessions` (a read or review run all of `~/.grok`), so the log is not
-    trusted to lift a refusal: a forged `enforced` true changes nothing, a forged false only
-    refuses. The run itself is not checked against the log (only the probe), and the shape of an
-    unenforced event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is
-    synthetic, DESIGN §20 item 72).
+    can write `~/.grok/sessions`, so the log is not trusted to lift a refusal: a forged
+    `enforced` true changes nothing, a forged false only refuses. The shape of an unenforced
+    event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is synthetic, DESIGN
+    §20 item 72). (0.2.1 also said a read or review run writes all of `~/.grok`, and that the
+    run itself is not checked against the log: both changed in 0.2.2, items 16 and 18.)
 13. **With `--json-schema`, grok's `structuredOutput` is the answer** (as `json.dumps`, not
     ASCII-escaped), even when `text` is a string: `text` joins every turn's message with no
     separator. Without `--json-schema`, `text` stays the digest as it is (turn boundaries
@@ -618,13 +618,56 @@ spec left open.
 15. **What a grok run can write in `~/.grok`** (measured with the sandbox log, 2026-11-06):
     `strict` and the profiles extending it (conductor's grok writers) write the workspace,
     `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` itself read-only, although grok's
-    README says strict writes `~/.grok`; the built-in `read-only` (read and review runs, the
-    skill's Step 3 commit-message call) writes all of `~/.grok`, `/tmp` and `/var/tmp`. So the
-    tamper-safe rewrite of the repository's profile is the guard against a read or review run,
-    fed executor-written code, rewriting `sandbox.toml` for the next writer: the lane writes the
-    profile before the slot and again once it holds the slot (a run may wait up to
-    `CX_SLOT_WAIT_SECS` while such a run goes on), leaving only the moment before grok reads it at
-    startup. Nothing checks the rest of `~/.grok` (`config.toml`), and `~/.grok/sessions` holds
-    every grok session's transcript (prompt, files read, tool output, answer) for every
-    repository, readable and writable by every grok run: DESIGN §20 items 75 and 76 record both
-    as known limits.
+    README says strict writes `~/.grok`. 0.2.1 went on to say that the built-in `read-only` (its
+    read and review runs, the skill's Step 3 commit-message call) writes all of `~/.grok`,
+    `sandbox.toml` and `config.toml` included, and made the tamper-safe rewrite of the
+    repository's profile the guard against such a run rewriting `sandbox.toml`. That was wrong
+    on both counts (measured 2026-11-06 with grok's own shell tool, item 16): grok write-denies
+    `sandbox.toml`, `config.toml` and the rest of its protected set under `read-only`, and
+    `read-only` writes grok's binary, ripgrep and plugins instead. `~/.grok/sessions` holds every
+    grok session's transcript (prompt, files read, tool output, answer) for every repository,
+    readable and writable by every grok run: DESIGN §20 item 75 records it as a known limit.
+
+### 0.2.2 (no conductor grok run under the built-in `read-only`)
+
+16. **The measurement behind 0.2.2** (2026-11-06, the build container, grok 1.0.70,
+    linux/landlock plus bubblewrap, enforced): grok's agent ran
+    `tests/fixtures/real/grok/write-probe.sh` through its shell tool, once under `--sandbox
+    read-only` and once under `--sandbox strict`. Under `read-only` grok's protected set
+    (`config.toml`, `sandbox.toml`, `trusted_folders.toml`, `managed_config.toml`,
+    `requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`) was DENIED and the rest
+    of `~/.grok` WRITABLE, `bin/grok-1.0.70` (grok's binary), `vendor/rg-15.0.0-override` (its
+    ripgrep), `installed-plugins/` and `auth.json` included; under `strict` everything but
+    `sessions/` was DENIED. The suite pins both result files.
+17. **Read and review runs use the writers' profile**, not a profile of their own: one boundary
+    per repository, and a read or review reads executor-written code, so it gets no weaker
+    profile than the writer whose output it reads. The schema travels inline (`--json-schema`
+    takes the schema text), and every file a read or review reads (the prompt file, the task,
+    the review's diff) is already inside its gate checkout, so the profile needs no further
+    grant. A custom `grok_sandbox_profile` is likewise used in every mode.
+18. **The per-run profile check** runs the free `grok --sandbox <the run's profile> models` in
+    the run's checkout and reads only what it appended to grok's sandbox log, as the preflight
+    does (no new parser: `cxlib.grok_sandbox_events` returns the events with their
+    `read_write_paths`, `cxlib.grok_home_write` judges them, `normalize.py grok-check` gives the
+    verdict). "Grants write to grok's home" means a `read_write_paths` entry that is
+    `${GROK_HOME:-~/.grok}` itself, a directory above it (`/`, `$HOME`, or `/tmp` when the home
+    lies there) or one inside it (`bin/`, `vendor/`, `installed-plugins/`), each compared as
+    given and resolved; the session store `~/.grok/sessions` and below is exempt only when both
+    forms of the entry lie there (a link out of it is no exemption). A built-in that writes
+    `~/.grok` (`off`, `devbox`, `workspace`, `read-only`) is refused without the log, so the
+    refusal also holds where nothing is logged (macOS, another version). Only an event for the
+    run's checkout counts; a line saying the sandbox was not applied refuses too; the probe's
+    exit status alone does not (`grok models` can fail for network reasons). The check runs once,
+    before the slot; the profile is still rewritten once the slot is held. A refusal is 2
+    `FAILED` (no new exit code), and its reason reaches the result through `$OUT/adapter.why`
+    (cx-run appends it to "stopped before its executor ran").
+19. **The per-project `.grok/sandbox.toml` refusal covers every mode**: a review's gate checkout
+    is a checkout of an executor-written branch, which can commit one; a read's checks out
+    `--base`, a commit of the user's, which may carry one too: such a repository gets no grok
+    read or review (another lane serves it).
+20. **The commit-message call** runs under the built-in `strict` with `--cwd "$OUT/msg"`, a
+    directory the step empties first (`rm -rf -- "${OUT:?}/msg"`) so that it holds only the
+    prompt: grok can write its cwd, and nothing the conductor later sources or runs (`vars.sh`,
+    the routes) lives there. No repository profile is needed: the prompt carries the diff, so
+    grok needs no read access to the repository. The D25 rule `Bash(cx-wsl grok:*)` and
+    `cx-wsl`'s grok arm are unchanged (it passes arguments byte for byte).

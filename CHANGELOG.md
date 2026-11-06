@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.2.2 — 2026-11-06
+
+A security fix: no conductor grok run uses grok's built-in `read-only` sandbox any more.
+
+- **Security: grok read, review and commit-message runs could plant code that runs unsandboxed
+  later.** 0.2.1 ran every grok read and review (`--sandbox read-only --always-approve`) and the
+  skill's Step 3 commit-message call (`--sandbox read-only --cwd "$TOP"`) under grok's built-in
+  `read-only` profile. Measured live on grok 1.0.70 (the build container, 2026-11-06,
+  linux/landlock plus bubblewrap, enforced; grok's agent ran a probe script through its shell
+  tool): `read-only` write-denies only grok's protected set (`config.toml`, `sandbox.toml`,
+  `trusted_folders.toml`, `managed_config.toml`, `requirements.toml`, `hooks-paths`, `hooks/`,
+  `bundled/`, `bundles/`) and lets grok write the rest of `~/.grok`: its own binary
+  (`~/.grok/bin/grok-1.0.70`), the ripgrep it runs (`~/.grok/vendor/`), `~/.grok/installed-plugins/`,
+  `auth.json`, `logs/`, `docs/`. Those runs read executor-written or repository content that
+  could steer them into replacing grok's binary or ripgrep or planting a grok plugin: code that
+  later runs outside any sandbox, in every grok session. The fix: read and review runs now run
+  under the repository's own profile `cx-<repo>-<hash>` (extends `strict`, the same profile as
+  writers; a custom `grok_sandbox_profile` is used in every mode), which writes only the run's
+  checkout, `~/.grok/sessions`, `/tmp` and `/var/tmp`; every file they read (the prompt file, the
+  task, a review's diff) lies inside their gate checkout, and the schema travels inline. The
+  lane writes the profile before every run in every mode, again once the slot is held, and
+  refuses a `.grok/sandbox.toml` in a read's or review's checkout too (a review checks out an
+  executor-written branch, which can commit one), not only in a writer's worktree. A built-in
+  that writes `~/.grok` (`off`, `devbox`, `workspace`, `read-only`) is refused, and `cx-doctor`
+  D17 fails when `grok_sandbox_profile` names one. If you ran 0.2.1 grok reads or reviews on
+  code you do not trust, check `~/.grok/bin`, `~/.grok/vendor` and `~/.grok/installed-plugins`
+  (for example reinstall grok).
+- **A per-run profile check** (free): before its slot and before any prompt, every grok run
+  runs `grok --sandbox <its profile> models` in its checkout, through the preflight's probe
+  machinery and worker environment, and reads only the line that call added to grok's sandbox
+  log: a `ProfileApplied` event for the checkout with `enforced` false, or with a
+  `read_write_paths` entry that grants write to grok's home (`${GROK_HOME:-~/.grok}` itself, a
+  directory above it or one inside it, compared as given and resolved, but `~/.grok/sessions`),
+  refuses the run with 2 `FAILED`, naming the profile, the path and the log; so does a line
+  saying the sandbox was not applied. No log or no event (macOS, another version) changes
+  nothing. The facts, the event's platform included, go into `grok.run.json` as
+  `sandbox_check`. The preflight's `grok --sandbox strict models` stays. A run that stops
+  before its executor now leaves its reason in `$OUT/adapter.why`, and `cx-run` puts it into
+  the result's reason (before: only "the grok lane stopped before its executor ran").
+- **The skill's Step 3 commit-message call** (SKILL section 4 and DESIGN §12.2, identically):
+  `cx-wsl grok … --cwd "$OUT/msg" --sandbox strict`, with the prompt at `$OUT/msg/prompt.txt` in
+  a directory the step empties first, which holds nothing the conductor later sources or runs.
+  `cx-wsl`'s grok arm, the D25 rule `Bash(cx-wsl grok:*)` and the Windows path rules are
+  unchanged.
+- **Docs corrected, measured.** 0.2.1 said that grok's built-in `read-only` "writes all of
+  `~/.grok`", `sandbox.toml` and `config.toml` included, so a read or review run could change
+  `sandbox.toml` and `config.toml` for later grok runs, and that the tamper-safe rewrite of the
+  repository's profile was the guard against that (grok.sh, the cxlib docstrings, the profile
+  template, README, DESIGN §1.3, §15.2, §15.7, §20 items 75 and 76, A.5 row L2, SPEC-NOTES
+  items 12 and 15, this changelog's 0.2.1 entry). Wrong for those files (grok write-denies
+  them), and it missed the real exposure above. DESIGN §1.3 now lists each built-in profile's
+  measured write set and grok's protected set, §20 item 76 is settled for every
+  conductor-launched grok run (what remains: your own grok sessions), new items 77 (whether
+  grok reads `--prompt-file` before or under its sandbox) and 78 (grok's daemon backend), and
+  revision A.6. The tamper-safe profile rewrite stays: it now guards `sandbox.toml` against what
+  is outside conductor's runs (your own grok sessions, which run without a sandbox by default,
+  other tools, code planted by an earlier read-only run). The profile template's comment
+  changed, so each repository's profile is rewritten once, with a note, on its next grok run.
+- **Fixtures**: `tests/fixtures/real/grok/write-probe.sh` and its verbatim results
+  `write-probe-read-only-1.0.70.txt` and `write-probe-strict-1.0.70.txt` (live, 2026-11-06,
+  $0.032164 and $0.021666).
+- **Tests**: read and review argv name the repository's profile and never `read-only`; a read
+  run writes the profile and runs under it after the per-run check; a `.grok/sandbox.toml` in a
+  read's or review's checkout refuses (2, no prompt run), also through `cx-run --mode review`
+  of a branch that commits one; the per-run check refuses an event granting write to grok's
+  home, to a directory inside it or above it, and an unenforced one, accepts
+  `~/.grok/sessions` and ignores other workspaces; the built-in `read-only` through the option
+  is refused; every file a read or review reads lies in its checkout; the write probes' facts
+  are pinned. The grok stub's sandbox probe takes `STUB_GROK_SANDBOX_EVENT=homewrite` and
+  `STUB_GROK_EVENT_RW`.
+
 ## 0.2.1 — 2026-11-06
 
 Fixes from the first real runs (one small `cx-run` per lane on the user's machine, 2026-11-02),

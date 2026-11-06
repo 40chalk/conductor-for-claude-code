@@ -63,6 +63,10 @@ Subcommands:
                                     at dispatch (cx-route)
   agy-settings --out F --wt DIR...  the agy raw lane's per-run --settings file (write_file of the
                                     worktree, command() of cx-route, git status and ls)
+  grok-check --profile P --workspace W --grok-home H --probe-out F [--probe-rc N] [--events E
+             --from N --to M] [--json-out J]
+                                    the grok lane's per-run profile check (DESIGN section 15.2):
+                                    "ok" or "refuse <reason>" on stdout, the facts as JSON in J
 """
 
 import argparse
@@ -1224,6 +1228,70 @@ def cmd_probe(a):
     return 0
 
 
+# The built-in grok profiles that let grok write its own home (grok's docs: off and devbox write
+# everywhere, workspace writes ~/.grok; measured on 1.0.70: read-only writes ~/.grok, its bin/,
+# vendor/ and installed-plugins/ included, tests/fixtures/real/grok/write-probe-read-only-1.0.70.txt).
+GROK_HOME_WRITERS = ("off", "devbox", "workspace", "read-only")
+
+
+def grok_check(profile, workspace, grok_home, probe_out, probe_rc, events, start, end):
+    """The grok lane's per-run profile check (DESIGN section 15.2), from the free `grok --sandbox
+    PROFILE models` the adapter ran in the run's checkout WORKSPACE and the bytes [START, END) it
+    appended to grok's sandbox log EVENTS. Returns (reason or None, facts): a refusal when PROFILE
+    is a built-in that writes grok's home (whatever the log says), when the probe's output says the
+    sandbox was not applied, when a ProfileApplied event for WORKSPACE has enforced false, or when
+    one of its read_write_paths grants write to grok's home (cxlib.grok_home_write: GROK_HOME, a
+    directory above it or one inside it, except GROK_HOME/sessions). No log, no event or a probe
+    that failed otherwise (rc alone) changes nothing: like the preflight, the log can only add a
+    refusal."""
+    evs = CXL.grok_sandbox_events(events, start, end, workspace) if events and workspace else []
+    facts = {"profile": profile, "workspace": workspace, "grok_home": grok_home, "log": events or None,
+             "probe_rc": probe_rc, "events": len(evs), "event": None, "home_write": None}
+    reason = None
+    if profile in GROK_HOME_WRITERS:
+        reason = ("--sandbox %s is grok's built-in %s profile, which lets grok write its home %s (grok's own binary, ripgrep "
+                  "and plugins, which later run outside any sandbox): conductor's grok runs use the repository's strict-based "
+                  "profile (option grok_sandbox_profile auto)" % (profile, profile, grok_home))
+    why = grok_nosandbox(read(probe_out)) if probe_out else None
+    if not reason and why:
+        reason = "grok --sandbox %s models in %s says the sandbox was not applied (%s)" % (profile, workspace, why)
+    for ev in evs:
+        if ev["enforced"] is False:
+            facts["event"] = ev
+            if not reason:
+                reason = ("grok's sandbox log %s says --sandbox %s ran unenforced in %s (ProfileApplied, enforced false, "
+                          "platform %s)" % (events, ev["profile"], workspace, ev["platform"]))
+            break
+    for ev in evs:
+        hw = CXL.grok_home_write(ev["read_write_paths"] or [], grok_home)
+        if hw:
+            facts["home_write"] = hw
+            facts["event"] = facts["event"] or ev
+            if not reason:
+                reason = ("grok's sandbox profile %s grants write to grok's home %s (read_write path %s in its ProfileApplied "
+                          "event for %s, in %s): a run steered by what it reads could replace grok's own binary, ripgrep or "
+                          "plugins there, which later run outside any sandbox" % (ev["profile"], grok_home, hw, workspace, events))
+            break
+    if facts["event"] is None and evs:
+        facts["event"] = evs[0]
+    facts["ok"] = reason is None
+    facts["reason"] = reason
+    return reason, facts
+
+
+def cmd_grok_check(a):
+    reason, facts = grok_check(a.profile, a.workspace, a.grok_home, a.probe_out, a.probe_rc, a.events, a.start, a.end)
+    if a.json_out:
+        try:
+            CX.atomic_write(a.json_out, json.dumps(facts, ensure_ascii=False) + "\n")
+        except OSError as e:
+            CX.err("normalize: grok-check: %s\n" % e)
+            return 2
+    # Paths can be long: the verdict keeps the whole reason (one line; the signal shortens it).
+    CX.out(("refuse " + CX.sanitize(reason, 8000) if reason else "ok") + "\n")
+    return 0
+
+
 def _cache_path():
     home = os.environ.get("CX_HOME") or os.path.join(os.path.expanduser("~"), ".conductor")
     return os.path.join(home, "state", "preflight.json")
@@ -2002,6 +2070,17 @@ def main(argv):
     s.add_argument("--bash", default="", help="cx-run's bash, when /bin/bash is missing")
     s.add_argument("--dry-run", action="store_true", help="print name: command lines, write nothing")
     s.set_defaults(fn=cmd_route_snapshot)
+    s = sub.add_parser("grok-check")
+    s.add_argument("--profile", required=True, help="the run's --sandbox profile")
+    s.add_argument("--workspace", required=True, help="the run's checkout (the check's cwd)")
+    s.add_argument("--grok-home", required=True, help="${GROK_HOME:-~/.grok}")
+    s.add_argument("--probe-out", default="", help="the output of grok --sandbox <profile> models")
+    s.add_argument("--probe-rc", type=int, default=None)
+    s.add_argument("--events", default="", help="grok's sandbox log (sandbox-events.jsonl)")
+    s.add_argument("--from", dest="start", type=int, default=0, help="its size before the check")
+    s.add_argument("--to", dest="end", type=int, default=0, help="its size after the check")
+    s.add_argument("--json-out", default="", help="the check's facts as JSON (run.json sandbox_check)")
+    s.set_defaults(fn=cmd_grok_check)
     a = ap.parse_args(argv)
     if not getattr(a, "fn", None):
         ap.print_help()
