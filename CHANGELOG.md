@@ -60,7 +60,8 @@ whose answer conductor discards.
   first, which holds nothing the conductor later reads, sources or runs. `cx-wsl`'s grok arm
   now refuses (exit 1, before the slot) a grok run that names a `--sandbox` other than
   `cx-strict` (plain `strict` included), or none (grok's default is no sandbox), or no
-  absolute `--cwd` directory, and runs grok from that directory, so grok's working directory
+  absolute `--cwd` directory, counting only grok's options (a `--sandbox` after `--` is prompt
+  text to grok, so it never satisfies the check), and runs grok from that directory, so grok's working directory
   and `--cwd` are the same (DESIGN §20 item 80). The D25 rule `Bash(cx-wsl grok:*)` and the
   Windows path rules are unchanged.
 - **Security: a `.conductor` symlink could redirect the conductor's own writes.** The conductor

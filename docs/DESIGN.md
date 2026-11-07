@@ -1723,7 +1723,9 @@ locally, which is equivalent to calling the tool with its §12.2 prefix.
   `cx-strict` and there must be one (no `--sandbox` means no sandbox at all; `off`, `devbox`,
   `workspace` and `read-only` let grok write `~/.grok`, §1.3; the built-in `strict` cannot read
   the resolver file on WSL, §1.3; a profile of the user's is not accepted here), and `--cwd`
-  must name an existing absolute directory, else exit 1 before the slot. Once the slot is held
+  must name an existing absolute directory, else exit 1 before the slot. Only grok's options
+  count: `--` ends them (grok's parser reads what follows as the prompt), so a `--sandbox` or
+  `--cwd` after it is never the run's. Once the slot is held
   `cx-wsl` refuses a `.grok/sandbox.toml` (or a link of that name) in the `--cwd` directory,
   where grok would read a per-project definition of `cx-strict`, before anything is written: exit
   2 `FAILED` (one `CX_SIGNAL`), grok never started there. It then writes conductor's

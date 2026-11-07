@@ -5654,23 +5654,26 @@ CW_BAD=""
 for c in "-p x --cwd $TMP/cw-msg" "$CWP --cwd $TMP/cw-msg" "$CWP --cwd $TMP/cw-msg --sandbox read-only" "$CWP --cwd $TMP/cw-msg --sandbox=off" \
          "$CWP --cwd $TMP/cw-msg --sandbox strict" "$CWP --cwd $TMP/cw-msg --sandbox=strict" \
          "$CWP --cwd $TMP/cw-msg --sandbox cx-strict --sandbox workspace" "$CWP --cwd $TMP/cw-msg --sandbox" "$CWP --sandbox cx-strict" \
-         "$CWP --sandbox cx-strict --cwd cw-msg" "$CWP --sandbox cx-strict --cwd $TMP/no-such-dir"; do
+         "$CWP --sandbox cx-strict --cwd cw-msg" "$CWP --sandbox cx-strict --cwd $TMP/no-such-dir" \
+         "$CWP --cwd $TMP/cw-msg -- --sandbox=cx-strict" "$CWP --cwd $TMP/cw-msg -- --sandbox cx-strict" \
+         "$CWP --sandbox cx-strict -- --cwd $TMP/cw-msg"; do
   read -r -a CMD <<< "$c"
   : > "$TMP/cw-grok.log"
   run wsl_direct "$CW_HOME" env STUB_LOG="$TMP/cw-grok.log" STUB_GROK_RUN=ok "$CXWSL" grok "${CMD[@]}"
   { rc_is 1 && no_signal && err_has "cx-wsl: " && [ ! -s "$TMP/cw-grok.log" ]; } || CW_BAD="$CW_BAD [$c: rc $RC]"
 done
-check "[X]   cx-wsl grok runs need --sandbox cx-strict (every --sandbox: not strict, which cannot read WSL's resolver file, read-only, off, workspace, none, a missing value) and an absolute --cwd directory: exit 1 before the slot, grok never started${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
+check "[X]   cx-wsl grok runs need --sandbox cx-strict (every --sandbox: not strict, which cannot read WSL's resolver file, read-only, off, workspace, none, a missing value) and an absolute --cwd directory, both before \"--\" (after it grok reads them as the prompt): exit 1 before the slot, grok never started${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
 CW_BAD=""
 rm -f -- "$CW_HOME/.grok/sandbox.toml.cx-bak"; cp "$CW_HOME/.grok/sandbox.toml" "$TMP/cw-sbx.orig"
-for c in "$CWP --cwd $TMP/cw-msg --sandbox cx-strict" "$CWP --cwd=$TMP/cw-msg --sandbox=cx-strict"; do
+for c in "$CWP --cwd $TMP/cw-msg --sandbox cx-strict" "$CWP --cwd=$TMP/cw-msg --sandbox=cx-strict" \
+         "$CWP --cwd $TMP/cw-msg --sandbox cx-strict -- --sandbox=off"; do
   read -r -a CMD <<< "$c"
   : > "$TMP/cw-grok.log"
   run wsl_direct "$CW_HOME" env STUB_LOG="$TMP/cw-grok.log" STUB_GROK_RUN=ok "$CXWSL" grok "${CMD[@]}"
   { rc_is 0 && grep -q "^grok	cwd=$TMP/cw-msg	argv: --prompt-file" "$TMP/cw-grok.log" \
       && [ "$(grep -n "^grok	cwd=$TMP/cw-msg	argv: --sandbox cx-strict models$" "$TMP/cw-grok.log" | cut -d: -f1)" = 1 ]; } || CW_BAD="$CW_BAD [$c: rc $RC]"
 done
-check "[X]   ... cx-wsl grok --cwd \$OUT/msg --sandbox cx-strict (also --cwd=DIR --sandbox=cx-strict) first runs the per-run check (grok --sandbox cx-strict models, in that directory), then runs grok from that directory, whatever the caller's cwd${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
+check "[X]   ... cx-wsl grok --cwd \$OUT/msg --sandbox cx-strict (also --cwd=DIR --sandbox=cx-strict, and with text after \"--\" that only looks like an option) first runs the per-run check (grok --sandbox cx-strict models, in that directory), then runs grok from that directory, whatever the caller's cwd${CW_BAD:+:$CW_BAD}" test -z "$CW_BAD"
 "$REAL_PY" -I - "$CW_HOME/.grok/sandbox.toml" <<'PY2' > "$TMP/cw-sbx.check"
 import sys, tomllib
 d = tomllib.load(open(sys.argv[1], "rb"))

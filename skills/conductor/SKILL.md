@@ -743,7 +743,7 @@ you meet the wrappers directly (`cx-wsl`, the hand steps):
   worktree, then dispatch the task afresh under a new id.
 - **Exit 1 from `cx-wsl grok`**: a grok call without `--sandbox cx-strict` (every `--sandbox` it
   names; plain `strict` cannot read the resolver file on WSL) or without an absolute `--cwd`
-  directory. Use the commit-message lines of Step 2 verbatim. Exit 2 from it: the `--cwd`
+  directory, both before any `--` (after it grok reads them as the prompt). Use the commit-message lines of Step 2 verbatim. Exit 2 from it: the `--cwd`
   directory holds a `.grok/sandbox.toml` (empty `$OUT/msg` first, as those lines do),
   `cx-strict` could not be written into `~/.grok/sandbox.toml`, or its check refused it (the
   note says why, as for the lane below).

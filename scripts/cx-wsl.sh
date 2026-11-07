@@ -152,6 +152,8 @@ POOL="$(slot_pool "$TOOL" "$@")"
 
 # grok_run_args ARG...: a grok run (header) names --sandbox cx-strict, every time it names
 # --sandbox, and an absolute --cwd directory (GROK_CWD); exit 1 otherwise, before the slot.
+# Only grok's options count: "--" ends them (grok's parser reads what follows as the prompt),
+# so a --sandbox or --cwd after it is text, never the run's sandbox or directory.
 GROK_CWD=""
 GROK_SB_WHY="grok's built-ins but strict let it write ~/.grok (its own binary, ripgrep and plugins), and strict cannot read the resolver file on WSL (/etc/resolv.conf links to /mnt/wsl/resolv.conf there): cx-strict is strict plus this host's resolver directories"
 grok_run_args() {
@@ -163,6 +165,7 @@ grok_run_args() {
         n=$((n + 1)) prev=""; continue ;;
       --cwd) GROK_CWD="$a" prev=""; continue ;;
     esac
+    [ "$a" != -- ] || break
     case "$a" in
       --sandbox=*)
         [ "${a#--sandbox=}" = cx-strict ] || cx_usage_error "cx-wsl grok runs only under --sandbox cx-strict, not $a ($GROK_SB_WHY)"
