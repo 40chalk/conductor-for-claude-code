@@ -7,13 +7,17 @@
 # the task's base commit; worktree_root (option, default ~/.cx-wt) is one absolute directory
 # outside every repository, so agy's single write_file grant covers every worktree and no main
 # checkout. Read and review runs use a detached gate checkout $CX_HOME/gate/<id>.<n> instead.
-# /.conductor/ (the task contract and the prompt file) is added once to the repository's
-# info/exclude, so it is never committed.
+# /.conductor (the task contract and the prompt file) is added once to the repository's
+# info/exclude, so git add -A never stages it: no trailing slash, so a .conductor that an executor
+# replaced by a symlink or a file is ignored too (/.conductor/ matches directories only). A
+# .gitignore negation in the worktree still outranks it: cx-run refuses a gate checkout of a
+# commit that tracks anything at .conductor, and never writes through a link there (cx_cdir).
 #
 # Functions:
 #   cx_wt_root TOP              prints the absolute worktree root (an option inside TOP falls back
 #                               to the default with a note); rc 1 when no usable root exists
-#   cx_wt_exclude TOP           adds /.conductor/ to <git common dir>/info/exclude
+#   cx_wt_exclude TOP           adds /.conductor to <git common dir>/info/exclude (0.2.1 and
+#                               earlier wrote /.conductor/, which stays)
 #   cx_wt_create TOP ID BASE WT [reuse]
 #                               git worktree add -b cx/ID WT BASE; refuses an existing branch or
 #                               path (rc 1, CX_WT_WHY) unless reuse, which needs WT to be a worktree
@@ -97,9 +101,11 @@ cx_wt_exclude() {
   local top="$1" gcd ex
   gcd="$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
   ex="$gcd/info/exclude"
-  grep -qx '/.conductor/' "$ex" 2>/dev/null && return 0
+  grep -qx '/.conductor' "$ex" 2>/dev/null && return 0
   mkdir -p -- "$gcd/info" 2>/dev/null
-  printf '/.conductor/\n' >> "$ex" 2>/dev/null
+  # A last line without its newline would swallow the pattern.
+  [ ! -s "$ex" ] || [ -z "$(tail -c 1 -- "$ex" 2>/dev/null)" ] || printf '\n' >> "$ex" 2>/dev/null
+  printf '/.conductor\n' >> "$ex" 2>/dev/null
   return 0
 }
 
@@ -125,8 +131,9 @@ cx_wt_create() {
     return 1
   fi
   mkdir -p -- "$(dirname -- "$wt")" || { CX_WT_WHY="cannot create $(dirname -- "$wt")"; return 2; }
-  # git's stderr goes to a fresh mktemp file (never a predictable name in a shared /tmp).
-  err="$(mktemp "${TMPDIR:-/tmp}/cx-wt.XXXXXXXX")" || { CX_WT_WHY="mktemp failed in ${TMPDIR:-/tmp}"; return 2; }
+  # git's stderr goes to a fresh mktemp file in the conductor's own scratch directory (never a
+  # shared /tmp, which grok runs may write: cx_tmpdir).
+  err="$(cx_mktemp cx-wt)" || { CX_WT_WHY="cannot create a scratch file in ${CX_HOME:-${HOME:-}/.conductor}/tmp"; return 2; }
   if ! git -C "$top" worktree add -q -b "$br" "$wt" "$base" 2>"$err"; then
     CX_WT_WHY="git worktree add failed: $(head -n 1 "$err" 2>/dev/null)"
     rm -f -- "$err"
@@ -210,8 +217,11 @@ cx_wt_changes() {
   if ! cx_wt_gitdir "$CX_WT_GCD" "$wt"; then CX_WT_LINK=0; return 3; fi
   gd="$CX_WT_GITDIR"
   CX_WT_BRANCH="$(cx_wt_git "$gd" "$wt" symbolic-ref -q --short HEAD 2>/dev/null)" || CX_WT_BRANCH=""
-  idx="$(mktemp "${TMPDIR:-/tmp}/cx-idx.XXXXXXXX")" || return 2
-  err="$(mktemp "${TMPDIR:-/tmp}/cx-add.XXXXXXXX")" || { rm -f -- "$idx"; return 2; }
+  # The scratch index and git's stderr live in the conductor's own scratch directory: a grok run
+  # going on meanwhile may write /tmp, and an index changed between git add and git diff would
+  # hide changes from changed.txt (cx_tmpdir).
+  idx="$(cx_mktemp cx-idx)" || return 2
+  err="$(cx_mktemp cx-add)" || { rm -f -- "$idx"; return 2; }
   if [ -f "$gd/index" ]; then cp -f -- "$gd/index" "$idx"; else rm -f -- "$idx"; fi
   # --ignore-errors: a file git cannot index (an embedded repository without a commit) must not
   # hide every other change of the run.

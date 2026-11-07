@@ -62,8 +62,9 @@ into DESIGN.md and delete them here.
     option" note (once per process when not called in a subshell) for an invalid value, appends
     `claude` to `opus_lane_order`, lowercases enum words. The "worktree_root inside the current
     repo" rule needs git and is only applied by `options-check` (D7).
-14. **cx-init output.** `excluded` (CX_INIT and `--json`) means `/.conductor/` is in
-    `info/exclude` after this run (in a dry run: already). `written` lists the files written, or
+14. **cx-init output.** `excluded` (CX_INIT and `--json`) means `/.conductor` is in
+    `info/exclude` after this run (in a dry run: already; 0.2.1 and earlier wrote `/.conductor/`,
+    which matches directories only, Phase 2 item 21). `written` lists the files written, or
     in a dry run the files that would be written; it is empty on exit 5. Text-mode notes go to
     stderr as `cx-init: <note>`. A conflict line reads `CONFLICT <file> (<why>; --force to <action>)`.
 15. **cx-init refusals --force does not override:** a target that is a symlink (an `AGENTS.md`
@@ -181,7 +182,7 @@ into DESIGN.md and delete them here.
     agent and guesses no socket path.
 43. **D25 rules (§8.3).** Rules are written as the literal leading text of the skill's simple
     commands (`$VAR` text and `"${G_ENV[@]}"` included), the same assumption the earlier
-    prefixed rules made; how 2.1.316 matches them stays [unverified] (§20 item 36). Step 5 uses
+    prefixed rules made; how Claude Code matches them stays [unverified] (§20 item 36). Step 5 uses
     `gh … -R "$REPO"` so no `gh`/`git push` runs inside a `(cd … && …)` subshell, which P43
     rejects. `REPO` is parsed from the origin URL in Step 1 (no network call).
 44. **WRONG_TREE snapshot (§12.2 step 2a).** Every other worktree of the repo is compared, so a
@@ -376,12 +377,17 @@ spec left open.
     fields only, and only when the executor failed or left no answer (ghcp's rule).
 86. **Served-model rules as built.** Copilot: every `models_used[].model` equals the request
     (an empty list is a note, not a mismatch); Fusion: `GHCP_FALLBACK` is 21 and the served
-    model is `fusion.final_model`. grok: the `modelUsage` keys must be exactly the model. claude
+    model is `fusion.final_model` (since 0.2.2 the adapter turns ghcp's `fusion_fallback` off for
+    `--fusion` runs, so a refusal is ghcp's free 14 and a `GHCP_FALLBACK` appears only from a
+    ghcp that ignores the option). grok: the `modelUsage` keys must be exactly the model. claude
     (assumption): the requested model must be among the `modelUsage` keys, and any other key that
     is not a Haiku helper is a mismatch.
 87. **Worker environment additions.** Every `CLAUDE_PLUGIN_OPTION_*` is unset for the child
     (both siblings read option variables of their own, and a job runner may carry the
-    conductor's); Copilot's `COPILOT_HOME` is set to the recorded value rather than only unset;
+    conductor's), then the copilot lane sets ghcp's `CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off` for
+    `--fusion` runs only (0.2.2: a Fusion refusal is ghcp's free 14, not a billed plain-`auto`
+    re-run whose answer the lane discards; an option the user saved stays in force everywhere
+    else); Copilot's `COPILOT_HOME` is set to the recorded value rather than only unset;
     the Copilot token is read at run time and never written into `copilot.env`. The claude
     worker's unset list is one array (`CLAUDE_WORKER_SCRUB`) plus every `CLAUDE_CODE_REMOTE*` and
     `CLAUDE_CODE_SESSION_*` present; P62 allow-lists that array line (it unsets, never reads).
@@ -595,11 +601,11 @@ spec left open.
     is not read and nothing changes. `enforced` false refuses like a line saying the sandbox was
     not applied (2 `FAILED`, the same reason text with the event first); `enforced` true records
     the platform; no log, no event, or a non-boolean `enforced` changes nothing. Every grok run
-    can write `~/.grok/sessions` (a read or review run all of `~/.grok`), so the log is not
-    trusted to lift a refusal: a forged `enforced` true changes nothing, a forged false only
-    refuses. The run itself is not checked against the log (only the probe), and the shape of an
-    unenforced event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is
-    synthetic, DESIGN §20 item 72).
+    can write `~/.grok/sessions`, so the log is not trusted to lift a refusal: a forged
+    `enforced` true changes nothing, a forged false only refuses. The shape of an unenforced
+    event is unseen (the stub's `STUB_GROK_SANDBOX_EVENT=unenforced` line is synthetic, DESIGN
+    §20 item 72). (0.2.1 also said a read or review run writes all of `~/.grok`, and that the
+    run itself is not checked against the log: both changed in 0.2.2, items 16 and 18.)
 13. **With `--json-schema`, grok's `structuredOutput` is the answer** (as `json.dumps`, not
     ASCII-escaped), even when `text` is a string: `text` joins every turn's message with no
     separator. Without `--json-schema`, `text` stays the digest as it is (turn boundaries
@@ -618,13 +624,181 @@ spec left open.
 15. **What a grok run can write in `~/.grok`** (measured with the sandbox log, 2026-11-06):
     `strict` and the profiles extending it (conductor's grok writers) write the workspace,
     `~/.grok/sessions`, `/tmp` and `/var/tmp`, with `~/.grok` itself read-only, although grok's
-    README says strict writes `~/.grok`; the built-in `read-only` (read and review runs, the
-    skill's Step 3 commit-message call) writes all of `~/.grok`, `/tmp` and `/var/tmp`. So the
-    tamper-safe rewrite of the repository's profile is the guard against a read or review run,
-    fed executor-written code, rewriting `sandbox.toml` for the next writer: the lane writes the
-    profile before the slot and again once it holds the slot (a run may wait up to
-    `CX_SLOT_WAIT_SECS` while such a run goes on), leaving only the moment before grok reads it at
-    startup. Nothing checks the rest of `~/.grok` (`config.toml`), and `~/.grok/sessions` holds
-    every grok session's transcript (prompt, files read, tool output, answer) for every
-    repository, readable and writable by every grok run: DESIGN §20 items 75 and 76 record both
-    as known limits.
+    README says strict writes `~/.grok`. 0.2.1 went on to say that the built-in `read-only` (its
+    read and review runs, the skill's Step 3 commit-message call) writes all of `~/.grok`,
+    `sandbox.toml` and `config.toml` included, and made the tamper-safe rewrite of the
+    repository's profile the guard against such a run rewriting `sandbox.toml`. That was wrong
+    on both counts (measured 2026-11-06 with grok's own shell tool, item 16): under `read-only`
+    an append-open of `sandbox.toml`, `config.toml` and the rest of its protected set is denied
+    (a rename or unlink in the writable `~/.grok` was not tried; grok's docs say the protected
+    paths' parents are pinned, so it is denied too), and `read-only` writes grok's binary,
+    ripgrep, plugins and `auth.json` instead. `~/.grok/sessions` holds every
+    grok session's transcript (prompt, files read, tool output, answer) for every repository,
+    readable and writable by every grok run: DESIGN §20 item 75 records it as a known limit.
+
+### 0.2.2 (no conductor grok run under the built-in `read-only`)
+
+16. **The measurement behind 0.2.2** (2026-11-06, the build container, grok 1.0.70,
+    linux/landlock plus bubblewrap, enforced): grok's agent ran
+    `tests/fixtures/real/grok/write-probe.sh` through its shell tool, once under `--sandbox
+    read-only` and once under `--sandbox strict` (an append-open that writes nothing per file, a
+    dotfile created and removed per directory). Under `read-only` grok's protected set
+    (`config.toml`, `sandbox.toml`, `trusted_folders.toml`, `managed_config.toml`,
+    `requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`) was DENIED and the rest
+    of `~/.grok` WRITABLE, `bin/grok-1.0.70` (grok's binary), `vendor/rg-15.0.0-override` (its
+    ripgrep), `installed-plugins/` and `auth.json` included; under `strict` everything but
+    `sessions/` was DENIED. The suite pins both result files.
+17. **Read and review runs use the writers' profile**, not a profile of their own: one boundary
+    per repository, and a read or review reads executor-written code, so it gets no weaker
+    profile than the writer whose output it reads. The schema travels inline (`--json-schema`
+    takes the schema text), and every file a read or review reads (the prompt file, the task,
+    the review's diff) is already inside its gate checkout, so the profile needs no further
+    grant. A custom `grok_sandbox_profile` is likewise used in every mode.
+18. **The per-run profile check** runs the free `grok --sandbox <the run's profile> models` in
+    the run's checkout and reads only what it appended to grok's sandbox log, as the preflight
+    does (no new parser: `cxlib.grok_sandbox_events` returns the events with their
+    `read_write_paths`, `cxlib.grok_home_write` judges them, `normalize.py grok-check` gives the
+    verdict). "Grants write to grok's home" means a `read_write_paths` entry that is
+    `${GROK_HOME:-~/.grok}` itself, a directory above it (`/`, `$HOME`, or `/tmp` when the home
+    lies there) or one inside it (`bin/`, `vendor/`, `installed-plugins/`), each compared as
+    given and resolved, on whole path components (`~/.grok/sessions-x` is no session store,
+    `~/.grok-x` no part of the home); the session store `~/.grok/sessions` and below is exempt
+    only when both forms of the entry lie there (a link out of it is no exemption). A built-in
+    that writes `~/.grok` (`off`, `devbox`, `workspace`, `read-only`: `normalize.py`
+    `GROK_HOME_WRITERS`, pinned equal to D17's list) is refused by its name before grok starts
+    at all (with `off` the check would otherwise start grok unsandboxed in the checkout), so the
+    refusal also holds where nothing is logged (macOS, another version). Only an event for the
+    run's checkout counts; a line saying the sandbox was not applied refuses too; the probe's
+    exit status alone does not (`grok models` can fail for network reasons). The check runs once,
+    before the slot; the profile is still rewritten once the slot is held. A refusal is 2
+    `FAILED` (no new exit code), and its reason reaches the result through `$OUT/adapter.why`
+    (cx-run appends it to "stopped before its executor ran").
+19. **The per-project `.grok/sandbox.toml` refusal covers every mode**: a review's gate checkout
+    is a checkout of an executor-written branch, which can commit one; a read's checks out
+    `--base`, a commit of the user's, which may carry one too: such a repository gets no grok
+    read or review (another lane serves it). The same reasoning covers `.conductor` for every
+    lane (item 21).
+20. **The commit-message call** runs under conductor's `cx-strict` (item 25: the built-in
+    `strict` plus the resolver directories) with `--cwd "$OUT/msg"`, a directory the step
+    empties first so that it holds only the prompt: grok can write its cwd (and
+    `~/.grok/sessions`, `/tmp`, `/var/tmp`), and nothing the conductor later reads, sources or
+    runs lives there. No repository profile is needed: the prompt carries the diff, so grok
+    needs no read access to the repository. `cx-wsl`'s grok arm checks the call (still passing
+    the arguments byte for byte): a form that takes a grok slot must name `--sandbox cx-strict`
+    every time it names `--sandbox` (an empty value, a built-in or a profile of the user's is
+    refused: `strict` is the one built-in measured to keep `~/.grok` read-only, and it cannot
+    read WSL's resolver file) and an absolute `--cwd` directory, else exit 1 before the slot;
+    grok then runs from that directory, so its process cwd and `--cwd` are the same (which of
+    the two grok's CWD grant follows is unverified, DESIGN §20 item 80). The D25 rule
+    `Bash(cx-wsl grok:*)` is unchanged.
+21. **`.conductor` is the conductor's, in every checkout.** A read or review of a commit that
+    tracks anything at `.conductor` exits 2 `FAILED` before its gate checkout exists (`git
+    ls-tree <commit> -- .conductor`; not 1: the request is valid, the commit is not), whatever
+    the lane: the conductor writes the diff, the task and grok's prompt file there unsandboxed,
+    and a symlink at or below `.conductor` would redirect them to any file of the user's. A
+    writer's worktree (a re-dispatch, or a base that tracks `.conductor`) whose `.conductor` is
+    a symlink, no directory, or holds a symlink at any depth exits 2 before the task is written
+    (`common.sh` `cx_cdir`); every file there is written as a new file (`cx_cput`: `rm -f`
+    first), and the post-run hash check refuses a `.conductor` or `task.md` symlink
+    (`spec_tampered`), even one pointing at an identical copy. `info/exclude` gets `/.conductor`
+    without the trailing slash (`/.conductor/` matches directories only: Step 3's `git add -A`
+    committed a `.conductor` symlink an executor left); the old line stays where it is.
+22. **Scratch files live in `$CX_HOME/tmp`** (0700, created on first use, refused when it is a
+    symlink or not the user's: `common.sh` `cx_tmpdir`, `cx_mktemp`), on the executor host
+    only: every strict-based grok run may write `/tmp` and `/var/tmp`, and the step `cx-wsl
+    bash -s` runs, the scratch index whose diff checks the allowed paths, the probes' outputs
+    and the doctor's facts (the host record names the binaries `cx-wsl` runs) must not change
+    between write and read. The Git Bash side keeps `${TMPDIR:-/tmp}` (the Windows temp
+    directory, outside every executor's grants). The skill's task contract moved from
+    `/tmp/cx-t1.md` to `~/.conductor/tasks/t1.md` for the same reason (a failover re-reads it).
+23. **The preflight also refuses a `strict` that writes grok's home**: the strict probe's
+    `ProfileApplied` event goes through `cxlib.grok_home_write` too (`--sandbox-grok-home`), and
+    D17 fails on it (`cxlib.py grok-sandbox-event --grok-home`, a fourth field). The probe JSON's
+    `sandbox.home_write` names the path only when it is the refusal's reason (an unenforced
+    event is reported as such first). 1.0.70's `strict` keeps `~/.grok` read-only (measured);
+    grok's README says otherwise, and grok is not pinned.
+24. **D17 and option `grok_sandbox_profile=strict`**: a warning (grok runs start, but `strict`
+    cannot read a worktree's git directory or the routes, so `git status` and `cx-route` fail
+    inside worktrees), not the "not defined, grok runs fail to start" warning of a custom name,
+    which now says "not one of grok's built-ins and not defined".
+25. **grok's resolver and TLS reads** (DESIGN §1.3, §15.7, §20 item 81; measured on WSL): every
+    profile conductor writes adds, read-only, the directory that holds each resolver or TLS file
+    of a fixed list whose resolved path lies outside `strict`'s logged read set, rather than a
+    fixed `/mnt/wsl`: the same rule covers WSL, systemd-resolved setups that point elsewhere and
+    NixOS store paths, and adds nothing where nothing is needed. Directories only (grok refuses a
+    file in `read_only`), so the grant is the file's whole directory (on WSL `/mnt/wsl`, which
+    WSL shares between distributions). Only system directories qualify: never `/`, a directory
+    that is or contains the home directory, `~/.grok`, `$CX_HOME`, the run's checkout, the
+    repository or its git directory, nor one inside `$CX_HOME`, those checkouts or the home
+    directory (`~/.config` holds tokens), nor one on a Windows drive (`/mnt/<letter>`, the
+    `[automount]` root of `/etc/wsl.conf`), nor one the resolution reaches through a link in
+    `/tmp`, `/var/tmp` (strict's write set: a grok run could replace the link and steer the next
+    profile write), a home or a checkout. `SSL_CERT_FILE` and `SSL_CERT_DIR` are not targets (the
+    follow-up review): the profiles are shared by every caller, and calls forwarded from Git Bash
+    start without them while a WSL session inherits the user's shell, so each kind of caller
+    rewrote the shared profile its own way. The deterministic rule (the fixed list, read under
+    `CX_DETECT_ROOT`; no variable but the homes) was chosen over recording the variables in the
+    host record (stale, and still one caller's view) or keeping the union of past grants (history
+    decides, and a grant could never be withdrawn); D17 warns about its own environment's
+    `SSL_CERT_*` that grok cannot read, the per-run check notes the run's. Linux only: the read
+    set was measured under Landlock; macOS (`/etc` → `/private/etc`) gets nothing. The read set
+    is `cxlib`'s constant (as grok 1.0.70 logs it), not the live event: the profile is written
+    before any probe of it; the per-run check then compares the targets with the event's own
+    read paths.
+26. **`cx-strict`, not plain `strict`**, for the commit-message call and the lane outside a git
+    checkout: a fixed name conductor owns (written and checked by `cx-wsl` before each call,
+    under the repository profiles' lock and rules), so the argv says exactly which profile runs
+    (`--sandbox cx-strict`) and nothing is substituted behind it; `cx-wsl` refuses plain
+    `strict` (exit 1) instead of mapping it, which would hide what runs. Its text lives in
+    `cxlib.GROK_STRICT_TEXT` (it names no repository; no new shipped template). With no
+    directory to add its `read_only` is `[]` (whether grok accepts an empty list is unverified).
+    The per-run check refuses only when grok's probe output says the profile could not be
+    applied (`GROK_NOSANDBOX_RE`), the logged event is unenforced or grants write to grok's home;
+    any other start-up error of the probe (its rc alone) refuses nothing, and the call then fails
+    on its own, so a grok that rejected `read_only = []` with other wording would surface as the
+    call's own failure.
+27. **The per-run check notes, never refuses, a resolver target the logged profile cannot read**:
+    the check compares the targets with the `ProfileApplied` event's `read_only_paths` and
+    `read_write_paths` only when the event lists `read_only_paths` (the shape strict-based starts
+    log on 1.0.70); another log shape, a grok whose list omits the base directories, or a
+    non-essential file (`/etc/gai.conf`) must not block a run. The run's failure reason then
+    names a DNS failure (item 28).
+28. **grok's connection failure reason** (DESIGN §15.2 grok): rc not 0, no model call (grok
+    usage's `session.modelCalls` 0; when grok usage recorded nothing, no `modelUsage` and no
+    token), and one of the measured phrases (`error sending request for url`, `client error
+    (Connect)`, `dns error`, `failed to lookup address information`) on the run's own stderr or
+    in its error object. The DNS variant also takes the bytes appended to
+    `~/.grok/logs/unified.jsonl` during the run (read like the sandbox log: only the appended
+    range, at most the last 4 MiB, never through a symlink; matched as text, the JSON shape is
+    unverified), but only to name DNS in a reason stderr already earned: every grok process on
+    the computer (other lanes, `cx-wsl` calls, the user's sessions) appends to that log, and its
+    lines carry no session id conductor could match (the shape was not captured), so a DNS line
+    there with nothing on stderr is a note, never a reason. Still 2 `FAILED` (12 on the wall
+    clock): no new exit class for an unverified cause. The reason keeps to `result.json`'s 200
+    characters (what, D17, the phrase); grok's own words, the per-run check's unreadable targets
+    and the 28-minute retry note go into the notes. grok usage is parsed as the JSON 1.0.70
+    prints (the earlier text patterns never matched it).
+29. **D17's login retry**: one, 2 s after a `grok models` that listed no models or said `You are
+    not authenticated` (a one-off seen once), never after a hang (its 30 s already ran out); the
+    record says so either way. D24's and D25's notes no longer name a Claude Code version: "the
+    Task(...) rule syntax is unverified", "how Claude Code matches env -u prefixes and multi-line
+    steps is unverified" (the D13 "measured with claude plugin install --help on 2.1.316" note
+    stays: it records a measurement).
+30. **CR checks on Git Bash** (DESIGN §3.1; measured with bash 5.3.15, x86_64-pc-cygwin, and grep
+    3.0, 2026-11-06): one constant, `common.sh`'s `CX_CR`, assigned outside any substitution, and
+    `grep -U -e "$CX_CR"` at every CR check (W6, D3, `install-runtime.sh`, `cx-wsl bash -s`), not
+    a per-site local: one comment says what was measured. The rule bans every ANSI-C string inside
+    a substitution, not only `$'\r'` (the one measured broken): the audit found no other ANSI-C
+    string inside a substitution in a shipped file, and the scanner need not tell escapes apart. It is enforced by a lexical scanner in the
+    suite, not by shellcheck (which has no such rule); the scanner reports a file it cannot follow
+    to its end instead of passing it. The simulated Git Bash's grep drops a CR pattern without
+    `-U` (no output, exit 1): the measured fact, modelled only for the forms the Git Bash code
+    uses (`-l`, `-q`); the bash half of the bug cannot be reproduced on Linux, so the static
+    check is its only guard. `sed` and the case-pattern and `${x%$'\r'}` forms outside
+    substitutions were not measured; they stay.
+31. **The ChalkAgent fixtures** (`tests/fixtures/real/*/sbx-*-ca-*`, 0.2.1 out directories):
+    kept as recorded but for the Linux user name in home paths (`user`), so tests pin their
+    session ids, usage, credits and timings; the served model is checked against the run's own
+    `model_requested` rather than written into the suite. The DNS case is a copy of the grok run
+    given the log text measured that day through `normalize.py grok-netlog` (0.2.1 kept no
+    `grok.netlog.txt`); the JSON shape of that log line stays unverified.

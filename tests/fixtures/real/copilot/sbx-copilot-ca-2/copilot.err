@@ -1,0 +1,2 @@
+GHCP_SESSION 6366067f-0197-4a46-ba11-4727e76300dd
+GHCP_USAGE {"tier": "", "model_requested": "gpt-6.1-sol", "auto_tier": null, "fallback": false, "model": "gpt-6.1-sol", "models_used": [{"model": "gpt-6.1-sol", "requests": 3, "ai_credits": 3.9574}], "fusion": null, "ai_credits": 3.9574, "premium_requests": 1, "input_tokens": 41698, "output_tokens": 171, "cache_read_tokens": 27657, "reasoning_tokens": 0, "duration_ms": 7042, "files_modified": 0, "lines_added": 0, "lines_removed": 0, "session_id": "6366067f-0197-4a46-ba11-4727e76300dd", "exit": 0}

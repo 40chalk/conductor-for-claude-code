@@ -12,7 +12,7 @@
       "name": "conductor",
       "source": "./",
       "description": "Claude conducts: route each task to Copilot (ghcp), Grok Build or Antigravity, send Opus 5.5 fan-out to the included pools, and keep Claude the judge of quality. Free doctor, repo bundle writer and Git Bash to WSL forwarding.",
-      "version": "0.2.1"
+      "version": "0.2.2"
     }
   ]
 }

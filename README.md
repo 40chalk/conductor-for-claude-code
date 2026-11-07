@@ -25,7 +25,7 @@ The full build spec is `docs/DESIGN.md`; this README condenses it.
 | Task | Primary | Fallback | Verification |
 |---|---|---|---|
 | Architecture, hard reasoning | Claude (xhigh, max for one-way doors) | Copilot Opus high | Claude writes the ADR |
-| Exploration, "where is X" | grok `grok-4.7` medium, read-only | Gemini flash, read-only | Claude spot-checks cited lines |
+| Exploration, "where is X" | grok `grok-4.7` medium, read mode | Gemini flash, read-only | Claude spot-checks cited lines |
 | Small or judgement-heavy change | Claude | — | normal tests |
 | Spec'd feature, design-sensitive | Opus lanes in `opus_lane_order`, high | next Opus lane, Fusion Max, Claude | clean-checkout tests, tamper check, cross-family review |
 | Spec'd feature, mechanical; bulk edits | grok `grok-4.7` high | Copilot Fusion standard | the same gate plus the `permission required:` scan |
@@ -50,14 +50,14 @@ runs the same in the background (`JOB_ID`, `status`, `wait`, `result`, `kill`, `
 (`/conductor:route <task>` explains one):
 
 ```
-cx-run --background --task-file /tmp/cx-t1.md --id t1 --effort high   # --exec auto: agy (raw), then Copilot, then Claude
+cx-run --background --task-file ~/.conductor/tasks/t1.md --id t1 --effort high   # --exec auto: agy (raw), then Copilot, then Claude
 cx-job wait <job id>                                                  # one background Bash call, timeout 7200000
 cx-run --exec grok --id t2 -- '- add a greeting file'                  # free text; after -- it may start with -
 cx-run --mode read --exec grok '<question>'                           # an answer only, on a detached checkout
 cx-run --mode review --family gemini --branch cx/t1                    # a cross-family review
-cx-run --exec claude --task-file /tmp/cx-t3.md --id t3                 # a dispatch JSON for your own subagent ...
+cx-run --exec claude --task-file ~/.conductor/tasks/t3.md --id t3      # a dispatch JSON for your own subagent ...
 cx-run --finish t3                                                     # ... then its checks, CX_RESULT and ledger line
-cx-run --exec copilot-cloud --task-file /tmp/cx-t4.md --id t4          # the Copilot cloud agent opens a PR ...
+cx-run --exec copilot-cloud --task-file ~/.conductor/tasks/t4.md --id t4  # the Copilot cloud agent opens a PR ...
 cx-run --finish t4 --pr 42                                             # ... whose head is gated on a clean checkout
 ```
 
@@ -65,6 +65,14 @@ cx-run --finish t4 --pr 42                                             # ... who
   `--fusion standard|max`, `--dry-run` (the plan and the executor's argv, nothing created) and
   `--explain` (why each lane was chosen or skipped). Ids are unique on the computer; one
   `cx-run` per task at a time (a re-dispatch while the first still runs exits 1).
+- **Fusion lanes** (`--fusion`) run ghcp with its option `fusion_fallback` off
+  (`CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off` in that run's environment, which wins over your
+  `settings.json`): when Copilot refuses Fusion before any model call, ghcp exits 14
+  (`MODEL_UNAVAILABLE`), free, and you take the next lane, instead of ghcp re-running the task
+  on plain `auto` (billed) for an answer conductor would discard as a model mismatch (21). Not a
+  spend cap; your other ghcp calls keep your setting, and ghcp still sets the feature flags its
+  headless Fusion needs. A `GHCP_FALLBACK` that still appears (a ghcp that ignores the option)
+  stays 21.
 - **Pool slots.** `cap_agy`, `cap_copilot` and `cap_grok` (default 2, 3, 5) hold for every
   session, Work locally thread, workflow agent and forwarded call on the computer: `cx-run`
   takes the slot for every executor run (a job shows `queued` until it gets one), and `cx-wsl`
@@ -97,23 +105,77 @@ cx-run --finish t4 --pr 42                                             # ... who
   the lane with exit 26 before anything runs. `cx-doctor` shows the versions the lanes were last
   verified against as information; auto-update is your choice.
 
-Grok writers run under their repository's own sandbox profile `cx-<repo>-<hash>` in
-`~/.grok/sandbox.toml` (extends grok's `strict`; read-only access to the repository's git
-directory and `~/.conductor/routes`, never the out directories), which the first grok run of a
-repository writes. Measured on grok 1.0.70, `strict` lets grok write only the worktree,
-`~/.grok/sessions`, `/tmp` and `/var/tmp` (`~/.grok` itself stays read-only, although grok's
-README says strict writes it), while the built-in `read-only` profile of grok's read and review
-runs writes all of `~/.grok`. So such a run could rewrite `sandbox.toml`: the name is
-conductor's own, and before each write run, and again once it holds its slot, any other
-definition of it is replaced, and a file that would still define it another way (or a
-`.grok/sandbox.toml` in the worktree) refuses the run. Known limits: `~/.grok/sessions` holds
-every grok session's transcript and every grok run can read and write it, so a grok writer can
-see other grok runs' tasks and answers there; nothing checks the rest of `~/.grok`. Every grok
-run approves every tool inside its sandbox, so its preflight first checks that grok can apply one
-here (`grok --sandbox strict models`, free; on Linux and WSL it needs Landlock and bubblewrap,
-`cx-doctor` D17), and refuses the lane when the line that probe adds to grok's sandbox log
-(`~/.grok/sessions/sandbox-events.jsonl`, read where GNU `stat` is available) says the profile
-was not enforced. `cx-init --user-grants` (optional, from inside the repository) writes the
+Every conductor grok run (write, read and review) runs under its repository's own sandbox
+profile `cx-<repo>-<hash>` in `~/.grok/sandbox.toml` (extends grok's `strict`; read-only access
+to the repository's git directory, `~/.conductor/routes` and this host's resolver directories,
+below; never the out directories), which the first grok run of a repository writes; option
+`grok_sandbox_profile` can name a profile of your own instead, used for every mode. The skill's
+commit-message call uses conductor's `cx-strict` (`strict` plus the resolver directories only)
+in a directory that holds only its prompt (`cx-wsl` refuses a grok run without `--sandbox
+cx-strict` or an absolute `--cwd`, writes and checks `cx-strict` first, and runs grok from that
+directory). Measured on grok
+1.0.70: `strict` grants write to its working directory, `~/.grok/sessions`, `/tmp` and
+`/var/tmp` only (grok's sandbox log, `tests/fixtures/real/grok/sandbox-events-1.0.70.jsonl`),
+and inside `~/.grok` it write-denies everything but `sessions/` (the write probe,
+`tests/fixtures/real/grok/write-probe-strict-1.0.70.txt`). grok's built-in `read-only`, which
+0.2.1 used for read and review runs and the commit-message call, write-denied an append-open of
+grok's protected set (`config.toml`, `sandbox.toml`, `trusted_folders.toml`,
+`managed_config.toml`, `requirements.toml`, `hooks-paths`, `hooks/`, `bundled/`, `bundles/`)
+and let grok write the rest of `~/.grok` (`write-probe-read-only-1.0.70.txt`): its binary in
+`~/.grok/bin` (which runs whenever grok is launched from there), its ripgrep in
+`~/.grok/vendor`, `~/.grok/installed-plugins` and `auth.json`, code and credentials used later
+outside any sandbox. Before each grok run (and before its pool slot) the lane checks the run's own profile
+for free: `grok --sandbox <profile> models` in the run's checkout, then the line it adds to
+grok's sandbox log (`~/.grok/sessions/sandbox-events.jsonl`, read where GNU `stat` is
+available). The run is refused (exit 2, before any prompt) when that line says the profile was
+not enforced or grants write to `~/.grok` itself, a directory above it or one inside it (all
+but `~/.grok/sessions`), and always, before grok starts, for a built-in profile that writes
+`~/.grok` (`off`, `devbox`, `workspace`, `read-only`); with no log the check changes nothing.
+The preflight refuses the whole lane the same way when grok's built-in `strict` would grant
+`~/.grok` (grok's README says it does; 1.0.70 does not). The profile's name
+is conductor's own: before each run, and again once it holds its slot, any other definition of
+it is replaced, and a file that would still define it another way (or a `.grok/sandbox.toml` in
+the run's checkout, a review's included) refuses the run. A read or review of a commit that
+tracks anything at `.conductor` (where the conductor writes the diff, the task and the prompt
+file) is refused before the checkout, and the conductor never writes through a symlink there.
+Known limits: `~/.grok/sessions` holds every grok session's transcript and every grok run can
+read and write it, so a grok run can see other grok runs' tasks and answers there; every grok
+run can write `/tmp` and `/var/tmp`, so the conductor keeps its scratch files in
+`~/.conductor/tmp` and the skill its task contracts in `~/.conductor/tasks/`, and nothing you
+will run or re-read belongs in `/tmp` while grok runs go on. Every grok run approves every tool inside its sandbox,
+so its preflight also checks that grok can apply one here (`grok --sandbox strict models`, free;
+on Linux and WSL it needs Landlock and bubblewrap, `cx-doctor` D17).
+
+grok's name lookups and TLS under those profiles (measured on WSL, grok 1.0.70): `strict` reads
+only its system directories (`/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/dev`, `/proc`,
+`/sys`, `/tmp`, `/run`, `/var`), the working directory and `~/.grok`, and the sandbox checks a
+file's resolved path. On WSL `/etc/resolv.conf` links to `/mnt/wsl/resolv.conf`, which strict's
+read set cannot read (a Landlock child holding that read list could not), and a grok write run
+under the repository's strict-based profile retried its API for 28 minutes, then failed (`error
+sending request for url`, no model call), while every D17 check passed. Every conductor profile
+therefore adds, read-only, the directory of each resolver and TLS file (`/etc/resolv.conf`,
+`/etc/hosts`, `/etc/nsswitch.conf`, `/etc/host.conf`, `/etc/gai.conf` and the usual CA bundles,
+a fixed list) whose resolved path lies outside that read set: `/mnt/wsl` on WSL (a directory WSL
+shares between distributions), nothing on most other hosts. Only a system directory qualifies:
+never `/`, a directory that is or contains your home, `~/.grok`, `~/.conductor` or a checkout,
+one inside your home, `~/.conductor` or the run's checkout, one on a Windows drive, nor one
+reached through a link in `/tmp`, `/var/tmp`, your home or a checkout. `SSL_CERT_FILE` and
+`SSL_CERT_DIR` are never granted: every caller shares these profiles, so they depend on no
+caller's environment (keep a CA bundle in a directory `strict` reads, or name a profile of your
+own in `grok_sandbox_profile`). `cx-doctor` D17 lists the files, the grants and anything it
+could not grant (then grok cannot resolve names under any conductor profile: make
+`/etc/resolv.conf` resolve to a system directory), the `SSL_CERT_*` paths of its environment
+that grok cannot read, and a profile in `sandbox.toml` written before this release (the
+repository's next grok run rewrites it); it knows no checkout, so a directory skipped because
+it holds the run's checkout shows only in that run's note. A grok run that fails this way says
+so when grok's own stderr names a connection failure and grok usage shows no model call: "grok
+could not reach its API (a connection or DNS failure; cx-doctor D17)", or "could not resolve
+its API's host name (DNS …)" when stderr or grok's own log (`~/.grok/logs/unified.jsonl`, the
+bytes appended during the run) names DNS; that log is shared by every grok process on the
+computer, so on its own a line there is only a note. The exit stays 2 (12 when the timeout
+ended grok's retries). That grok then works end to end on WSL is not yet measured. D17 retries
+a failed `grok models` login probe once, 2 s later, before it warns.
+`cx-init --user-grants` (optional, from inside the repository) writes the
 repository's profile ahead of time and removes the invalid `cx-workspace` profile 0.2.0 wrote,
 with a `.cx-bak` backup (`--dry-run` shows what it would change). agy needs no global grant any more: remove the `write_file(...)` and
 `command(...)` rules 0.2.0 put into `~/.gemini/antigravity-cli/settings.json` if you do not
@@ -204,7 +266,7 @@ Every option is a string; an empty value means the default.
 | `copilot_xhigh_ok` | `false` | Allow `--reasoning-effort xhigh` on Copilot Opus (`max` is never sent) |
 | `grok_bulk_model` | `grok-4.7` | Grok model for mechanical lanes |
 | `grok_bulk_effort` | `high` | Grok effort for mechanical lanes |
-| `grok_sandbox_profile` | `auto` | grok sandbox profile every grok writer runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`); `cx-workspace` counts as `auto`; any other name is your own profile |
+| `grok_sandbox_profile` | `auto` | grok sandbox profile every conductor grok run (write, read and review) runs under: `auto` = each repository's own `cx-<repo>-<hash>` (extends `strict`, plus this host's resolver directories); `cx-workspace` counts as `auto`; any other name is your own profile (refused when its logged grants let grok write `~/.grok`); grok's built-ins that write `~/.grok` are refused, and `strict` cannot read a worktree's git directory or the routes (`cx-doctor` D17 warns) |
 | `review_model_gemini` | `Gemini 4 Argon (High)` | Gemini-family reviewer |
 | `review_model_gpt` | `gpt-6.1-sol` | GPT-family reviewer |
 | `cap_agy` / `cap_copilot` / `cap_grok` | `2` / `3` / `5` | Concurrency limits (throughput, not spend): pool slots shared by every session, thread and forwarded call on the computer (`~/.conductor/locks`); `0` turns a pool off |
@@ -241,6 +303,13 @@ finds; for your full interactive PATH, run `/conductor:doctor` in a Claude Code 
 or `~/.conductor/runtime/current/bin/cx-doctor` in a WSL terminal (a plain terminal has no
 plugin `bin/` on its PATH; the copy exists after the first forwarded call). The fixes of a
 forwarded report act on WSL: run them in a WSL terminal, never in Git Bash.
+
+Before 0.2.2, `cx-doctor --windows` could fail W6 with every plugin file listed as CRLF on a
+Git Bash whose bash expands an ANSI-C `$'\r'` inside a substitution to empty (measured with
+bash 5.3.15, x86_64-pc-cygwin, and grep 3.0): a false positive. 0.2.2 checks for CRs with
+`grep -U` and a CR held in a variable, which avoids that measured false positive (W6 on that
+machine after the fix is not yet re-measured); if it still lists every file, check one by hand
+with `od -c FILE | grep -m1 '\\r'`.
 
 When Copilot's keyring login is unreachable through `wsl.exe`, the doctor's token-file fix
 (`~/.conductor/secrets/copilot-token`, mode 0600, a fine-grained PAT) makes `cx-run`'s Copilot

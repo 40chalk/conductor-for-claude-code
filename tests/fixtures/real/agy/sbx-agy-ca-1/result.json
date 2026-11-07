@@ -1,0 +1,64 @@
+{
+ "version": 1,
+ "ts": "2026-11-06T15:24:15Z",
+ "id": "ca-agy-1",
+ "batch": null,
+ "lane": "agy-opus",
+ "host": "wsl",
+ "caller": "gitbash",
+ "executor": "agy",
+ "cli_version": "1.4.12",
+ "pool": "google-claude-bucket",
+ "mode": "write",
+ "model_requested": "claude-opus-5-5-high",
+ "model_served": "claude-opus-5-5-high",
+ "effort_requested": "high",
+ "effort_applied": "high",
+ "exit": 0,
+ "status": "ok",
+ "reason": null,
+ "finished_reason": "SUCCESS",
+ "session": "838c5ec0-6037-46b6-a115-e2acbdbdf1ce",
+ "usage": {
+  "input": 11665,
+  "output": 2512,
+  "cache_read": 82948,
+  "cache_write": 0,
+  "reasoning": 0
+ },
+ "cost": {
+  "ai_credits": null,
+  "usd_est": null,
+  "quota_delta": null,
+  "estimated": false
+ },
+ "denied": [],
+ "worktree": {
+  "path": "/home/user/.cx-wt/textutil-ca-agy-1",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.cx-wt\\textutil-ca-agy-1"
+ },
+ "branch": "cx/ca-agy-1",
+ "base": "36712314523c3e4d0a39079e105d3d83bfe2870a",
+ "commit": null,
+ "diffstat": "+10 -1, 1 file",
+ "gate": null,
+ "digest": {
+  "path": "/home/user/.conductor/out/ca-agy-1/answer.txt",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-agy-1\\answer.txt"
+ },
+ "out": {
+  "path": "/home/user/.conductor/out/ca-agy-1",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-agy-1"
+ },
+ "duration_s": 47,
+ "models_seen": [
+  "claude-opus-5-5-high"
+ ],
+ "claude_session": null,
+ "claude_effort": null,
+ "raw": {
+  "stdout": "/home/user/.conductor/out/ca-agy-1/agy.out",
+  "stderr": "/home/user/.conductor/out/ca-agy-1/agy.err"
+ },
+ "notes": []
+}

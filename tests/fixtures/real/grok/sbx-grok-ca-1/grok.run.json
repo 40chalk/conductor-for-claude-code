@@ -1,0 +1,1 @@
+{"version": 1, "rc": 1, "started_at": "2026-11-06T15:26:04Z", "finished_at": "2026-11-06T15:53:41Z", "duration_s": 1657, "sid": "462464", "cancelled": false, "timed_out": false, "host": "wsl", "slot": "/home/user/.conductor/locks/grok.1", "cli_version": "1.0.70"}

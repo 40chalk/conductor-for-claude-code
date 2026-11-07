@@ -18,8 +18,11 @@
 #                               wraps free text into templates/task.md as OUT/task.md (each
 #                               check as cx-route <name> when OUT/routes.json, the run's
 #                               cx-route snapshot, exists)
-#   cx_task_install OUT DIR     DIR/.conductor/task.md = OUT/task.md; OUT/task.sha = its sha256
-#   cx_task_hash_ok OUT DIR     rc 0 when DIR/.conductor/task.md still hashes to OUT/task.sha
+#   cx_task_install OUT DIR     DIR/.conductor/task.md = OUT/task.md, a new file in a real
+#                               .conductor/ directory (common.sh cx_cdir: rc 1, CX_TASK_WHY, when
+#                               it is a symlink or holds one); OUT/task.sha = its sha256
+#   cx_task_hash_ok OUT DIR     rc 0 when DIR/.conductor/task.md is still a regular file (neither
+#                               it nor .conductor a symlink) that hashes to OUT/task.sha
 
 [ -n "${CX_PROG:-}" ] || CX_PROG=taskfile
 # shellcheck source=common.sh
@@ -60,12 +63,15 @@ cx_task_from_text() {
 
 cx_task_install() {
   local out="$1" dir="$2"
-  mkdir -p -- "$dir/.conductor" && cp -f -- "$out/task.md" "$dir/.conductor/task.md" \
+  CX_TASK_WHY=""
+  cx_cdir "$dir" || { CX_TASK_WHY="$CX_CDIR_WHY"; return 1; }
+  cx_cput "$out/task.md" "$dir/.conductor/task.md" \
     && sha256sum "$out/task.md" | cut -d' ' -f1 > "$out/task.sha"
 }
 
 cx_task_hash_ok() {
   local out="$1" dir="$2"
+  [ ! -L "$dir/.conductor" ] && [ ! -L "$dir/.conductor/task.md" ] || return 1
   [ -f "$dir/.conductor/task.md" ] && [ -s "$out/task.sha" ] || return 1
   [ "$(sha256sum "$dir/.conductor/task.md" | cut -d' ' -f1)" = "$(cat "$out/task.sha")" ]
 }

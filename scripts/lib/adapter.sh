@@ -14,11 +14,14 @@
 #                                        NAME= with no value = unset) and $OUT/<lane>.meta.json;
 #                                        with --dry-run nothing is written: it prints the lane,
 #                                        model, effort, argv (printf %q), env names, cwd, worktree
-#   <lane>.sh run   [OPTIONS]            preflight (the probe: 13, 26 flag contract, 11, 14, agy paused 28), the
-#                                        pool slot (locks.sh: 28), the running mark, then the
-#                                        executor in the worker environment under setsid and
-#                                        timeout; writes $OUT/<lane>.out, .err, rc, <lane>.run.json
-#                                        (argv first when its files are missing)
+#   <lane>.sh run   [OPTIONS]            preflight (the probe: 13, 26 flag contract, 11, 14, agy paused 28),
+#                                        the lane's own preparation (grok: its profile and the
+#                                        per-run profile check, 2), the pool slot (locks.sh: 28),
+#                                        the running mark, then the executor in the worker
+#                                        environment under setsid and timeout; writes
+#                                        $OUT/<lane>.out, .err, rc, <lane>.run.json (argv first
+#                                        when its files are missing); a run that stops before its
+#                                        executor leaves its reason in $OUT/adapter.why
 #   <lane>.sh parse --out OUT            normalize.py parse: $OUT/result.json and answer.txt;
 #                                        prints "<exit> <status>"
 # Options: --out DIR --wt DIR --model M --effort E --mode write|read|review --timeout SECS
@@ -40,7 +43,9 @@
 # GROK_DISABLE_AUTOUPDATER=1 AGY_CLI_DISABLE_AUTO_UPDATE=true NO_COLOR=1 PYTHONDONTWRITEBYTECODE=1 (no __pycache__ in the
 # worktree when the checks run Python); ANTHROPIC_API_KEY XAI_API_KEY GEMINI_API_KEY
 # GOOGLE_API_KEY and every CLAUDE_PLUGIN_OPTION_* unset (the siblings read option variables of
-# their own); executors by absolute path from the host record; cwd the worktree or gate checkout.
+# their own; the copilot lane then sets ghcp's CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK=off for
+# --fusion runs only); executors by absolute path from the host record; cwd the worktree or
+# gate checkout.
 # A lane whose wrapper finds its executor by name (agy-delegate: command -v agy) gets the shim
 # set without that name, $CX_HOME/shimsets/<names>/ (built once, atomically). The Copilot token
 # reaches the executor through the environment only, never on a command line. Only the adapter
@@ -75,9 +80,14 @@ CXR_BIN_ghcp_handoff="" CXR_BIN_ghcp_ci_debug="" CXR_BIN_ghcp_models="" CXR_BIN_
 CXR_BIN_agy_delegate="" CXR_BIN_agy_job=""
 
 # cxa_fail EXIT STATUS REASON: one note, then CX_SIGNAL (unless CX_SIGNAL_OWNER is set), exit.
+# A run that stops before its executor also leaves REASON in $OUT/adapter.why, for cx-run's
+# result.
 cxa_fail() {
   local code="$1" status="$2" reason="$3"
   declare -F cxa_unmark_running >/dev/null 2>&1 && CXA_KEEP_MARK="" cxa_unmark_running
+  if [ "${A_ACTION:-}" = run ] && [ -n "${A_OUT:-}" ] && [ -d "$A_OUT" ]; then
+    printf '%s\n' "$reason" > "$A_OUT/adapter.why" 2>/dev/null
+  fi
   cx_note "$reason"
   [ -z "${CX_SIGNAL_OWNER:-}" ] || exit "$code"
   CX_SIGNAL_CMD=adapter cx_signal "$status" "$code" "$reason"
@@ -347,11 +357,16 @@ cxa_json_list() { cxa_py json-list -- "$@"; }
 # cxa_probe_cmd FILE CMD...: one free probe: cwd $CX_HOME/probe, stdin /dev/null, the lane's
 # environment, a 30 s bound; stdout and stderr into FILE; returns the command's status.
 cxa_probe_cmd() {
-  local f="$1"
-  shift
   mkdir -p -- "$CXA_HOME/probe"
+  cxa_probe_cmd_in "$CXA_HOME/probe" "$@"
+}
+# cxa_probe_cmd_in DIR FILE CMD...: the same probe with cwd DIR (grok's per-run profile check
+# runs in the run's checkout).
+cxa_probe_cmd_in() {
+  local d="$1" f="$2"
+  shift 2
   cxa_env_args
-  (cd -- "$CXA_HOME/probe" && cxa_run_env && cx_timeout 30 env "${CXA_ENVARGS[@]}" "$@") < /dev/null > "$f" 2>&1
+  (cd -- "$d" && cxa_run_env && cx_timeout 30 env "${CXA_ENVARGS[@]}" "$@") < /dev/null > "$f" 2>&1
 }
 
 # cxa_flags: the flag tokens of CXA_ARGV after the executable ("--x=v" counts as "--x"; nothing
@@ -408,7 +423,8 @@ cxa_probe() {
     printf '%s\n' "$j"
     return 0
   fi
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/cx-probe.XXXXXXXX")" || cxa_fail 2 FAILED "mktemp failed"
+  # The probe's outputs decide the verdict: never in a /tmp that a grok run may write (cx_tmpdir).
+  tmp="$(cx_mktemp -d cx-probe)" || cxa_fail 2 FAILED "cannot create a scratch directory in $CXA_HOME/tmp"
   CXA_PROBE_TMP="$tmp"
   printf '%s\0' "${CXA_ARGV[@]}" > "$tmp/argv"
   j="$(lane_probe)"
@@ -596,6 +612,7 @@ CXA_RUNJSON=()   # extra run.json KEY VALUE pairs a lane adds
 cxa_run() {
   local t0 t1 started
   [ -n "$A_OUT" ] || cx_usage_error "run needs --out DIR"
+  rm -f -- "$A_OUT/adapter.why"
   if [ -f "$A_OUT/$CX_ADAPTER.argv" ] && [ -f "$A_OUT/$CX_ADAPTER.meta.json" ] && cxa_files_read; then
     # The argv files win over this call's options: restore what they were built from.
     eval "$(cxa_py meta-env "$A_OUT/$CX_ADAPTER.meta.json")" || cxa_fail 2 FAILED "unreadable $A_OUT/$CX_ADAPTER.meta.json"

@@ -1,0 +1,62 @@
+{
+ "version": 1,
+ "ts": "2026-11-06T16:31:02Z",
+ "id": "ca-grok-2",
+ "batch": null,
+ "lane": "grok",
+ "host": "wsl",
+ "caller": "gitbash",
+ "executor": "grok",
+ "cli_version": "1.0.70",
+ "pool": "xai-weekly",
+ "mode": "write",
+ "model_requested": "grok-4.7",
+ "model_served": null,
+ "effort_requested": "high",
+ "effort_applied": "high",
+ "exit": 12,
+ "status": "timeout",
+ "reason": "the grok run hit the wall clock",
+ "finished_reason": null,
+ "session": null,
+ "usage": {
+  "input": 0,
+  "output": 0,
+  "cache_read": 0,
+  "cache_write": 0,
+  "reasoning": 0
+ },
+ "cost": {
+  "ai_credits": null,
+  "usd_est": null,
+  "quota_delta": null,
+  "estimated": false
+ },
+ "denied": [],
+ "worktree": {
+  "path": "/home/user/.cx-wt/textutil-ca-grok-2",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.cx-wt\\textutil-ca-grok-2"
+ },
+ "branch": "cx/ca-grok-2",
+ "base": "36712314523c3e4d0a39079e105d3d83bfe2870a",
+ "commit": null,
+ "diffstat": "",
+ "gate": null,
+ "digest": {
+  "path": "/home/user/.conductor/out/ca-grok-2/answer.txt",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-grok-2\\answer.txt"
+ },
+ "out": {
+  "path": "/home/user/.conductor/out/ca-grok-2",
+  "host_path": "\\\\wsl.localhost\\Ubuntu\\home\\user\\.conductor\\out\\ca-grok-2"
+ },
+ "duration_s": 180,
+ "models_seen": [],
+ "claude_session": null,
+ "claude_effort": null,
+ "raw": {
+  "stdout": "/home/user/.conductor/out/ca-grok-2/grok.out",
+  "stderr": "/home/user/.conductor/out/ca-grok-2/grok.err"
+ },
+ "notes": []
+}

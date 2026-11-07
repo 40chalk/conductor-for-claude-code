@@ -63,6 +63,16 @@ Subcommands:
                                     at dispatch (cx-route)
   agy-settings --out F --wt DIR...  the agy raw lane's per-run --settings file (write_file of the
                                     worktree, command() of cx-route, git status and ls)
+  grok-check --profile P --workspace W --grok-home H --probe-out F [--probe-rc N] [--events E
+             --from N --to M] [--json-out J]
+                                    the grok lane's per-run profile check (DESIGN section 15.2):
+                                    "ok" or "refuse <reason>" on stdout, then "note <text>" lines
+                                    (resolver files the logged profile cannot read), the facts as
+                                    JSON in J
+  grok-netlog --file F --from N --to M --out O
+                                    the connection and DNS failures among the bytes grok appended
+                                    to its log F (~/.grok/logs/unified.jsonl) during a run: one
+                                    matched phrase per line in O (text only; no JSON shape assumed)
 """
 
 import argparse
@@ -187,6 +197,57 @@ def grok_nosandbox(text):
     """The first line of TEXT saying grok's sandbox was not applied, else None."""
     m = GROK_NOSANDBOX_RE.search(text or "")
     return CX.sanitize(m.group(0).strip(), 200) if m else None
+
+
+# grok could not reach its API (measured 2026-11-06, grok 1.0.70 on WSL, a strict-based profile
+# that could not read /etc/resolv.conf's target): rc 1 after 1657 s (grok's own retries, 4
+# rounds), usage all 0, stderr 'Error: Internal error: "reqwest error stream: error sending
+# request for url (https://cli-chat-proxy.grok.com/v1/responses)"', and ~/.grok/logs/unified.jsonl
+# held "client error (Connect): dns error: failed to lookup address information: Try again" (the
+# JSON shape of that log line was not captured: only its text is searched). The phrase, up to a
+# JSON string's quote or escape.
+GROK_CONNECT_RE = re.compile(r"(?i)(?:error sending request for url|client error \(connect\)|dns error|"
+                             r"failed to lookup address information)[^\"\\\n]{0,160}")
+GROK_DNS_RE = re.compile(r"(?i)dns error|failed to lookup address information")
+GROK_NETLOG_MAX = 4 << 20
+
+
+def grok_usage_file(text):
+    """(usage, calls) from what grok usage <session> printed (grok.usage.txt): grok 1.0.70's JSON
+    (tests/fixtures/real/grok/sbx-grok-1, sbx-grok-ca-1), {"sessionId", "session": {inputTokens,
+    outputTokens, cachedReadTokens, cacheCreationTokens, reasoningTokens, totalTokens, modelCalls,
+    ...}, "turns": [...]}; usage all 0 and calls None for anything else ("Error: No usage recorded
+    for session ...", sbx-grok-ca-2)."""
+    u = empty_usage()
+    s = (text or "").strip()
+    try:
+        obj = json.loads(s, strict=False) if s.startswith("{") else None
+    except ValueError:
+        obj = None
+    ses = obj.get("session") if isinstance(obj, dict) else None
+    if not isinstance(ses, dict):
+        return u, None
+    u = usage_from(ses)
+    for key, name in (("cache_read", "cachedReadTokens"), ("cache_write", "cacheCreationTokens")):
+        if not u[key] and num(ses.get(name)) is not None:
+            u[key] = int(ses[name])
+    calls = ses.get("modelCalls")
+    return u, (int(calls) if num(calls) is not None else None)
+
+
+def grok_netlog(path, start, end):
+    """The distinct GROK_CONNECT_RE phrases (at most 5, each sanitized) among the bytes grok
+    appended to its log PATH between sizes START and END (at most the last 4 MiB of them)."""
+    data = CXL.read_appended(path, start, end, GROK_NETLOG_MAX, tail=True)
+    found = []
+    for line in data.decode("utf-8", "replace").split("\n"):
+        for m in GROK_CONNECT_RE.finditer(line):
+            p = CX.sanitize(m.group(0).strip(), 200)
+            if p not in found:
+                found.append(p)
+            if len(found) >= 5:
+                return found
+    return found
 MODEL_RE = re.compile(r"model .{0,80}(?:not available|not found|unknown|unsupported|is not supported)|unknown model|invalid model", re.I)
 PARTIAL_RE = re.compile(r"print timeout after .*returning partial output", re.I)
 
@@ -448,6 +509,7 @@ def parse_grok(out_dir, meta, run, rc):
     raw = read(os.path.join(out_dir, "grok.out"))
     err = read(os.path.join(out_dir, "grok.err"))
     obj = last_json_object(raw) or {}
+    run = run if isinstance(run, dict) else {}
     text = obj.get("text") if isinstance(obj.get("text"), str) else obj.get("result") if isinstance(obj.get("result"), str) else obj.get("response")
     if isinstance(text, str):
         f["answer"] = text
@@ -475,13 +537,9 @@ def parse_grok(out_dir, meta, run, rc):
         for k, n in uu.items():
             agg[k] = agg.get(k, 0) + n
     f["usage"] = usage_from(obj.get("usage"), agg)
-    ut = read(os.path.join(out_dir, "grok.usage.txt"))
-    if ut and not any(f["usage"].values()):
-        for key, pat in (("input", r"input tokens:\s*(\d+)"), ("output", r"output tokens:\s*(\d+)"),
-                         ("cache_read", r"cache(?:d| read)[^:\n]*:\s*(\d+)"), ("reasoning", r"reasoning tokens:\s*(\d+)")):
-            m = re.search(pat, ut, re.I)
-            if m:
-                f["usage"][key] = int(m.group(1))
+    gu, calls = grok_usage_file(read(os.path.join(out_dir, "grok.usage.txt")))
+    if not any(f["usage"].values()):
+        f["usage"] = gu
     cost = first_num(obj, "total_cost_usd", "costUsd", "cost_usd")
     if cost is not None:
         f["cost"]["usd_est"] = cost
@@ -493,6 +551,39 @@ def parse_grok(out_dir, meta, run, rc):
     error = obj.get("error")
     diag = err + "\n" + (json.dumps(error) if error is not None else "")
     failed = rc not in (0, None) or not nonblank(f["answer"])
+    # grok could not reach its API: a connection or DNS failure, no model call (DESIGN section
+    # 15.2). Exit 2 FAILED (or 12 when the wall clock ended grok's retries first). The reason needs
+    # the phrase on this run's own stderr or error object, and no model call: grok usage's
+    # session.modelCalls 0, or, when grok usage recorded nothing, no token at all. grok's log
+    # (grok.netlog.txt: the bytes appended to ~/.grok/logs/unified.jsonl during the run, which every
+    # grok process on this computer appends to) only turns that reason into the DNS one; alone, it
+    # gives a note, never a reason.
+    no_call = calls == 0 or (calls is None and not any(f["usage"].values()))
+    if rc not in (0, None, 130) and not run.get("cancelled") and not mu and no_call and not grok_nosandbox(err):
+        m = GROK_CONNECT_RE.search(diag)
+        said = CX.sanitize(m.group(0), 160) if m else None
+        logged = [x for x in read(os.path.join(out_dir, "grok.netlog.txt")).split("\n") if x.strip()]
+        dns = said if said and GROK_DNS_RE.search(said) else next((x for x in logged if GROK_DNS_RE.search(x)), None)
+        if dns and not said:
+            f["notes"].append("grok's log (~/.grok/logs/unified.jsonl, which every grok process on this computer appends to, so "
+                              "the line may be another session's) logged during this run: %s (cx-doctor D17)" % CX.sanitize(dns, 200))
+        if said:
+            # The reason keeps to result.json's 200 characters: what failed, D17, the evidence.
+            sc = run.get("sandbox_check") if isinstance(run.get("sandbox_check"), dict) else {}
+            unread = [t for t in (sc.get("resolver_unreadable") or []) if isinstance(t, dict)]
+            what = ("grok could not resolve its API's host name (DNS; cx-doctor D17): %s" % dns if dns else
+                    "grok could not reach its API (a connection or DNS failure; cx-doctor D17): %s" % said)
+            if rc in (124, 137):
+                flag(f, "timeout", "the grok run hit the wall clock: " + what)
+            else:
+                flag(f, "failed", what + " (no model call)")
+            if dns and dns != said:
+                f["notes"].append("grok said: %s" % CX.sanitize(m.group(0), 200))
+            if unread:
+                f["notes"].append("the per-run check found that the run's sandbox profile cannot read %s (cx-doctor D17)" % ", ".join(
+                    "%s -> %s" % (t.get("path"), t.get("real")) for t in unread[:3]))
+            f["notes"].append("cx-doctor D17 lists the resolver and TLS files grok must read under its sandbox profile; grok's "
+                              "own retries can hold a run for about 28 minutes before it fails (the run's timeout bounds it)")
     if rc in (124, 137) and not run.get("cancelled"):
         flag(f, "timeout", "the grok run hit the wall clock")
     text_classes(f, diag, failed)
@@ -1191,17 +1282,32 @@ def cmd_probe(a):
     sandbox = None
     if a.sandbox_out and os.path.exists(a.sandbox_out):
         why = grok_nosandbox(read(a.sandbox_out))
-        # grok's sandbox log: the ProfileApplied event the probe appended (DESIGN section 1.3). Its
-        # enforced false refuses like a line saying the sandbox was not applied; no event changes
-        # nothing (the log is absent on other hosts or versions).
-        ev = CXL.grok_sandbox_event(a.sandbox_events, a.sandbox_events_from, a.sandbox_events_to,
-                                    a.sandbox_workspace) if a.sandbox_events and a.sandbox_workspace else None
+        # grok's sandbox log: the ProfileApplied events the probe appended (DESIGN section 1.3). An
+        # enforced false refuses like a line saying the sandbox was not applied, and so does a
+        # read_write path into grok's home (a grok whose built-in strict writes ~/.grok: its
+        # README says it does, 1.0.70 measured it does not; every strict-based profile, the
+        # repository's included, would grant the same); no event changes nothing (the log is
+        # absent on other hosts or versions).
+        evs = CXL.grok_sandbox_events(a.sandbox_events, a.sandbox_events_from, a.sandbox_events_to,
+                                      a.sandbox_workspace) if a.sandbox_events and a.sandbox_workspace else []
+        ev = next((e for e in evs if e["enforced"] is False), evs[0] if evs else None)
+        hw = None
+        for e in evs if a.sandbox_grok_home else []:
+            hw = CXL.grok_home_write(e["read_write_paths"] or [], a.sandbox_grok_home)
+            if hw:
+                break
         if not why and ev and ev["enforced"] is False:
             why = ("its sandbox log says --sandbox %s ran unenforced: ProfileApplied, enforced false, platform %s, in %s" % (
                 ev["profile"], ev["platform"], a.sandbox_events))
+        if why:
+            hw = None  # home_write names the refusal's reason only
+        elif hw:
+            why = ("its sandbox log says --sandbox strict grants write to grok's home %s here (read_write path %s in the "
+                   "probe's ProfileApplied event, in %s)" % (a.sandbox_grok_home, hw, a.sandbox_events))
         sandbox = {"ok": False if why else (True if a.sandbox_rc == 0 else None), "detail": why or (
             None if a.sandbox_rc == 0 else "grok --sandbox strict models exited %s" % a.sandbox_rc),
-            "enforced": ev["enforced"] if ev else None, "platform": ev["platform"] if ev else None}
+            "enforced": ev["enforced"] if ev else None, "platform": ev["platform"] if ev else None,
+            "home_write": hw}
     if a.version_ok is not None:
         vok = a.version_ok == "true"
     try:
@@ -1221,6 +1327,94 @@ def cmd_probe(a):
            "model_ok": mok, "contract": contract, "sandbox": sandbox, "cached": False, "paused": bool(a.paused),
            "wrapper": a.wrapper or None, "detail": detail}
     CX.out(json.dumps(res, ensure_ascii=False) + "\n")
+    return 0
+
+
+# The built-in grok profiles that let grok write its own home (grok's docs: off and devbox write
+# everywhere, workspace writes ~/.grok; measured on 1.0.70: read-only writes ~/.grok, its bin/,
+# vendor/ and installed-plugins/ included, tests/fixtures/real/grok/write-probe-read-only-1.0.70.txt).
+GROK_HOME_WRITERS = ("off", "devbox", "workspace", "read-only")
+
+
+def grok_check(profile, workspace, grok_home, probe_out, probe_rc, events, start, end):
+    """The grok lane's per-run profile check (DESIGN section 15.2), from the free `grok --sandbox
+    PROFILE models` the adapter ran in the run's checkout WORKSPACE and the bytes [START, END) it
+    appended to grok's sandbox log EVENTS. Returns (reason or None, facts): a refusal when PROFILE
+    is a built-in that writes grok's home (whatever the log says), when the probe's output says the
+    sandbox was not applied, when a ProfileApplied event for WORKSPACE has enforced false, or when
+    one of its read_write_paths grants write to grok's home (cxlib.grok_home_write: GROK_HOME, a
+    directory above it or one inside it, except GROK_HOME/sessions). No log, no event or a probe
+    that failed otherwise (rc alone) changes nothing: like the preflight, the log can only add a
+    refusal."""
+    evs = CXL.grok_sandbox_events(events, start, end, workspace) if events and workspace else []
+    facts = {"profile": profile, "workspace": workspace, "grok_home": grok_home, "log": events or None,
+             "probe_rc": probe_rc, "events": len(evs), "event": None, "home_write": None}
+    reason = None
+    if profile in GROK_HOME_WRITERS:
+        reason = ("--sandbox %s is grok's built-in %s profile, which lets grok write its home %s (grok's own binary, ripgrep "
+                  "and plugins, which later run outside any sandbox): conductor's grok runs use the repository's strict-based "
+                  "profile (option grok_sandbox_profile auto)" % (profile, profile, grok_home))
+    why = grok_nosandbox(read(probe_out)) if probe_out else None
+    if not reason and why:
+        reason = "grok --sandbox %s models in %s says the sandbox was not applied (%s)" % (profile, workspace, why)
+    for ev in evs:
+        if ev["enforced"] is False:
+            facts["event"] = ev
+            if not reason:
+                reason = ("grok's sandbox log %s says --sandbox %s ran unenforced in %s (ProfileApplied, enforced false, "
+                          "platform %s)" % (events, ev["profile"], workspace, ev["platform"]))
+            break
+    for ev in evs:
+        hw = CXL.grok_home_write(ev["read_write_paths"] or [], grok_home)
+        if hw:
+            facts["home_write"] = hw
+            facts["event"] = facts["event"] or ev
+            if not reason:
+                reason = ("grok's sandbox profile %s grants write to grok's home %s (read_write path %s in its ProfileApplied "
+                          "event for %s, in %s): a run steered by what it reads could replace grok's own binary, ripgrep or "
+                          "plugins there, which later run outside any sandbox" % (ev["profile"], grok_home, hw, workspace, events))
+            break
+    if facts["event"] is None and evs:
+        facts["event"] = evs[0]
+    # grok's resolver and TLS files (DESIGN section 15.7): an enforced event that lists its read
+    # paths (read_only_paths, as strict and the profiles extending it log them on 1.0.70) shows
+    # whether grok can read them under this profile. A note, never a refusal: a file grok cannot
+    # read there makes its API calls fail (on WSL, measured: no name resolved, and grok retried
+    # for 28 minutes), and the run's failure reason then names it.
+    facts["notes"] = []
+    ev = next((e for e in evs if e["enforced"] and isinstance(e.get("read_only_paths"), list)), None) if not reason else None
+    if ev is not None:
+        root = os.environ.get("CX_DETECT_ROOT", "")
+        bad = CXL.grok_resolver_unreadable(root, os.environ, ev["read_only_paths"] + (ev["read_write_paths"] or []))
+        facts["resolver_unreadable"] = [{"path": t["path"], "real": t["real"], "kind": t["kind"]} for t in bad]
+        for t in bad:
+            facts["notes"].append("grok's sandbox log shows profile %s cannot read %s (grok's %s file) in %s: grok %s under it "
+                                  "(cx-doctor D17)" % (ev["profile"], CXL._target_text(t), "resolver" if t["kind"] != "tls" else "TLS",
+                                                       workspace, CXL.GROK_RESOLVER_EFFECT.get(t["kind"], "cannot read it")))
+    facts["ok"] = reason is None
+    facts["reason"] = reason
+    return reason, facts
+
+
+def cmd_grok_netlog(a):
+    found = grok_netlog(a.file, a.start, a.end)
+    if found:
+        CX.atomic_write(a.out, "".join(p + "\n" for p in found))
+    return 0
+
+
+def cmd_grok_check(a):
+    reason, facts = grok_check(a.profile, a.workspace, a.grok_home, a.probe_out, a.probe_rc, a.events, a.start, a.end)
+    if a.json_out:
+        try:
+            CX.atomic_write(a.json_out, json.dumps(facts, ensure_ascii=False) + "\n")
+        except OSError as e:
+            CX.err("normalize: grok-check: %s\n" % e)
+            return 2
+    # Paths can be long: the verdict keeps the whole reason (one line; the signal shortens it).
+    # Notes follow it, one "note <text>" line each.
+    CX.out(("refuse " + CX.sanitize(reason, 8000) if reason else "ok") + "\n"
+           + "".join("note %s\n" % CX.sanitize(n, 600) for n in facts.get("notes") or []))
     return 0
 
 
@@ -1505,6 +1699,11 @@ def verdict(p):
             lane, p.get("version") or "(version unknown)", why)
     elif p.get("paused"):
         line = "28 NO_CAPACITY agy dispatch is paused after a wrong_tree result: inspect the changed tree, then run cx-job unpause agy"
+    elif isinstance(p.get("sandbox"), dict) and p["sandbox"].get("ok") is False and p["sandbox"].get("home_write"):
+        line = ("2 FAILED %s's built-in strict profile lets it write its own home on this host (%s): its binary, ripgrep and "
+                "plugins there run outside any sandbox later, and every grok run (the repository's strict-based profile "
+                "included) approves every tool inside its sandbox, so the lane is refused (cx-doctor D17)" % (
+                    lane, p["sandbox"].get("detail")))
     elif isinstance(p.get("sandbox"), dict) and p["sandbox"].get("ok") is False:
         line = ("2 FAILED %s cannot apply its sandbox on this host (%s): it runs with --always-approve inside it, so the lane is "
                 "refused (on Linux and WSL it needs Landlock, kernel 5.13 or newer, and bubblewrap; cx-doctor D17)" % (
@@ -1916,6 +2115,7 @@ def main(argv):
     s.add_argument("--sandbox-events-from", type=int, default=0, help="its size before the sandbox probe")
     s.add_argument("--sandbox-events-to", type=int, default=0, help="its size after the sandbox probe")
     s.add_argument("--sandbox-workspace", default="", help="the sandbox probe's working directory")
+    s.add_argument("--sandbox-grok-home", default="", help="${GROK_HOME:-~/.grok}: a read_write path into it refuses the lane")
     s.set_defaults(fn=cmd_probe)
     s = sub.add_parser("cache-get")
     s.add_argument("--key", required=True)
@@ -2002,6 +2202,23 @@ def main(argv):
     s.add_argument("--bash", default="", help="cx-run's bash, when /bin/bash is missing")
     s.add_argument("--dry-run", action="store_true", help="print name: command lines, write nothing")
     s.set_defaults(fn=cmd_route_snapshot)
+    s = sub.add_parser("grok-check")
+    s.add_argument("--profile", required=True, help="the run's --sandbox profile")
+    s.add_argument("--workspace", required=True, help="the run's checkout (the check's cwd)")
+    s.add_argument("--grok-home", required=True, help="${GROK_HOME:-~/.grok}")
+    s.add_argument("--probe-out", default="", help="the output of grok --sandbox <profile> models")
+    s.add_argument("--probe-rc", type=int, default=None)
+    s.add_argument("--events", default="", help="grok's sandbox log (sandbox-events.jsonl)")
+    s.add_argument("--from", dest="start", type=int, default=0, help="its size before the check")
+    s.add_argument("--to", dest="end", type=int, default=0, help="its size after the check")
+    s.add_argument("--json-out", default="", help="the check's facts as JSON (run.json sandbox_check)")
+    s.set_defaults(fn=cmd_grok_check)
+    s = sub.add_parser("grok-netlog")
+    s.add_argument("--file", required=True, help="grok's log (~/.grok/logs/unified.jsonl)")
+    s.add_argument("--from", dest="start", type=int, default=0, help="its size before the run")
+    s.add_argument("--to", dest="end", type=int, default=0, help="its size after the run")
+    s.add_argument("--out", required=True)
+    s.set_defaults(fn=cmd_grok_netlog)
     a = ap.parse_args(argv)
     if not getattr(a, "fn", None):
         ap.print_help()

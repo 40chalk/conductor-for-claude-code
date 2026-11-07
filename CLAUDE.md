@@ -151,7 +151,8 @@ env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_CODE_REMOTE HOME=$S/home CLAUDE_CONFIG_DIR=$
   rule), only `cx-run --background` when their task names it. The pool slots are shared by every
   session, thread, workflow agent and forwarded call on the computer.
 - **The skill's recipe** (SKILL section 4 = DESIGN §12.2, `[P43]` compares every bash line):
-  step 1 the contract (`/tmp/cx-t1.md` in WSL; from Windows a Windows-side path, never Git
+  step 1 the contract (`~/.conductor/tasks/t1.md` in WSL, never `/tmp`, which grok runs may
+  write; from Windows a Windows-side path, never Git
   Bash's `/tmp`: exit 42); step 2 `cx-run`/`cx-job` (`vars.sh` comes from cx-run); step 3 the
   conductor's squash commit and gate (`BRANCH_TAMPERED` 24); step 4 reviews; step 5 GitHub,
   `cx-wsl ghcp-ci-debug` and its hand-back to `cx/<id>`. The hand steps' only executor calls are
@@ -212,6 +213,11 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   `forward-wsl.sh`, `cx-wsl.sh`'s forwarding, the doctor's Windows part, `policy.sh`,
   `subagent.sh`) use only
   bash and the tools of DESIGN §3.1; `[P42]` runs them on a mini bin with a python3 trap.
+- No ANSI-C string (`$'...'`) inside `$( )`, `<( )`, `>( )` or backticks in a shipped shell file:
+  Git Bash's bash (measured with 5.3.15, x86_64-pc-cygwin) expanded `$'\r'` there to empty, and
+  its grep 3.0 sees a CR only with `-U`. Assign the value outside first (`common.sh`'s `CX_CR`);
+  a CR check is `grep -U -e "$CX_CR"`. A static `[X]` scanner enforces both (a file it cannot
+  follow fails it); P42's mini bin grep finds no CR without `-U`.
 - Bash: `#!/usr/bin/env bash`, `set -uo pipefail` without `-e` (check rcs), `unset CDPATH` in
   scripts that `cd`, empty-array-safe expansions, `shellcheck -x` clean (line 2 of each script
   is `# shellcheck source-path=SCRIPTDIR`). Each script's header comment is its `--help`;
@@ -234,7 +240,22 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
 - Executors run only inside `cx-run` (the adapters) and, for the hand steps and Windows tool
   calls, `cx-wsl`; both take the pool slot. Never put a secret on a command line (argv is
   world-readable in `/proc`): the Copilot token travels in the environment only. An adapter's
-  executor never inherits a lock descriptor; temporary files come from `mktemp`.
+  executor never inherits a lock descriptor; temporary files come from `cx_mktemp`, in
+  `$CX_HOME/tmp` (0700), never `$TMPDIR` or `/tmp`, which every strict-based grok run may write
+  (only the Git Bash side keeps the Windows temp directory; a static `[X]` check greps it).
+- `<checkout>/.conductor/` is the conductor's: written only through `cx_cdir` (a real directory
+  holding no symlink) and `cx_cput` (a new file); a read or review of a commit that tracks
+  `.conductor` exits 2 before its checkout; `info/exclude` gets `/.conductor` (no slash).
+- `cx-wsl grok` runs (forms that take a slot) need `--sandbox cx-strict` and an absolute `--cwd`
+  (else 1), write and check `cx-strict` once the slot is held (else 2), and run from that
+  directory; the skill's one `cx-wsl grok` line is pinned by a static check (`$OUT/msg` emptied
+  first, cx-strict only, no `--cwd "$TOP"`).
+- Every grok profile conductor writes (each repository's `cx-<repo>-<hash>`, `cx-strict`) adds
+  the resolver and TLS directories of `cxlib.grok_resolver_plan`: system directories only (never
+  `/`, a home or anything inside one, `$CX_HOME`, a checkout, a Windows drive, nor through a link
+  in `/tmp`, `/var/tmp`, a home or a checkout), from the fixed `GROK_RESOLVER_FILES` alone, never
+  a caller's `SSL_CERT_*` (every caller shares the profiles); tests make those files under
+  `CX_DETECT_ROOT`, never the host's.
 
 ## Changes that touch many files
 
@@ -270,6 +291,13 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   and README's allow-rule lists.
 - **Version bump**: `plugin.json`, `marketplace.json`, `CX_VERSION`, `cxlib.VERSION`, a new
   `## x.y.z — date` heading in `CHANGELOG.md` (`[P2]`).
+- **grok's home-writing built-ins** (`off`, `devbox`, `workspace`, `read-only`):
+  `GROK_HOME_WRITERS` in `normalize.py` and D17's case arm in `cx-doctor.sh` (a static `[X]`
+  check pins them equal), the names `cxlib.py` `cmd_grok_resolver` skips, DESIGN §1.3, §8.3
+  D17, §15.2 and §15.7, README, SKILL troubleshooting.
+- **grok's strict read set, write set or resolver files**: `GROK_STRICT_READ`,
+  `GROK_STRICT_WRITE` and `GROK_RESOLVER_FILES` in `cxlib.py`, the base `read_only_paths` of the
+  grok stub's sandbox-log line, DESIGN §1.3, §8.3 D17 and §15.7, README.
 - **Pin bump**: `CX_PIN_*` in `common.sh`, DESIGN §1 and §5.4, README.
 - **New shipped file**: DESIGN §13.4, `CX_SHIPPED_FILES`/`CX_SHIPPED_EXEC`,
   `install-runtime.sh` dirs and D4's subset (`[P41]`).
@@ -302,7 +330,8 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   args>`). Knobs are `STUB_*` variables (see each stub's header); knobs that must survive the
   forwarder's `env -i` are read from `$HOME/.stub.env` (the WSL-side home). Don't symlink a
   stub: it finds `.stublib` and `../fixtures` relative to its own path.
-- Git Bash simulation: `STUB_UNAME_S`, a fake Windows root (`$TMP/win/<x>` ↔ `X:\`,
+- Git Bash simulation: `STUB_UNAME_S`, the mini bin (its `grep` matches nothing for a CR pattern
+  without `-U`, as Git Bash's did), a fake Windows root (`$TMP/win/<x>` ↔ `X:\`,
   `$TMP/unc` ↔ `\\wsl.localhost\Ubuntu\`, `$TMP/share` ↔ `\\server\share\`), a wsl.exe stub
   that runs the WSL side under `env -i`, and per-scenario clones of a template WSL home
   (`wsl_clone`) that holds settings, the fake sibling plugins, an interactive host record and
@@ -310,9 +339,11 @@ first use from the Git Bash side (`bash -s` with `CX_STAGE_WIN`), unless `CX_NO_
   forwarded target's environment, cwd and argv.
 - `tests/fixtures/` is marked `-text` (intentional CRLF and UTF-16LE bytes); its README labels
   each file verified or synthetic (`real/` holds the captured help texts and ghcp's real Copilot
-  recordings, and agy 1.4.12's help). Some checks are timing-based (agy hang with
-  `CX_PROBE_TIMEOUT=2`, INT cancellation within 6 s, cx-job kill's KILL after 10 s, the adapter's
-  KILL grace, the slot waits) and could flake on a loaded machine.
+  recordings, and agy 1.4.12's help; `real/*/sbx-*` are cx-run out directories of real runs,
+  `sbx-*-ca-*` the 0.2.1 runs from a Windows 11 machine, home paths sanitized to `/home/user`).
+  Some checks are timing-based (agy hang with `CX_PROBE_TIMEOUT=2`, INT cancellation within 6 s,
+  cx-job kill's KILL after 10 s, the adapter's KILL grace, the slot waits) and could flake on a
+  loaded machine.
 
 ## Unverified
 
@@ -320,8 +351,8 @@ Do not treat these as facts (DESIGN §20): the Windows app's `$PWD` form for `\\
 projects and which shell runs hooks on Windows; whether WSL keeps detached jobs alive after the
 last `wsl.exe` exits; wsl.exe's stdin/Ctrl-C relay and `WSL_UTF8`; agy's `--output-format json`
 and `/usage` shapes and whether `/usage` is zero-quota; grok's logged-in `models` listing and
-exit code; the `Task(...)`/`Agent(...)` deny-rule syntax and how env-prefixed allow rules match on
-2.1.316; whether `claude plugin update` re-copies an unchanged version; above all whether
+exit code; the `Task(...)`/`Agent(...)` deny-rule syntax and how Claude Code matches env-prefixed
+allow rules; whether `claude plugin update` re-copies an unchanged version; above all whether
 `claude remote-control` started inside WSL serves Work locally threads with the WSL plugins
 (live check L11, first); the SubagentStart matcher's alternation and injection timing, bridge
 children's `CLAUDE_CODE_SESSION_ATTENDED`, and what a compacting subagent's SessionStart payload
@@ -329,4 +360,11 @@ holds (DESIGN §20 items 40–61); that Copilot signs in with `COPILOT_GITHUB_TO
 `gh repo view` resolves SSH host aliases, and `ghcp-cloud`'s host-qualified `-R` (items 62–65);
 agy's stream-json events, whether `--effort xhigh|max` applies to the Opus slugs and whether
 its `-p /model|/usage|/config` slash forms cost quota (items 67, 68; its flags themselves are
-verified against the captured 1.4.12 help), and claude -p's result shape (§20).
+verified against the captured 1.4.12 help), and claude -p's result shape (§20); whether grok
+reads `--prompt-file` before its sandbox applies or under it, whether its daemon backend ever
+runs a conductor run, and which directory `strict`'s CWD grant follows when the process cwd and
+`--cwd` differ (items 77, 78, 80; all moot or refused by construction); that grok works end to
+end on WSL once its profiles read the resolver directories, whether it accepts `read_only = []`,
+which CA bundle it reads and the JSON shape of `~/.grok/logs/unified.jsonl` (item 81); under the built-in
+`read-only` only an append-open of grok's protected set was measured denied, not a rename in the
+writable `~/.grok` (item 76).

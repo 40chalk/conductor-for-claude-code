@@ -69,7 +69,8 @@
 # run checks only as cx-route <name>; it runs nothing else (in a clean bash: no BASH_ENV or
 # exported functions of its caller), and an edit of the worktree's .cx/routes.json never reaches
 # it. Copilot may approve only cx-route and git status; agy gets those and ls as per-run
-# --settings grants; grok runs in its repository's sandbox profile (extends strict).
+# --settings grants; grok runs in its repository's sandbox profile (extends strict) in every
+# mode, read and review included (never grok's built-in read-only, which writes ~/.grok).
 #
 # Output: stdout = the digest, then "VERIFY THIS: <what to check>" and the diffstat (the claude
 # dispatch: its JSON). stderr = notes, CX_DENIED, CX_NOTE, CX_RESULT, then CX_SIGNAL (any exit
@@ -424,7 +425,7 @@ lane_args() {
 PRB_CODE="" PRB_STATUS="" PRB_REASON="" PRB_CACHED=""
 probe() {
   local lane="$1" j v err
-  err="$(mktemp "${TMPDIR:-/tmp}/cx-run-probe.XXXXXXXX")" || err=/dev/null
+  err="$(cx_mktemp cx-run-probe)" || err=/dev/null
   lane_args "$lane"
   j="$(bash "$RT/scripts/adapters/$lane.sh" probe "${LARGS[@]}" 2>"$err")"
   local rc=$?
@@ -875,9 +876,21 @@ if [ "$MODE" = write ] && [ -n "$WT" ]; then
   # change it, so a sibling task's own work is never taken for agy writing into another tree.
   if [ ! -e "$OUT/running" ]; then cx_wt_mark "$OUT" "$WT"; MARKED=1; fi
   DIR="$WT"
+  # The conductor writes the task (and grok's prompt file) into $WT/.conductor unsandboxed: never
+  # through a .conductor that an earlier executor (a re-dispatch) or the base commit made a
+  # symlink, a file, or a directory holding a symlink (common.sh cx_cdir).
+  cx_cdir "$WT" || { unmark; cx_signal FAILED 2 "the worktree's .conductor cannot hold the task: $CX_CDIR_WHY"; }
 elif [ "$MODE" = write ]; then
   DIR=""
 else
+  # A read's or review's checkout is of a commit an executor may have written (a review's branch,
+  # a read's --base): one that tracks anything at .conductor (a symlink there, or one below it)
+  # could redirect the conductor's own unsandboxed writes (the diff, the task, a prompt file) to
+  # any file you can write, so the run is refused before anything is checked out.
+  if [ -n "$(git -C "$TOP" ls-tree --name-only "$TARGET" -- .conductor 2>/dev/null)" ]; then
+    cx_note "the commit ${TARGET:0:12} tracks .conductor, where the conductor writes the $MODE run's files (the diff, the task, the prompt file): a $MODE run never checks it out (git ls-tree ${TARGET:0:12} -- .conductor); remove .conductor from that branch, or review its diff by hand"
+    cx_signal FAILED 2 "the commit ${TARGET:0:12} tracks .conductor: a $MODE run never checks it out"
+  fi
   GATE="$(cx_wt_gate "$TOP" "$TARGET" "$ID")" || cx_signal FAILED 2 "cannot create a gate checkout of ${TARGET} in $CXH/gate"
   DIR="$GATE"
 fi
@@ -911,13 +924,17 @@ if [ "$MODE" = review ]; then
     cx_note "nothing to review: no change between ${BASE:0:12} and ${TARGET:0:12}"
     cx_signal EMPTY_OUTPUT 3 "nothing to review (empty diff)"
   fi
-  mkdir -p -- "$GATE/.conductor" && cp -f -- "$OUT/change.diff" "$GATE/.conductor/change.diff"
+  # Every file a review reads lies inside its checkout (grok's strict-based profile reads no
+  # out directory), written as a new file in a real .conductor/ (cx_cdir, cx_cput).
+  if ! { cx_cdir "$GATE" && cx_cput "$OUT/change.diff" "$GATE/.conductor/change.diff"; }; then
+    cx_signal FAILED 2 "cannot copy the diff into $GATE/.conductor/${CX_CDIR_WHY:+ ($CX_CDIR_WHY)}"
+  fi
   PROMPT="$(review_prompt)"
 elif [ "$MODE" = read ] && [ -z "$TASK_FILE" ]; then
   PROMPT="$TASK_TEXT"
 fi
 if [ -f "$OUT/task.md" ] && [ -n "$DIR" ]; then
-  cx_task_install "$OUT" "$DIR" || { unmark; cx_signal FAILED 2 "cannot copy the task contract into $DIR/.conductor/"; }
+  cx_task_install "$OUT" "$DIR" || { unmark; cx_signal FAILED 2 "cannot copy the task contract into $DIR/.conductor/${CX_TASK_WHY:+ ($CX_TASK_WHY)}"; }
 fi
 
 lane_args "$ADAPTER"
@@ -934,7 +951,7 @@ prepare_argv() {
   rc=$?
   [ "$rc" = 0 ] || { [ "$rc" = 1 ] && exit 1; cx_signal FAILED 2 "the $ADAPTER adapter could not prepare the run (exit $rc)"; }
 }
-rm -f -- "$OUT/$ADAPTER.argv" "$OUT/$ADAPTER.env" "$OUT/$ADAPTER.meta.json"
+rm -f -- "$OUT/$ADAPTER.argv" "$OUT/$ADAPTER.env" "$OUT/$ADAPTER.meta.json" "$OUT/adapter.why"
 save_state
 [ "$MODE" != write ] || [ -z "$WT" ] || write_vars
 
@@ -965,7 +982,11 @@ if [ "$ARC" != 0 ] && [ ! -f "$OUT/rc" ]; then
   [ -z "$CANCELLED" ] || st=cancelled
   [ "$MODE" = write ] && [ -n "$WT" ] && rm -f -- "$OUT/running"
   prepare_argv
-  stop_result "$st" "the $ADAPTER lane stopped before its executor ran (exit $ARC)"
+  # The adapter's own reason (adapter.why: grok's per-run profile check, a sandbox file it
+  # refused, a missing CLI, ...) goes into the result.
+  WHY="$(head -c 400 "$OUT/adapter.why" 2>/dev/null | tr '\n' ' ')"
+  WHY="${WHY% }"
+  stop_result "$st" "the $ADAPTER lane stopped before its executor ran (exit $ARC)${WHY:+: $WHY}"
 fi
 if [ "$MODE" = write ] && [ -n "$WT" ] && { [ "$ADAPTER" != claude ] || [ -n "$HEADLESS" ]; }; then
   # finish_result keeps the running mark only for an ok change that waits for Step 3.

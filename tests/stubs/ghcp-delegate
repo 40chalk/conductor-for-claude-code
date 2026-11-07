@@ -4,7 +4,13 @@
 # one copilot argv line (free; each --allow-shell P as --allow-tool 'shell(P)', as ghcp 0.1.0 does). A run needs STUB_GHCP_RUN, else it is billable (exit 99):
 #   ok-pong denied-write autodenied-shell fusion-max-pong fusion-fallback quota auth
 #            replay fixtures/real/ghcp/<name>.{out,err,rc}: the real ghcp 0.1.0 wrapper's output
-#            over ghcp's real Copilot 1.0.105 recordings (quota: ghcp's synthetic stub text)
+#            over ghcp's real Copilot 1.0.105 recordings (quota: ghcp's synthetic stub text).
+#            fusion-fallback (Copilot refuses Fusion before any model call) follows ghcp's option
+#            fusion_fallback as ghcp does, the environment first: CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK
+#            off|false|0|no|disabled replays fixtures/real/ghcp/fusion-unavailable.* (ghcp 0.1.2's
+#            exit 14, FUSION_UNAVAILABLE, no re-run), anything else the GHCP_FALLBACK re-run;
+#            STUB_GHCP_FALLBACK=always replays the re-run whatever the option (a ghcp that
+#            ignores it).
 #   ok       synthetic success: cx-copilot.txt written in --dir when --write; the served model is
 #            the requested one (Fusion: gpt-6-luna with a fusion object)
 #   mismatch like ok, served ${STUB_GHCP_SERVED:-gpt-6-luna}
@@ -44,8 +50,12 @@ if [ -n "$print" ]; then
   exit 0
 fi
 run="${STUB_GHCP_RUN:-}"
+if [ "$run" = fusion-fallback ] && [ "${STUB_GHCP_FALLBACK:-}" != always ]; then
+  fb="$(printf '%s' "${CLAUDE_PLUGIN_OPTION_FUSION_FALLBACK:-on}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$fb" in off|false|0|no|disabled) run="fusion-unavailable" ;; esac
+fi
 case "$run" in
-  ok-pong|denied-write|autodenied-shell|fusion-max-pong|fusion-fallback|quota|auth)
+  ok-pong|denied-write|autodenied-shell|fusion-max-pong|fusion-fallback|fusion-unavailable|quota|auth)
     cat "$STUB_FIX/real/ghcp/$run.out"; cat "$STUB_FIX/real/ghcp/$run.err" >&2
     exit "$(cat "$STUB_FIX/real/ghcp/$run.rc")" ;;
   ok|mismatch|5149|sleep) ;;
